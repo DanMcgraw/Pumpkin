@@ -784,8 +784,6 @@ pub struct Entity {
     /// The age of the entity in ticks. Negative values indicate a baby.
     pub age: AtomicI32,
 
-    pub first_loaded_chunk_position: AtomicCell<Option<Vector3<i32>>>,
-
     pub current_biome: ArcSwap<&'static Biome>,
     pub last_biome_update_pos: AtomicCell<BlockPos>,
 
@@ -899,7 +897,6 @@ impl Entity {
             pitch: AtomicCell::new(0.0),
             velocity: AtomicCell::new(Vector3::new(0.0, 0.0, 0.0)),
             pose: AtomicCell::new(EntityPose::Standing),
-            first_loaded_chunk_position: AtomicCell::new(None),
             bounding_box: AtomicCell::new(BoundingBox::new_from_pos(
                 position.x,
                 position.y,
@@ -3323,7 +3320,6 @@ impl NBTStorage for Entity {
             let pos = Vector3::new(x, y, z);
             self.set_pos(pos);
             self.last_sent_pos.store(pos);
-            self.first_loaded_chunk_position.store(Some(pos.to_i32()));
             let velocity = nbt.get_list("Motion").unwrap();
             let x = velocity[0].extract_double().unwrap_or(0.0);
             let y = velocity[1].extract_double().unwrap_or(0.0);
