@@ -2,6 +2,7 @@ use crossbeam::atomic::AtomicCell;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::entity::Entity;
+use crate::entity::player::Player;
 use pumpkin_protocol::java::client::play::Metadata;
 
 use crate::entity::EntityBase;
@@ -77,6 +78,26 @@ impl VehicleEntity {
             ),
         ]);
         self.entity.send_meta_data(&[Metadata::new(
+            TrackedData::ID_DAMAGE,
+            MetaDataType::FLOAT,
+            self.get_damage(),
+        )]);
+    }
+
+    pub fn send_wobble_metadata_to(&self, player: &Player) {
+        self.entity.send_meta_data_to(player, &[
+            Metadata::new(
+                TrackedData::ID_HURT,
+                MetaDataType::INTEGER,
+                self.get_hurt_time(),
+            ),
+            Metadata::new(
+                TrackedData::ID_HURTDIR,
+                MetaDataType::INTEGER,
+                self.get_hurt_dir(),
+            ),
+        ]);
+        self.entity.send_meta_data_to(player, &[Metadata::new(
             TrackedData::ID_DAMAGE,
             MetaDataType::FLOAT,
             self.get_damage(),

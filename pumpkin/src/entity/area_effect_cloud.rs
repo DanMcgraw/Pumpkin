@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::{
-    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage},
+    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, player::Player},
     server::Server,
 };
 use pumpkin_data::effect::StatusEffect;
@@ -192,6 +192,112 @@ impl EntityBase for AreaEffectCloudEntity {
             let is_waiting = 0 < wait_time;
             self.entity
                 .send_meta_data(&[pumpkin_protocol::java::client::play::Metadata::new(
+                    pumpkin_data::tracked_data::TrackedData::WAITING,
+                    pumpkin_data::meta_data_type::MetaDataType::BOOLEAN,
+                    is_waiting,
+                )]);
+        })
+    }
+
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        // Serialize bytes to the packet without a length prefix.
+        // This matches how the Minecraft protocol encodes particle data in EntityEffect.
+        fn serialize_bytes_no_prefix<S>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            serializer.serialize_bytes(data)
+        }
+
+        Box::pin(async move {
+            #[derive(serde::Serialize)]
+            struct ParticleMeta<'a> {
+                particle_id: pumpkin_protocol::codec::var_int::VarInt,
+                #[serde(serialize_with = "serialize_bytes_no_prefix")]
+                data: &'a [u8],
+            }
+
+            // Send initial radius and particle (color) so clients render correctly
+            let radius = *self.radius.lock().await;
+
+            // Compute particle color
+            let stack = self.item_stack.lock().await.clone();
+            let effects = self.effects.lock().await.clone();
+
+            // Use ARGB format
+            let mut color: i32 = (0xFFi32 << 24) | 0x385dc6; // default water-like color
+
+            if let Some(pc) =
+                stack.get_data_component::<pumpkin_data::data_component_impl::PotionContentsImpl>()
+            {
+                if let Some(c) = pc.custom_color {
+                    color = c | (0xFFi32 << 24);
+                } else if !effects.is_empty() {
+                    let mut r_sum = 0.0f32;
+                    let mut g_sum = 0.0f32;
+                    let mut b_sum = 0.0f32;
+                    let count = effects.len() as f32;
+                    for (eff, _, _, _, _, _) in &effects {
+                        let c = eff.color;
+                        r_sum += ((c >> 16) & 0xFF) as f32;
+                        g_sum += ((c >> 8) & 0xFF) as f32;
+                        b_sum += (c & 0xFF) as f32;
+                    }
+                    let r = (r_sum / count) as i32;
+                    let g = (g_sum / count) as i32;
+                    let b = (b_sum / count) as i32;
+                    color = (0xFFi32 << 24) | (r << 16) | (g << 8) | b;
+                }
+            } else if !effects.is_empty() {
+                let mut r_sum = 0.0f32;
+                let mut g_sum = 0.0f32;
+                let mut b_sum = 0.0f32;
+                let count = effects.len() as f32;
+                for (eff, _, _, _, _, _) in &effects {
+                    let c = eff.color;
+                    r_sum += ((c >> 16) & 0xFF) as f32;
+                    g_sum += ((c >> 8) & 0xFF) as f32;
+                    b_sum += (c & 0xFF) as f32;
+                }
+                let r = (r_sum / count) as i32;
+                let g = (g_sum / count) as i32;
+                let b = (b_sum / count) as i32;
+                color = (0xFFi32 << 24) | (r << 16) | (g << 8) | b;
+            }
+
+            // Build raw particle option bytes for ENTITY_EFFECT
+            let data_bytes = color.to_be_bytes();
+
+            let meta = ParticleMeta {
+                particle_id: pumpkin_protocol::codec::var_int::VarInt(
+                    pumpkin_data::particle::Particle::EntityEffect as i32,
+                ),
+                data: &data_bytes,
+            };
+
+            // Send initial particle and radius
+            self.entity
+                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
+                    pumpkin_data::tracked_data::TrackedData::PARTICLE,
+                    pumpkin_data::meta_data_type::MetaDataType::PARTICLE,
+                    &meta,
+                )]);
+
+            self.entity
+                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
+                    pumpkin_data::tracked_data::TrackedData::RADIUS,
+                    pumpkin_data::meta_data_type::MetaDataType::FLOAT,
+                    radius,
+                )]);
+
+            // Initial waiting flag
+            let wait_time = *self.wait_time.lock().await;
+            let is_waiting = 0 < wait_time;
+            self.entity
+                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
                     pumpkin_data::tracked_data::TrackedData::WAITING,
                     pumpkin_data::meta_data_type::MetaDataType::BOOLEAN,
                     is_waiting,

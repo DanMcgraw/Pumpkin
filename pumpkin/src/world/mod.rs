@@ -3569,6 +3569,7 @@ impl World {
                             .client
                             .enqueue_packet(&base_entity.create_spawn_packet())
                             .await;
+                        entity.send_initial_metadata(&player).await;
                         entities_to_add.push(entity);
                     }
 
@@ -3590,6 +3591,7 @@ impl World {
                                 .client
                                 .enqueue_packet(&base_entity.create_spawn_packet())
                                 .await;
+                            entity.send_initial_metadata(&player).await;
                         }
                     }
                 }

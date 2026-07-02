@@ -188,6 +188,26 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
         })
     }
 
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            let entity = self.get_entity();
+
+            // If the internal age is negative, it's a baby
+            let is_baby = entity.age.load(Ordering::Relaxed) < 0;
+
+            if is_baby {
+                entity.send_meta_data_to(player, &[Metadata::new(
+                    TrackedData::BABY_ID,
+                    MetaDataType::BOOLEAN,
+                    true,
+                )]);
+            }
+        })
+    }
+
     // This method takes ownership of Arc<Self>, so the lifetime bounds are different.
     fn teleport(
         self: Arc<Self>,
@@ -2730,6 +2750,20 @@ impl Entity {
                     ));
                 }
             }
+        }
+    }
+
+    pub fn send_meta_data_to<T: Serialize>(&self, player: &Player, meta: &[Metadata<T>]) {
+        if let ClientPlatform::Java(client) = player.client.as_ref() {
+            let mut buf = Vec::new();
+            for m in meta {
+                m.write(&mut buf, &client.version.load()).unwrap();
+            }
+            buf.put_u8(255);
+            player.client.try_enqueue_packet(&CSetEntityMetadata::new(
+                self.entity_id.into(),
+                buf.into(),
+            ));
         }
     }
 

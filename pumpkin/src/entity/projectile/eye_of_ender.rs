@@ -180,6 +180,19 @@ impl EntityBase for EyeOfEnder {
         })
     }
 
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            self.entity.send_meta_data_to(player, &[Metadata::new(
+                TrackedData::ITEM,
+                MetaDataType::ITEM_STACK,
+                &ItemStackSerializer::from(self.item_stack.lock().await.clone()),
+            )]);
+        })
+    }
+
     fn damage_with_context<'a>(
         &'a self,
         _caller: &'a dyn EntityBase,

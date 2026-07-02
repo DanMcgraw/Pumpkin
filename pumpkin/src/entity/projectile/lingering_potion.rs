@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::entity::projectile::splash_potion::extinguish_fire_if_water_potion;
 use crate::{
-    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, projectile::ThrownItemEntity},
+    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, projectile::ThrownItemEntity, player::Player},
     server::Server,
 };
 use pumpkin_data::entity::EntityStatus;
@@ -70,6 +70,25 @@ impl EntityBase for LingeringPotionEntity {
 
             // Sync the item stack so the client renders the correct potion type
             entity.send_meta_data(&[pumpkin_protocol::java::client::play::Metadata::new(
+                pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
+                pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
+                &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
+                    stack.clone(),
+                ),
+            )]);
+        })
+    }
+
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            let entity = self.get_entity();
+            let stack = self.item_stack.read().await;
+
+            // Sync the item stack so the client renders the correct potion type
+            entity.send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
                 pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
                 pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
                 &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(

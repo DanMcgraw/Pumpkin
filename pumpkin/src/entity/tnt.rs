@@ -1,4 +1,4 @@
-use super::{Entity, EntityBase, NBTStorage, living::LivingEntity};
+use super::{Entity, EntityBase, NBTStorage, living::LivingEntity, player::Player};
 use crate::{entity::EntityBaseFuture, server::Server};
 use core::f32;
 use pumpkin_data::{Block, meta_data_type::MetaDataType, tracked_data::TrackedData};
@@ -97,6 +97,29 @@ impl EntityBase for TNTEntity {
                     VarInt(i32::from(Block::TNT.default_state.id)),
                 ),
             ]);
+        })
+    }
+
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            self.entity.send_meta_data_to(
+                player,
+                &[
+                    Metadata::new(
+                        TrackedData::FUSE_ID,
+                        MetaDataType::INTEGER,
+                        VarInt(self.fuse.load(Relaxed) as i32),
+                    ),
+                    Metadata::new(
+                        TrackedData::BLOCK_STATE_ID,
+                        MetaDataType::BLOCK_STATE,
+                        VarInt(i32::from(Block::TNT.default_state.id)),
+                    ),
+                ],
+            );
         })
     }
 

@@ -8,7 +8,7 @@ use pumpkin_world::{BlockStateId, world::BlockFlags};
 use std::sync::{Arc, atomic::Ordering};
 
 use crate::{
-    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity},
+    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity, player::Player},
     server::Server,
     world::World,
 };
@@ -91,6 +91,19 @@ impl EntityBase for FallingEntity {
     fn init_data_tracker(&self) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             self.entity.send_meta_data(&[Metadata::new(
+                TrackedData::START_POS,
+                MetaDataType::BLOCK_POS,
+                self.entity.block_pos.load(),
+            )]);
+        })
+    }
+
+    fn send_initial_metadata<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+    ) -> EntityBaseFuture<'a, ()> {
+        Box::pin(async move {
+            self.entity.send_meta_data_to(player, &[Metadata::new(
                 TrackedData::START_POS,
                 MetaDataType::BLOCK_POS,
                 self.entity.block_pos.load(),
