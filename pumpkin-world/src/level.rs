@@ -824,6 +824,11 @@ impl Level {
         self.loaded_entity_chunks.try_get(&coordinates).try_unwrap()
     }
 
+    #[must_use]
+    pub fn loaded_entity_chunks_count(&self) -> usize {
+        self.loaded_entity_chunks.len()
+    }
+
     pub fn schedule_block_tick(
         &self,
         block: &Block,

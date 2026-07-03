@@ -104,12 +104,6 @@ impl StagedChunkEnum {
             Self::Spawn
         } else if level <= 45 {
             Self::Lighting
-        } else if level <= 46 {
-            Self::Features
-        } else if level <= 47 {
-            Self::Carvers
-        } else if level <= 48 {
-            Self::Surface
         } else {
             Self::None
         }

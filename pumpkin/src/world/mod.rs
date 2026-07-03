@@ -3528,6 +3528,30 @@ impl World {
                     continue 'main;
                 }
 
+                // Entity chunks can arrive before their block chunks finish loading
+                // or generating. Wait for the terrain first so restored entities
+                // tick against real collision data instead of falling through an
+                // unloaded chunk.
+                let block_chunk_loaded = tokio::select! {
+                    () = player.client.await_close_interrupt() => {
+                        debug!("Canceling entity chunk processing while waiting for block chunk");
+                        false
+                    },
+                    () = level.get_or_fetch_chunk(position, |_| ()) => true,
+                };
+
+                if !block_chunk_loaded {
+                    break;
+                }
+
+                if !level.is_chunk_watched(&position) {
+                    trace!(
+                        "Block chunk {:?} loaded after it stopped being watched; skipping entity load",
+                        &position
+                    );
+                    continue 'main;
+                }
+
                 if first_load {
                     // First watcher: consume the serialized entities and make them
                     // live. The live entity list becomes the single source of
