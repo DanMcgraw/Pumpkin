@@ -193,6 +193,10 @@ impl ChunkManager {
         self.chunk_sent.len()
     }
 
+    pub fn mark_chunk_as_sent(&mut self, position: Vector2<i32>, chunk: &SyncChunk) {
+        self.chunk_sent.insert(position, Arc::downgrade(chunk));
+    }
+
     fn should_enqueue_chunk(&mut self, position: Vector2<i32>, chunk: &SyncChunk) -> bool {
         self.chunk_sent
             .insert(position, Arc::downgrade(chunk))

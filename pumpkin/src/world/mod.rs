@@ -2588,13 +2588,17 @@ impl World {
         player.living_entity.entity.set_pos(position);
         player.living_entity.entity.set_rotation(yaw, pitch);
         player.living_entity.entity.last_pos.store(position);
-        chunker::update_position(player).await;
 
         let center_chunk = player.living_entity.entity.chunk_pos.load();
         let chunk = self
             .level
             .get_or_fetch_chunk(center_chunk, std::clone::Clone::clone)
             .await;
+
+        player.chunk_manager.lock().await.mark_chunk_as_sent(center_chunk, &chunk);
+
+        chunker::update_position(player).await;
+
         client.send_packet_now(&CChunkBatchStart).await;
         client.send_packet_now(&CChunkData(&chunk)).await;
         client.send_packet_now(&CChunkBatchEnd::new(1u16)).await;
@@ -3460,6 +3464,15 @@ impl World {
 
         // TODO: difficulty, exp bar, status effect
 
+        let center_chunk = player.get_entity().chunk_pos.load();
+        let chunk = target_world
+            .level
+            .get_or_fetch_chunk(center_chunk, std::clone::Clone::clone)
+            .await;
+
+        // Mark center chunk as sent so send_world_info -> update_position does not enqueue/send it twice
+        player.chunk_manager.lock().await.mark_chunk_as_sent(center_chunk, &chunk);
+
         // Load chunks and send world info FIRST (before teleport packet)
         target_world
             .send_world_info(player, position, yaw, pitch)
@@ -3467,11 +3480,6 @@ impl World {
 
         // Ensure at least the center chunk is sent synchronously before teleport.
         if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref() {
-            let center_chunk = player.get_entity().chunk_pos.load();
-            let chunk = target_world
-                .level
-                .get_or_fetch_chunk(center_chunk, std::clone::Clone::clone)
-                .await;
             java_client.send_packet_now(&CChunkBatchStart).await;
             java_client.send_packet_now(&CChunkData(&chunk)).await;
             java_client
