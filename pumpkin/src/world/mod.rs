@@ -42,6 +42,10 @@ use crate::{
     net::{ClientPlatform, java::JavaClient},
     plugin::{
         block::block_break::BlockBreakEvent,
+        entity::{
+            chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
+            entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
+        },
         player::{
             player_change_world::PlayerChangeWorldEvent, player_join::PlayerJoinEvent,
             player_leave::PlayerLeaveEvent, player_respawn::PlayerRespawnEvent,
@@ -126,7 +130,7 @@ use pumpkin_util::{
     math::{boundingbox::BoundingBox, position::BlockPos, vector3::Vector3},
 };
 use pumpkin_util::{
-    math::{position::chunk_section_from_pos, vector2::Vector2},
+    math::{get_section_cord, position::chunk_section_from_pos, vector2::Vector2},
     random::{RandomImpl, get_seed, xoroshiro128::Xoroshiro},
 };
 use pumpkin_world::inventory::Clearable;
@@ -222,6 +226,9 @@ pub struct World {
     pub spawn_state: ArcSwap<SpawnState>,
     pub active_chunks: ArcSwap<FxHashSet<Vector2<i32>>>,
     pub block_entities: DashMap<BlockPos, Arc<dyn BlockEntity>>,
+    /// A chunk-level spatial index of live entities. Each key is a chunk position
+    /// and the value is the list of entities currently in that chunk.
+    pub entities_by_chunk: DashMap<Vector2<i32>, Vec<Arc<dyn EntityBase>>>,
 }
 
 impl PartialEq for World {
@@ -309,6 +316,7 @@ impl World {
             active_chunks: ArcSwap::new(Arc::new(FxHashSet::default())),
             server,
             block_entities: DashMap::new(),
+            entities_by_chunk: DashMap::new(),
         }
     }
 
@@ -333,11 +341,8 @@ impl World {
 
         self.active_chunks.store(Arc::new(active_chunks));
 
-        self.spawn_state.store(Arc::new(SpawnState::new(
-            spawnable_chunks,
-            &self.entities,
-            self,
-        )));
+        self.spawn_state
+            .store(Arc::new(SpawnState::new(spawnable_chunks, self)));
     }
 
     pub fn get_lighting_config(&self) -> LightingEngineConfig {
@@ -1084,7 +1089,7 @@ impl World {
         }
     }
 
-    async fn tick_environment(&self) {
+    async fn tick_environment(self: &Arc<Self>) {
         let (world_age, is_night, time_of_day) = {
             let mut level_time = self.level_time.lock().await;
             let (advance_time, advance_weather) = {
@@ -3513,6 +3518,7 @@ impl World {
 
     // NOTE: This function doesn't actually await on anything, it just spawns two tokio tasks
     /// IMPORTANT: Chunks have to be non-empty
+    #[allow(clippy::too_many_lines)]
     fn spawn_world_entity_chunks(
         self: &Arc<Self>,
         player: Arc<Player>,
@@ -3633,6 +3639,19 @@ impl World {
                             .enqueue_packet(&base_entity.create_spawn_packet())
                             .await;
                         entity.send_initial_metadata(&player).await;
+
+                        let event = ChunkEntityLoadEvent::new(
+                            world.clone(),
+                            entity.clone(),
+                            position,
+                        );
+                        let server = world.server.upgrade().expect("server is gone");
+                        let event = server.plugin_manager.fire(event).await;
+                        if event.cancelled {
+                            continue;
+                        }
+
+                        world.insert_entity_into_chunk_index(&entity);
                         entities_to_add.push(entity);
                     }
 
@@ -3719,12 +3738,41 @@ impl World {
 
     // Gets all non Player entities at a Box
     pub fn get_entities_at_box(&self, aabb: &BoundingBox) -> Vec<Arc<dyn EntityBase>> {
-        self.entities
-            .load()
-            .iter()
-            .filter(|entity| entity.get_entity().bounding_box.load().intersects(aabb))
-            .cloned()
-            .collect()
+        let min_chunk_x = get_section_cord(aabb.min.x.floor() as i32);
+        let max_chunk_x = get_section_cord(aabb.max.x.floor() as i32);
+        let min_chunk_z = get_section_cord(aabb.min.z.floor() as i32);
+        let max_chunk_z = get_section_cord(aabb.max.z.floor() as i32);
+
+        let mut result = Vec::new();
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                if let Some(entities) = self.entities_by_chunk.get(&Vector2::new(chunk_x, chunk_z))
+                {
+                    for entity in entities.iter() {
+                        if entity.get_entity().bounding_box.load().intersects(aabb) {
+                            result.push(entity.clone());
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Returns an iterator over all entities in currently active chunks.
+    ///
+    /// The references are eagerly cloned into a temporary vector so that the
+    /// `DashMap` locks are released before the iterator is returned, avoiding
+    /// deadlocks or long-lived reader locks.
+    pub fn iter_active_entities(&self) -> impl Iterator<Item = Arc<dyn EntityBase>> {
+        let active_chunks = self.active_chunks.load();
+        let mut collected = Vec::new();
+        for chunk_pos in active_chunks.iter() {
+            if let Some(chunk_entities) = self.entities_by_chunk.get(chunk_pos) {
+                collected.extend(chunk_entities.iter().cloned());
+            }
+        }
+        collected.into_iter()
     }
 
     // Gets all Player entities at a Box
@@ -3827,16 +3875,26 @@ impl World {
         radius: f64,
     ) -> HashMap<uuid::Uuid, Arc<dyn EntityBase>> {
         let radius_squared = radius.powi(2);
+        let min_chunk_x = get_section_cord((pos.x - radius).floor() as i32);
+        let max_chunk_x = get_section_cord((pos.x + radius).floor() as i32);
+        let min_chunk_z = get_section_cord((pos.z - radius).floor() as i32);
+        let max_chunk_z = get_section_cord((pos.z + radius).floor() as i32);
 
-        self.entities
-            .load()
-            .iter()
-            .filter_map(|entity| {
-                let entity_pos = entity.get_entity().pos.load();
-                (entity_pos.squared_distance_to_vec(&pos) <= radius_squared)
-                    .then(|| (entity.get_entity().entity_uuid, entity.clone()))
-            })
-            .collect()
+        let mut result = HashMap::new();
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                if let Some(entities) = self.entities_by_chunk.get(&Vector2::new(chunk_x, chunk_z))
+                {
+                    for entity in entities.iter() {
+                        let entity_pos = entity.get_entity().pos.load();
+                        if entity_pos.squared_distance_to_vec(&pos) <= radius_squared {
+                            result.insert(entity.get_entity().entity_uuid, entity.clone());
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub fn get_closest_player(&self, pos: Vector3<f64>, radius: f64) -> Option<Arc<Player>> {
@@ -3918,9 +3976,50 @@ impl World {
         bounding_box: BoundingBox,
         predicate: impl Fn(&dyn EntityBase) -> bool,
     ) {
-        self.extend_entities_where(list, max_list_capacity, |e| {
-            bounding_box.intersects(&e.get_entity().bounding_box.load()) && predicate(e)
-        });
+        if list.len() >= max_list_capacity {
+            return;
+        }
+
+        // Check players (not in the chunk index).
+        for player in self.players.load().iter() {
+            if !bounding_box.intersects(&player.get_entity().bounding_box.load())
+                || !predicate(player.as_ref())
+            {
+                continue;
+            }
+            list.push(player.clone());
+            if list.len() >= max_list_capacity {
+                return;
+            }
+        }
+
+        // Check non-player entities via the chunk index.
+        let min_chunk_x = get_section_cord(bounding_box.min.x.floor() as i32);
+        let max_chunk_x = get_section_cord(bounding_box.max.x.floor() as i32);
+        let min_chunk_z = get_section_cord(bounding_box.min.z.floor() as i32);
+        let max_chunk_z = get_section_cord(bounding_box.max.z.floor() as i32);
+
+        for chunk_x in min_chunk_x..=max_chunk_x {
+            for chunk_z in min_chunk_z..=max_chunk_z {
+                if list.len() >= max_list_capacity {
+                    return;
+                }
+                if let Some(entities) = self.entities_by_chunk.get(&Vector2::new(chunk_x, chunk_z))
+                {
+                    for entity in entities.iter() {
+                        if !bounding_box.intersects(&entity.get_entity().bounding_box.load())
+                            || !predicate(entity.as_ref())
+                        {
+                            continue;
+                        }
+                        list.push(entity.clone());
+                        if list.len() >= max_list_capacity {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Adds entities to the provided [`Vec`] that satisfy a particular condition.
@@ -4078,10 +4177,70 @@ impl World {
         removed_player
     }
 
+    fn insert_entity_into_chunk_index(&self, entity: &Arc<dyn EntityBase>) {
+        let chunk_pos = entity.get_entity().chunk_pos.load();
+        self.entities_by_chunk
+            .entry(chunk_pos)
+            .or_default()
+            .push(entity.clone());
+    }
+
+    fn remove_entity_from_chunk_index(&self, entity: &dyn EntityBase) {
+        let chunk_pos = entity.get_entity().chunk_pos.load();
+        if let Some(mut entry) = self.entities_by_chunk.get_mut(&chunk_pos) {
+            entry.retain(|e| e.get_entity().entity_uuid != entity.get_entity().entity_uuid);
+            if entry.is_empty() {
+                drop(entry);
+                self.entities_by_chunk.remove(&chunk_pos);
+            }
+        }
+    }
+
+    /// Moves an entity from one chunk bucket to another. Bucket locks are acquired
+    /// sequentially and never held together to avoid deadlocks.
+    pub fn move_entity_between_chunks(
+        &self,
+        entity_uuid: uuid::Uuid,
+        old_chunk: Vector2<i32>,
+        new_chunk: Vector2<i32>,
+    ) {
+        if old_chunk == new_chunk {
+            return;
+        }
+
+        let entity = self
+            .entities_by_chunk
+            .get_mut(&old_chunk)
+            .and_then(|mut entry| {
+                let index = entry
+                    .iter()
+                    .position(|e| e.get_entity().entity_uuid == entity_uuid)?;
+                Some(entry.remove(index))
+            });
+
+        if let Some(entity) = entity {
+            if let Some(mut new_entry) = self.entities_by_chunk.get_mut(&new_chunk) {
+                new_entry.push(entity);
+            } else {
+                self.entities_by_chunk.insert(new_chunk, vec![entity]);
+            }
+
+            // Clean up the old bucket if it is now empty.
+            if self
+                .entities_by_chunk
+                .get(&old_chunk)
+                .is_some_and(|entry| entry.is_empty())
+            {
+                self.entities_by_chunk.remove(&old_chunk);
+            }
+        }
+    }
+
     pub fn spawn_entity_non_save(&self, entity: &Arc<dyn EntityBase>) {
         let _base_entity = entity.get_entity();
         self.broadcast_entity_spawn(entity);
         self.spawn_state.load().add_entity(self, entity.as_ref());
+        self.insert_entity_into_chunk_index(entity);
 
         self.entities.rcu(|current_entities| {
             let mut new_entities = (**current_entities).clone();
@@ -4090,7 +4249,7 @@ impl World {
         });
     }
 
-    pub async fn spawn_entity(&self, entity: Arc<dyn EntityBase>) {
+    pub async fn spawn_entity(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
         self.broadcast_entity_spawn(&entity);
         entity.init_data_tracker().await;
         self.add_entity_silent(entity).await;
@@ -4112,7 +4271,7 @@ impl World {
     }
 
     #[allow(clippy::unused_async)]
-    pub async fn add_entity_silent(&self, entity: Arc<dyn EntityBase>) {
+    pub async fn add_entity_silent(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
         let base_entity = entity.get_entity();
 
         // Guard against duplicate entities with the same UUID.
@@ -4131,18 +4290,48 @@ impl World {
         // unload (see `save_entity`), never at spawn, so it can't be both live and
         // serialized at once (which would double it on the next reload).
         self.spawn_state.load().add_entity(self, entity.as_ref());
+        self.insert_entity_into_chunk_index(&entity);
 
         self.entities.rcu(|current_entities| {
             let mut new_entities = (**current_entities).clone();
             new_entities.push(entity.clone());
             new_entities
         });
+
+        let event = EntitySpawnEvent::new(self.clone(), entity.clone());
+        let event = self
+            .server
+            .upgrade()
+            .expect("server is gone")
+            .plugin_manager
+            .fire(event)
+            .await;
+        if event.cancelled {
+            self.remove_entity(entity.as_ref()).await;
+        }
     }
 
     #[allow(clippy::unused_async)]
-    pub async fn remove_entity(&self, entity: &dyn EntityBase) {
+    pub async fn remove_entity(self: &Arc<Self>, entity: &dyn EntityBase) {
         let base_entity = entity.get_entity();
+        let server = self.server.upgrade().expect("server is gone");
+        let entity_arc = self
+            .entities
+            .load()
+            .iter()
+            .find(|e| e.get_entity().entity_uuid == base_entity.entity_uuid)
+            .cloned();
+
+        if let Some(entity_arc) = entity_arc {
+            let event = EntityRemoveEvent::new(self.clone(), entity_arc);
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return;
+            }
+        }
+
         self.spawn_state.load().remove_entity(self, entity);
+        self.remove_entity_from_chunk_index(entity);
         self.entities.rcu(|current_entities| {
             let mut new_entities = (**current_entities).clone();
             new_entities.retain(|e| e.get_entity().entity_uuid != base_entity.entity_uuid);
@@ -4157,7 +4346,7 @@ impl World {
         );
     }
 
-    pub async fn remove_entities_in_chunks(&self, chunks: &[Vector2<i32>]) {
+    pub async fn remove_entities_in_chunks(self: &Arc<Self>, chunks: &[Vector2<i32>]) {
         let chunks_set: FxHashSet<_> = chunks.iter().copied().collect();
         let mut entities_to_remove = Vec::new();
 
@@ -4176,9 +4365,29 @@ impl World {
             new_entities
         });
 
+        let server = self.server.upgrade().expect("server is gone");
         for entity in entities_to_remove {
+            let chunk_pos = entity.get_entity().chunk_pos.load();
+            let event = ChunkEntityUnloadEvent::new(self.clone(), entity.clone(), chunk_pos);
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                // If the unload is cancelled, put the entity back into the flat list.
+                self.entities.rcu(|current_entities| {
+                    let mut new_entities = (**current_entities).clone();
+                    if !new_entities
+                        .iter()
+                        .any(|e| e.get_entity().entity_uuid == entity.get_entity().entity_uuid)
+                    {
+                        new_entities.push(entity.clone());
+                    }
+                    new_entities
+                });
+                continue;
+            }
+
             self.save_entity(&entity).await;
             self.spawn_state.load().remove_entity(self, entity.as_ref());
+            self.remove_entity_from_chunk_index(entity.as_ref());
         }
 
         self.block_entities
@@ -5442,5 +5651,177 @@ mod entity_uuid_tests {
 
         // Missing or malformed UUID falls back to None.
         assert_eq!(read_entity_uuid(&NbtCompound::new()), None);
+    }
+}
+
+#[cfg(test)]
+mod entity_chunk_index_tests {
+    use super::*;
+    use crate::entity::r#type::from_type;
+    use pumpkin_config::world::LevelConfig;
+    use pumpkin_data::entity::EntityType;
+    use pumpkin_util::math::vector3::Vector3;
+    use pumpkin_world::level::Level;
+    use std::sync::Weak;
+    use tempfile::tempdir;
+
+    fn create_test_world() -> Arc<World> {
+        let temp_dir = tempdir().unwrap();
+        let level_config = LevelConfig::default();
+        let level = Level::from_root_folder(
+            &level_config,
+            temp_dir.path().to_path_buf(),
+            0,
+            Dimension::OVERWORLD,
+            None,
+        );
+        let level_info = Arc::new(ArcSwap::new(Arc::new(LevelData::default(
+            pumpkin_util::world_seed::Seed(0),
+        ))));
+        Arc::new(World::load(
+            level,
+            level_info,
+            Dimension::OVERWORLD,
+            Arc::new(BlockRegistry::default()),
+            Weak::new(),
+        ))
+    }
+
+    fn create_entity(world: &Arc<World>, pos: Vector3<f64>) -> Arc<dyn EntityBase> {
+        from_type(&EntityType::ITEM, pos, world, uuid::Uuid::new_v4())
+    }
+
+    #[tokio::test]
+    async fn spawn_entity_non_save_updates_chunk_index() {
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(32.5, 64.0, 48.5));
+
+        world.spawn_entity_non_save(&entity);
+
+        let chunk_pos = entity.get_entity().chunk_pos.load();
+        assert!(world.entities_by_chunk.contains_key(&chunk_pos));
+        assert_eq!(world.entities_by_chunk.get(&chunk_pos).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn move_entity_between_chunks_updates_index() {
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(15.5, 64.0, 15.5));
+        let old_chunk = entity.get_entity().chunk_pos.load();
+
+        world.spawn_entity_non_save(&entity);
+        assert!(world.entities_by_chunk.contains_key(&old_chunk));
+
+        // Move far enough to cross a chunk boundary.
+        entity.get_entity().set_pos(Vector3::new(48.5, 64.0, 48.5));
+        let new_chunk = entity.get_entity().chunk_pos.load();
+        assert_ne!(old_chunk, new_chunk);
+
+        assert!(!world.entities_by_chunk.contains_key(&old_chunk));
+        assert!(world.entities_by_chunk.contains_key(&new_chunk));
+        assert_eq!(world.entities_by_chunk.get(&new_chunk).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_nearby_entities_uses_chunk_index() {
+        let world = create_test_world();
+        let nearby = create_entity(&world, Vector3::new(10.5, 64.0, 10.5));
+        let far = create_entity(&world, Vector3::new(200.5, 64.0, 200.5));
+
+        world.spawn_entity_non_save(&nearby);
+        world.spawn_entity_non_save(&far);
+
+        let found = world.get_nearby_entities(Vector3::new(10.0, 64.0, 10.0), 20.0);
+        assert!(found.contains_key(&nearby.get_entity().entity_uuid));
+        assert!(!found.contains_key(&far.get_entity().entity_uuid));
+    }
+
+    #[tokio::test]
+    async fn get_entities_at_box_uses_chunk_index() {
+        let world = create_test_world();
+        let inside = create_entity(&world, Vector3::new(5.5, 64.0, 5.5));
+        let outside = create_entity(&world, Vector3::new(50.5, 64.0, 50.5));
+
+        world.spawn_entity_non_save(&inside);
+        world.spawn_entity_non_save(&outside);
+
+        let aabb = BoundingBox::new(Vector3::new(0.0, 60.0, 0.0), Vector3::new(10.0, 70.0, 10.0));
+        let found = world.get_entities_at_box(&aabb);
+        assert!(
+            found
+                .iter()
+                .any(|e| e.get_entity().entity_uuid == inside.get_entity().entity_uuid)
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|e| e.get_entity().entity_uuid == outside.get_entity().entity_uuid)
+        );
+    }
+
+    #[tokio::test]
+    async fn iter_active_entities_only_yields_active_chunk_entities() {
+        let world = create_test_world();
+        let active_chunk = Vector2::new(2, 3);
+        let inactive_chunk = Vector2::new(20, 20);
+
+        let active = create_entity(&world, Vector3::new(40.5, 64.0, 56.5));
+        let inactive = create_entity(&world, Vector3::new(330.5, 64.0, 330.5));
+
+        // Place entities directly into the index to avoid broadcast logic.
+        world
+            .entities_by_chunk
+            .entry(active_chunk)
+            .or_default()
+            .push(active.clone());
+        world
+            .entities_by_chunk
+            .entry(inactive_chunk)
+            .or_default()
+            .push(inactive.clone());
+
+        world
+            .active_chunks
+            .store(Arc::new(FxHashSet::from_iter([active_chunk])));
+
+        let collected: Vec<_> = world.iter_active_entities().collect();
+        assert_eq!(collected.len(), 1);
+        assert_eq!(
+            collected[0].get_entity().entity_uuid,
+            active.get_entity().entity_uuid
+        );
+    }
+
+    #[tokio::test]
+    async fn entity_lifecycle_events_can_be_constructed_and_cancelled() {
+        use crate::plugin::Cancellable;
+        use crate::plugin::entity::{
+            ChunkEntityLoadEvent, ChunkEntityUnloadEvent, EntityRemoveEvent, EntitySpawnEvent,
+        };
+
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(10.0, 64.0, 10.0));
+        let chunk_pos = entity.get_entity().chunk_pos.load();
+
+        let mut spawn_event = EntitySpawnEvent::new(world.clone(), entity.clone());
+        assert!(!spawn_event.cancelled());
+        spawn_event.set_cancelled(true);
+        assert!(spawn_event.cancelled());
+
+        let mut remove_event = EntityRemoveEvent::new(world.clone(), entity.clone());
+        assert!(!remove_event.cancelled());
+        remove_event.set_cancelled(true);
+        assert!(remove_event.cancelled());
+
+        let mut load_event = ChunkEntityLoadEvent::new(world.clone(), entity.clone(), chunk_pos);
+        assert!(!load_event.cancelled());
+        load_event.set_cancelled(true);
+        assert!(load_event.cancelled());
+
+        let mut unload_event =
+            ChunkEntityUnloadEvent::new(world.clone(), entity.clone(), chunk_pos);
+        assert!(!unload_event.cancelled());
+        unload_event.set_cancelled(true);
+        assert!(unload_event.cancelled());
     }
 }

@@ -4,8 +4,8 @@ use std::sync::atomic::AtomicBool;
 use crate::plugin::player::egg_throw::PlayerEggThrowEvent;
 use crate::{
     entity::{
-        Entity, EntityBase, EntityBaseFuture, NBTStorage, projectile::ThrownItemEntity,
-        r#type::from_type, player::Player,
+        Entity, EntityBase, EntityBaseFuture, NBTStorage, player::Player,
+        projectile::ThrownItemEntity, r#type::from_type,
     },
     server::Server,
 };
@@ -81,20 +81,20 @@ impl EntityBase for EggEntity {
         })
     }
 
-    fn send_initial_metadata<'a>(
-        &'a self,
-        player: &'a Arc<Player>,
-    ) -> EntityBaseFuture<'a, ()> {
+    fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
             let entity = self.get_entity();
             let stack = self.item_stack.read().await;
 
             // Sync the item stack so the client renders the correct color/variant
-            entity.send_meta_data_to(player, &[Metadata::new(
-                TrackedData::ITEM_STACK,
-                MetaDataType::ITEM_STACK,
-                &ItemStackSerializer::from(stack.clone()),
-            )]);
+            entity.send_meta_data_to(
+                player,
+                &[Metadata::new(
+                    TrackedData::ITEM_STACK,
+                    MetaDataType::ITEM_STACK,
+                    &ItemStackSerializer::from(stack.clone()),
+                )],
+            );
         })
     }
 

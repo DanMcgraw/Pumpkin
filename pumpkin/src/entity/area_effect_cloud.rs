@@ -199,10 +199,7 @@ impl EntityBase for AreaEffectCloudEntity {
         })
     }
 
-    fn send_initial_metadata<'a>(
-        &'a self,
-        player: &'a Arc<Player>,
-    ) -> EntityBaseFuture<'a, ()> {
+    fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         // Serialize bytes to the packet without a length prefix.
         // This matches how the Minecraft protocol encodes particle data in EntityEffect.
         fn serialize_bytes_no_prefix<S>(data: &[u8], serializer: S) -> Result<S::Ok, S::Error>
@@ -279,29 +276,35 @@ impl EntityBase for AreaEffectCloudEntity {
             };
 
             // Send initial particle and radius
-            self.entity
-                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
+            self.entity.send_meta_data_to(
+                player,
+                &[pumpkin_protocol::java::client::play::Metadata::new(
                     pumpkin_data::tracked_data::TrackedData::PARTICLE,
                     pumpkin_data::meta_data_type::MetaDataType::PARTICLE,
                     &meta,
-                )]);
+                )],
+            );
 
-            self.entity
-                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
+            self.entity.send_meta_data_to(
+                player,
+                &[pumpkin_protocol::java::client::play::Metadata::new(
                     pumpkin_data::tracked_data::TrackedData::RADIUS,
                     pumpkin_data::meta_data_type::MetaDataType::FLOAT,
                     radius,
-                )]);
+                )],
+            );
 
             // Initial waiting flag
             let wait_time = *self.wait_time.lock().await;
             let is_waiting = 0 < wait_time;
-            self.entity
-                .send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
+            self.entity.send_meta_data_to(
+                player,
+                &[pumpkin_protocol::java::client::play::Metadata::new(
                     pumpkin_data::tracked_data::TrackedData::WAITING,
                     pumpkin_data::meta_data_type::MetaDataType::BOOLEAN,
                     is_waiting,
-                )]);
+                )],
+            );
         })
     }
 

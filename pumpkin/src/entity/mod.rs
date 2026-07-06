@@ -188,10 +188,7 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
         })
     }
 
-    fn send_initial_metadata<'a>(
-        &'a self,
-        player: &'a Arc<Player>,
-    ) -> EntityBaseFuture<'a, ()> {
+    fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
             let entity = self.get_entity();
 
@@ -199,11 +196,14 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
             let is_baby = entity.age.load(Ordering::Relaxed) < 0;
 
             if is_baby {
-                entity.send_meta_data_to(player, &[Metadata::new(
-                    TrackedData::BABY_ID,
-                    MetaDataType::BOOLEAN,
-                    true,
-                )]);
+                entity.send_meta_data_to(
+                    player,
+                    &[Metadata::new(
+                        TrackedData::BABY_ID,
+                        MetaDataType::BOOLEAN,
+                        true,
+                    )],
+                );
             }
         })
     }
@@ -1108,14 +1108,15 @@ impl Entity {
                 let new_block_pos = Vector3::new(floor_x, floor_y, floor_z);
                 self.block_pos.store(BlockPos(new_block_pos));
 
-                let chunk_pos = self.chunk_pos.load();
-                if get_section_cord(floor_x) != chunk_pos.x
-                    || get_section_cord(floor_z) != chunk_pos.y
-                {
-                    self.chunk_pos.store(Vector2::new(
-                        get_section_cord(new_block_pos.x),
-                        get_section_cord(new_block_pos.z),
-                    ));
+                let old_chunk = self.chunk_pos.load();
+                let new_chunk = Vector2::new(
+                    get_section_cord(new_block_pos.x),
+                    get_section_cord(new_block_pos.z),
+                );
+                if old_chunk != new_chunk {
+                    self.chunk_pos.store(new_chunk);
+                    let world = self.world.load();
+                    world.move_entity_between_chunks(self.entity_uuid, old_chunk, new_chunk);
                 }
             }
         }
@@ -2760,10 +2761,9 @@ impl Entity {
                 m.write(&mut buf, &client.version.load()).unwrap();
             }
             buf.put_u8(255);
-            player.client.try_enqueue_packet(&CSetEntityMetadata::new(
-                self.entity_id.into(),
-                buf.into(),
-            ));
+            player
+                .client
+                .try_enqueue_packet(&CSetEntityMetadata::new(self.entity_id.into(), buf.into()));
         }
     }
 

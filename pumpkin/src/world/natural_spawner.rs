@@ -1,7 +1,6 @@
 use crate::entity::EntityBase;
 use crate::entity::r#type::{check_spawn_rules, from_type};
 use crate::world::World;
-use arc_swap::ArcSwap;
 use pumpkin_data::biome::Spawner;
 use pumpkin_data::chunk::Biome;
 use pumpkin_data::entity::{EntityType, MobCategory, SpawnLocation};
@@ -323,16 +322,11 @@ impl SpawnState {
         }
     }
 
-    pub fn new(
-        chunk_count: i32,
-        entities: &ArcSwap<Vec<Arc<dyn EntityBase>>>,
-        world: &Arc<World>,
-    ) -> Self {
+    pub fn new(chunk_count: i32, world: &Arc<World>) -> Self {
         let potential = PotentialCalculator::default();
         let local_mob_cap = LocalMobCapCalculator::default();
         let counter = MobCounts::default();
-        let active_chunks = world.active_chunks.load();
-        for entity in entities.load().iter() {
+        for entity in world.iter_active_entities() {
             let entity = entity.get_entity();
             let entity_type = entity.entity_type;
             if !entity_type.mob || entity_type.category == &MobCategory::MISC {
@@ -340,9 +334,6 @@ impl SpawnState {
                 continue;
             }
             let chunk_pos = entity.chunk_pos.load();
-            if !active_chunks.contains(&chunk_pos) {
-                continue;
-            }
             let entity_pos = entity.block_pos.load();
             let biome = entity.current_biome.load();
             if let Some(cost) = biome.spawn_costs.get(entity_type.resource_name) {

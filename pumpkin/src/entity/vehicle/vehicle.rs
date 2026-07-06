@@ -85,23 +85,29 @@ impl VehicleEntity {
     }
 
     pub fn send_wobble_metadata_to(&self, player: &Player) {
-        self.entity.send_meta_data_to(player, &[
-            Metadata::new(
-                TrackedData::ID_HURT,
-                MetaDataType::INTEGER,
-                self.get_hurt_time(),
-            ),
-            Metadata::new(
-                TrackedData::ID_HURTDIR,
-                MetaDataType::INTEGER,
-                self.get_hurt_dir(),
-            ),
-        ]);
-        self.entity.send_meta_data_to(player, &[Metadata::new(
-            TrackedData::ID_DAMAGE,
-            MetaDataType::FLOAT,
-            self.get_damage(),
-        )]);
+        self.entity.send_meta_data_to(
+            player,
+            &[
+                Metadata::new(
+                    TrackedData::ID_HURT,
+                    MetaDataType::INTEGER,
+                    self.get_hurt_time(),
+                ),
+                Metadata::new(
+                    TrackedData::ID_HURTDIR,
+                    MetaDataType::INTEGER,
+                    self.get_hurt_dir(),
+                ),
+            ],
+        );
+        self.entity.send_meta_data_to(
+            player,
+            &[Metadata::new(
+                TrackedData::ID_DAMAGE,
+                MetaDataType::FLOAT,
+                self.get_damage(),
+            )],
+        );
     }
 
     pub async fn kill_and_drop_self(&self) {

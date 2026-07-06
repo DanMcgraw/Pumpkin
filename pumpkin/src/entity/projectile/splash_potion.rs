@@ -2,7 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use crate::{
-    entity::{Entity, EntityBase, EntityBaseFuture, NBTStorage, projectile::ThrownItemEntity, player::Player},
+    entity::{
+        Entity, EntityBase, EntityBaseFuture, NBTStorage, player::Player,
+        projectile::ThrownItemEntity,
+    },
     server::Server,
 };
 use pumpkin_data::item_stack::ItemStack;
@@ -117,22 +120,22 @@ impl EntityBase for SplashPotionEntity {
         })
     }
 
-    fn send_initial_metadata<'a>(
-        &'a self,
-        player: &'a Arc<Player>,
-    ) -> EntityBaseFuture<'a, ()> {
+    fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
             let entity = self.get_entity();
             let stack = self.item_stack.read().await;
 
             // Sync the item stack
-            entity.send_meta_data_to(player, &[pumpkin_protocol::java::client::play::Metadata::new(
-                pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
-                pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
-                &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
-                    stack.clone(),
-                ),
-            )]);
+            entity.send_meta_data_to(
+                player,
+                &[pumpkin_protocol::java::client::play::Metadata::new(
+                    pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
+                    pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
+                    &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
+                        stack.clone(),
+                    ),
+                )],
+            );
         })
     }
 
