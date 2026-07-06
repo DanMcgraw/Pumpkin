@@ -1867,6 +1867,20 @@ impl Player {
 
     #[expect(clippy::too_many_lines)]
     pub async fn tick(self: &Arc<Self>, server: &Server) {
+        let entity = self.get_entity();
+        if entity.is_fall_flying() {
+            let has_elytra = {
+                let chest_stack = self.living_entity.entity_equipment.lock().await.get(&EquipmentSlot::CHEST);
+                let stack = chest_stack.lock().await;
+                stack.item.id == pumpkin_data::item::Item::ELYTRA.id
+                    && !stack.is_empty()
+                    && stack.get_max_damage().map_or(true, |max| stack.get_damage() < max - 1)
+            };
+            if !has_elytra {
+                entity.set_fall_flying(false).await;
+            }
+        }
+
         if let Some(camera_id) = self.camera_target_id.load() {
             if camera_id == self.entity_id() {
                 self.camera_target_id.store(None);
