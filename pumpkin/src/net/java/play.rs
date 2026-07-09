@@ -21,6 +21,7 @@ use crate::error::PumpkinError;
 use crate::log_at_level;
 use crate::net::PlayerConfig;
 use crate::net::java::JavaClient;
+use crate::plugin::block::block_damage::BlockDamageEvent;
 use crate::plugin::player::changed_main_hand::PlayerChangedMainHandEvent;
 use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use crate::plugin::player::item_held::PlayerItemHeldEvent;
@@ -1859,6 +1860,32 @@ impl JavaClient {
                     let world = entity.world.load_full();
                     let (block, state) = world.get_block_and_state(&position);
 
+                    // Fire BlockDamageEvent so plugins can prepare abilities or toggle
+                    // instant-break behavior.
+                    let speed = block::calc_block_breaking(player, state, block).await;
+                    let insta_break =
+                        speed >= 1.0 || player.gamemode.load() == GameMode::Creative;
+                    let damage_event = BlockDamageEvent::new(
+                        player.clone(),
+                        block,
+                        position,
+                        insta_break,
+                    );
+                    let damage_event = server.plugin_manager.fire(damage_event).await;
+
+                    if damage_event.cancelled {
+                        // Re-sync the block to the client so it reappears.
+                        self.enqueue_packet(&CBlockUpdate::new(
+                            position,
+                            VarInt(i32::from(state.id.as_u16())),
+                        ))
+                        .await;
+                        self.update_sequence(player, player_action.sequence.0);
+                        return;
+                    }
+
+                    let insta_break = damage_event.insta_break;
+
                     if block == &pumpkin_data::Block::NOTE_BLOCK {
                         let props =
                             pumpkin_data::block_properties::NoteBlockLikeProperties::from_state_id(
@@ -1916,9 +1943,8 @@ impl JavaClient {
                         Ordering::Relaxed,
                     );
                     if !state.is_air() {
-                        let speed = block::calc_block_breaking(player, state, block).await;
                         // Instant break
-                        if speed >= 1.0 {
+                        if insta_break {
                             let broken_state = world.get_block_state(&position);
                             let new_state = world
                                 .break_block(

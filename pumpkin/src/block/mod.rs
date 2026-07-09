@@ -437,6 +437,20 @@ pub struct BlockEvent {
     pub data: u8,
 }
 
+/// Returns the item stacks that `block` would drop for the given loot context.
+///
+/// This does **not** spawn any entities; callers that need to fire
+/// `BlockDropItemEvent` can inspect or mutate the returned `Vec` before
+/// dropping the items themselves.
+#[must_use]
+pub fn get_loot_items(block: &Block, params: LootContextParameters) -> Vec<ItemStack> {
+    let mut items = Vec::new();
+    if let Some(loot_table) = &block.loot_table {
+        items.extend(loot_table.get_loot(params));
+    }
+    items
+}
+
 pub async fn drop_loot(
     world: &Arc<World>,
     block: &Block,
@@ -444,13 +458,17 @@ pub async fn drop_loot(
     experience: bool,
     params: LootContextParameters,
 ) {
-    if let Some(loot_table) = &block.loot_table {
-        for stack in loot_table.get_loot(params) {
-            world.drop_stack(pos, stack).await;
-        }
+    for stack in get_loot_items(block, params) {
+        world.drop_stack(pos, stack).await;
     }
 
-    if experience && let Some(experience) = &block.experience {
+    if experience {
+        drop_experience(world, block, pos).await;
+    }
+}
+
+pub async fn drop_experience(world: &Arc<World>, block: &Block, pos: &BlockPos) {
+    if let Some(experience) = &block.experience {
         let mut random = RandomGenerator::Xoroshiro(Xoroshiro::from_seed(get_seed()));
         let amount = experience.experience.get(&mut random);
         // TODO: Silk touch gives no exp

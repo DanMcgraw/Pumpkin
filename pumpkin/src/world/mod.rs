@@ -41,7 +41,7 @@ use crate::{
     error::PumpkinError,
     net::{ClientPlatform, java::JavaClient},
     plugin::{
-        block::block_break::BlockBreakEvent,
+        block::{block_break::BlockBreakEvent, block_drop_item::BlockDropItemEvent},
         entity::{
             chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
             entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
@@ -4789,7 +4789,36 @@ impl World {
                     is_thundering: Some(is_thundering),
                     ..Default::default()
                 };
-                block::drop_loot(self, broken_block, position, true, params).await;
+
+                let dropped_items = block::get_loot_items(broken_block, params);
+
+                if let Some(player) = &cause {
+                    let drop_event = BlockDropItemEvent::new(
+                        player.clone(),
+                        broken_block,
+                        *position,
+                        dropped_items,
+                    );
+                    let drop_event = self
+                        .server
+                        .upgrade()
+                        .unwrap()
+                        .plugin_manager
+                        .fire(drop_event)
+                        .await;
+
+                    if !drop_event.cancelled {
+                        for stack in drop_event.items {
+                            self.drop_stack(position, stack).await;
+                        }
+                        block::drop_experience(self, broken_block, position).await;
+                    }
+                } else {
+                    for stack in dropped_items {
+                        self.drop_stack(position, stack).await;
+                    }
+                    block::drop_experience(self, broken_block, position).await;
+                }
             }
             return Some(new_state_id);
         }

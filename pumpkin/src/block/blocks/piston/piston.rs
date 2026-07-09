@@ -22,6 +22,7 @@ use crate::{
         OnSyncedBlockEventArgs, PlacedArgs,
         blocks::{piston::piston_head::PistonHeadProperties, redstone::is_emitting_redstone_power},
     },
+    plugin::block::{block_piston_extend::BlockPistonExtendEvent, block_piston_retract::BlockPistonRetractEvent},
     world::World,
 };
 
@@ -168,7 +169,32 @@ impl BlockBehaviour for PistonBlock {
 
             // Extend Piston
             if r#type == 0 {
-                if !move_piston(world, dir, pos, true, sticky).await {
+                let mut handler = PistonHandler::new(world, *pos, dir, true);
+                if !handler.calculate_push().await {
+                    return false;
+                }
+
+                let extend_event = BlockPistonExtendEvent::new(
+                    world.clone(),
+                    *pos,
+                    world.get_block(pos),
+                    dir.to_offset(),
+                    handler.moved_blocks.clone(),
+                    handler.broken_blocks.clone(),
+                );
+                let extend_event = world
+                    .server
+                    .upgrade()
+                    .unwrap()
+                    .plugin_manager
+                    .fire(extend_event)
+                    .await;
+
+                if extend_event.cancelled {
+                    return false;
+                }
+
+                if !execute_piston_move(world, dir, pos, true, sticky, handler).await {
                     return false;
                 }
                 props.extended = true;
@@ -193,6 +219,39 @@ impl BlockBehaviour for PistonBlock {
             // Reduce Piston
 
             let extended_pos = pos.offset(dir.to_offset());
+
+            // Remove the piston head before calculating which blocks will be pulled.
+            if world.get_block(&extended_pos) == &Block::PISTON_HEAD {
+                world
+                    .set_block_state(
+                        &extended_pos,
+                        Block::AIR.default_state.id,
+                        BlockFlags::FORCE_STATE,
+                    )
+                    .await;
+            }
+
+            let mut handler = PistonHandler::new(world, *pos, dir, false);
+            let can_retract = handler.calculate_push().await;
+
+            let retract_event = BlockPistonRetractEvent::new(
+                world.clone(),
+                *pos,
+                world.get_block(pos),
+                dir.to_offset(),
+                handler.moved_blocks.clone(),
+            );
+            let retract_event = world
+                .server
+                .upgrade()
+                .unwrap()
+                .plugin_manager
+                .fire(retract_event)
+                .await;
+
+            if retract_event.cancelled {
+                return false;
+            }
 
             if let Some(block_entity) = world.get_block_entity(&extended_pos)
                 && let Some(piston) = block_entity.as_any().downcast_ref::<PistonBlockEntity>()
@@ -248,13 +307,14 @@ impl BlockBehaviour for PistonBlock {
                 };
                 if !piston_piece {
                     if r#type == 1
+                        && can_retract
                         && !state.is_air()
                         && Self::is_movable(block, state, dir, false, dir)
                         && (state.piston_behavior == PistonBehavior::Normal
                             || block == &Block::PISTON
                             || block == &Block::STICKY_PISTON)
                     {
-                        move_piston(world, dir, pos, false, sticky).await;
+                        execute_piston_move(world, dir, pos, false, sticky, handler).await;
                     } else {
                         // remove
                         world
@@ -364,27 +424,15 @@ pub async fn try_move(world: &Arc<World>, block: &Block, block_pos: &BlockPos) {
 }
 
 #[expect(clippy::too_many_lines)]
-async fn move_piston(
+async fn execute_piston_move(
     world: &Arc<World>,
     dir: BlockDirection,
     block_pos: &BlockPos,
     extend: bool,
     sticky: bool,
+    handler: PistonHandler<'_>,
 ) -> bool {
     let extended_pos = block_pos.offset(dir.to_offset());
-    if !extend && world.get_block(&extended_pos) == &Block::PISTON_HEAD {
-        world
-            .set_block_state(
-                &extended_pos,
-                Block::AIR.default_state.id,
-                BlockFlags::FORCE_STATE,
-            )
-            .await;
-    }
-    let mut handler = PistonHandler::new(world, *block_pos, dir, extend);
-    if !handler.calculate_push().await {
-        return false;
-    }
 
     let mut moved_blocks_map: FxHashMap<BlockPos, &BlockState> = FxHashMap::default();
     let moved_blocks: Vec<BlockPos> = handler.moved_blocks;

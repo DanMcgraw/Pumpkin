@@ -1,7 +1,11 @@
 pub mod block_break;
 pub mod block_burn;
 pub mod block_can_build;
+pub mod block_damage;
+pub mod block_drop_item;
 pub mod block_grow;
+pub mod block_piston_extend;
+pub mod block_piston_retract;
 pub mod block_place;
 pub mod block_redstone;
 
