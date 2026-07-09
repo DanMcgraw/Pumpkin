@@ -1,4 +1,5 @@
 use super::{Entity, EntityBase, NBTStorage, living::LivingEntity};
+use crate::plugin::api::events::entity::projectile_hit::ProjectileHitEvent;
 use crate::server::Server;
 use pumpkin_data::BlockDirection;
 use pumpkin_data::entity::EntityType;
@@ -217,6 +218,30 @@ impl ThrownItemEntity {
         if let Some(h) = hit {
             // Ensure hit is only processed once per projectile
             if self.has_hit.swap(true, Ordering::SeqCst) {
+                return;
+            }
+
+            // Fire ProjectileHitEvent so plugins can observe or cancel the impact.
+            let (hit_entity, hit_block, hit_block_pos) = match &h {
+                ProjectileHit::Entity { entity: target, .. } => {
+                    (Some(target.clone()), None, None)
+                }
+                ProjectileHit::Block { pos, .. } => {
+                    (None, Some(world.get_block(pos)), Some(*pos))
+                }
+            };
+            let server = world.server.upgrade().expect("server is gone");
+            let hit_event = ProjectileHitEvent::new(
+                caller.clone(),
+                hit_entity,
+                hit_block,
+                hit_block_pos,
+            );
+            let hit_event = server.plugin_manager.fire(hit_event).await;
+            if hit_event.cancelled {
+                // Allow the projectile to keep flying; reset has_hit so future
+                // collisions are processed.
+                self.has_hit.store(false, Ordering::SeqCst);
                 return;
             }
 

@@ -8,6 +8,7 @@ use crate::entity::EntityBase;
 use crate::entity::player::Player;
 use crate::entity::projectile::ender_pearl::EnderPearlEntity;
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::sound::Sound;
@@ -53,7 +54,24 @@ impl ItemBehaviour for EnderPearlItem {
                 POWER,
                 DIVERGENCE,
             );
-            world.spawn_entity(Arc::new(pearl)).await;
+
+            let pearl_arc: Arc<dyn EntityBase> = Arc::new(pearl);
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(pearl_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
+                .await;
+            if launch_event.cancelled {
+                return;
+            }
+
+            world.spawn_entity(pearl_arc).await;
 
             // Consume item
             let held_item = player.inventory.held_item();

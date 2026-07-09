@@ -9,6 +9,7 @@ use crate::entity::player::Player;
 use crate::entity::projectile::arrow::{ArrowEntity, ArrowPickup};
 use crate::entity::{Entity, EntityBase};
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use pumpkin_data::data_component::DataComponent;
 use pumpkin_data::data_component_impl::{ChargedProjectilesImpl, EnchantmentsImpl};
 use pumpkin_data::entity::EntityType;
@@ -182,6 +183,22 @@ impl CrossbowItem {
                     let arrow = ArrowEntity::new_shot(arrow_entity, player.get_entity(), pickup);
                     arrow.set_velocity_from_rotation(pitch, t_yaw, 0.0, 3.15, 1.0);
                     let arrow_arc: Arc<dyn EntityBase> = Arc::new(arrow);
+
+                    let shooter = world
+                        .get_player_by_id(player.entity_id())
+                        .map(|p| p as Arc<dyn EntityBase>);
+                    let launch_event = ProjectileLaunchEvent::new(arrow_arc.clone(), shooter);
+                    let launch_event = world
+                        .server
+                        .upgrade()
+                        .expect("server is gone")
+                        .plugin_manager
+                        .fire(launch_event)
+                        .await;
+                    if launch_event.cancelled {
+                        continue;
+                    }
+
                     world.spawn_entity(arrow_arc).await;
                 }
             }

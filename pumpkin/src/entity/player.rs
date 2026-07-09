@@ -514,6 +514,10 @@ pub struct Player {
     pub enchantment_seed: AtomicI32,
     pub fishing_bobber: AtomicI32,
     pub bedrock_skin: arc_swap::ArcSwap<pumpkin_protocol::bedrock::client::Skin>,
+    /// Whether the player should keep their inventory on the next death.
+    pub keep_inventory_on_death: AtomicBool,
+    /// Whether the player should keep their experience level on the next death.
+    pub keep_level_on_death: AtomicBool,
 }
 
 use base64::prelude::*;
@@ -727,6 +731,8 @@ impl Player {
             tab_list_listed: AtomicBool::new(true),
             fishing_bobber: AtomicI32::new(-1),
             bedrock_skin: ArcSwap::new(Arc::new(bedrock_skin)),
+            keep_inventory_on_death: AtomicBool::new(false),
+            keep_level_on_death: AtomicBool::new(false),
         }
     }
 
@@ -2843,7 +2849,9 @@ impl Player {
         self.set_client_loaded(false);
         let block_pos = self.position().to_block_pos();
 
-        let keep_inventory = { self.world().level_info.load().game_rules.keep_inventory };
+        let keep_inventory = self.world().level_info.load().game_rules.keep_inventory
+            || self.keep_inventory_on_death.swap(false, Ordering::Relaxed);
+        let keep_level = self.keep_level_on_death.swap(false, Ordering::Relaxed);
 
         if !keep_inventory {
             for item in &self.inventory().main_inventory {
@@ -2855,6 +2863,10 @@ impl Player {
                     )
                     .await;
             }
+        }
+
+        if !keep_level {
+            self.set_experience(0, 0.0, 0).await;
         }
 
         // Reset air supply & drowning ticks on death

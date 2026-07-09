@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::{EntityBase, NBTStorage, NBTStorageInit, player::Player};
 use crate::entity::NbtFuture;
+use crate::plugin::api::events::player::food_level_change::FoodLevelChangeEvent;
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::damage::DamageType;
 use pumpkin_nbt::compound::NbtCompound;
@@ -51,7 +52,13 @@ impl HungerManager {
             if saturation > 0.0 {
                 saturation = (saturation - 1.0).max(0.0);
             } else if difficulty != Difficulty::Peaceful {
-                level = level.saturating_sub(1);
+                let new_level = level.saturating_sub(1);
+                let event = FoodLevelChangeEvent::new(player.clone(), new_level);
+                let server = player.world().server.upgrade().expect("server is gone");
+                let event = server.plugin_manager.fire(event).await;
+                if !event.cancelled {
+                    level = event.food_level;
+                }
             }
             needs_sync = true;
         }
@@ -115,13 +122,26 @@ impl HungerManager {
     }
 
     pub async fn eat(&self, player: &Player, food: u8, saturation_modifier: f32) {
-        let added_saturation = f32::from(food) * saturation_modifier * 2.0;
-
         let current_level = self.level.load();
         let current_sat = self.saturation.load();
 
-        let new_level = (current_level + food).min(MAX_FOOD);
+        let proposed_level = (current_level + food).min(MAX_FOOD);
 
+        let player_arc = player
+            .world()
+            .get_player_by_id(player.entity_id())
+            .expect("player not found in world");
+        let event = FoodLevelChangeEvent::new(player_arc, proposed_level);
+        let server = player.world().server.upgrade().expect("server is gone");
+        let event = server.plugin_manager.fire(event).await;
+
+        if event.cancelled {
+            return;
+        }
+
+        let new_level = event.food_level;
+        let added_food = new_level.saturating_sub(current_level);
+        let added_saturation = f32::from(added_food) * saturation_modifier * 2.0;
         let new_sat = (current_sat + added_saturation).min(f32::from(new_level));
 
         self.level.store(new_level);

@@ -11,6 +11,7 @@ use crate::entity::EntityBase;
 use crate::entity::projectile::ThrownItemEntity;
 use crate::entity::projectile::wind_charge::{WIND_CHARGE_GRAVITY, WindChargeEntity};
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 
 pub struct WindChargeItem;
 
@@ -48,9 +49,24 @@ impl ItemBehaviour for WindChargeItem {
             // TODO: player.incrementStat(Stats.USED)
 
             // TODO: Implement that the projectile will explode on impact
-            world
-                .spawn_entity(Arc::new(WindChargeEntity::new_normal(wind_charge)))
+            let wind_charge_arc: Arc<dyn EntityBase> =
+                Arc::new(WindChargeEntity::new_normal(wind_charge));
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(wind_charge_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
                 .await;
+            if launch_event.cancelled {
+                return;
+            }
+
+            world.spawn_entity(wind_charge_arc).await;
         })
     }
 

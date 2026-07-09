@@ -8,6 +8,7 @@ use crate::entity::player::Player;
 use crate::entity::projectile::arrow::{ArrowEntity, ArrowPickup};
 use crate::entity::{Entity, EntityBase};
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -195,6 +196,22 @@ impl BowItem {
 
         // Spawn the arrow entity in the world
         let arrow_arc: Arc<dyn EntityBase> = Arc::new(arrow);
+
+        let shooter = world
+            .get_player_by_id(player.entity_id())
+            .map(|p| p as Arc<dyn EntityBase>);
+        let launch_event = ProjectileLaunchEvent::new(arrow_arc.clone(), shooter);
+        let launch_event = world
+            .server
+            .upgrade()
+            .expect("server is gone")
+            .plugin_manager
+            .fire(launch_event)
+            .await;
+        if launch_event.cancelled {
+            return;
+        }
+
         world.spawn_entity(arrow_arc).await;
 
         // Play bow shoot sound

@@ -6,6 +6,7 @@ use crate::entity::EntityBase;
 use crate::entity::player::Player;
 use crate::entity::projectile::snowball::SnowballEntity;
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::sound::Sound;
@@ -40,7 +41,24 @@ impl ItemBehaviour for SnowBallItem {
             snowball
                 .thrown
                 .set_velocity_from(player.get_entity(), pitch, yaw, 0.0, POWER, 1.0);
-            world.spawn_entity(Arc::new(snowball)).await;
+
+            let snowball_arc: Arc<dyn EntityBase> = Arc::new(snowball);
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(snowball_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
+                .await;
+            if launch_event.cancelled {
+                return;
+            }
+
+            world.spawn_entity(snowball_arc).await;
 
             // Consume item
             let held_item = player.inventory.held_item();

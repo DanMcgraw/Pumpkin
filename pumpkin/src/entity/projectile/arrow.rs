@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::entity::projectile::ProjectileHit;
+use crate::plugin::api::events::entity::projectile_hit::ProjectileHitEvent;
 use crate::{
     entity::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity, player::Player,
@@ -349,6 +350,30 @@ impl EntityBase for ArrowEntity {
         Box::pin(async move {
             let entity = self.get_entity();
             let world = entity.world.load();
+
+            // Fire ProjectileHitEvent so plugins can observe or cancel the impact.
+            let (hit_entity, hit_block, hit_block_pos) = match &hit {
+                ProjectileHit::Entity { entity: target, .. } => {
+                    (Some(target.clone()), None, None)
+                }
+                ProjectileHit::Block { pos, .. } => {
+                    (None, Some(world.get_block(pos)), Some(*pos))
+                }
+            };
+            let caller = world
+                .get_entity_by_id(entity.entity_id)
+                .expect("arrow not found in world");
+            let server = world.server.upgrade().expect("server is gone");
+            let hit_event = ProjectileHitEvent::new(
+                caller,
+                hit_entity,
+                hit_block,
+                hit_block_pos,
+            );
+            let hit_event = server.plugin_manager.fire(hit_event).await;
+            if hit_event.cancelled {
+                return;
+            }
 
             match hit {
                 ProjectileHit::Block {

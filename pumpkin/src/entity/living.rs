@@ -33,6 +33,11 @@ use crate::entity::mob::slime::SlimeEntity;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
 use crate::entity::{EntityBaseFuture, NbtFuture};
 use crate::server::Server;
+use crate::plugin::api::events::entity::{
+    entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
+    entity_death::EntityDeathEvent,
+};
+use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
 use crate::world::loot::{LootContextParameters, LootTableExt};
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::attributes::Attributes;
@@ -1353,18 +1358,84 @@ impl LivingEntity {
                 ..Default::default()
             };
 
-            // Drop loot
-            self.drop_loot(params.clone()).await;
-
-            // Award experience
-            if params.killed_by_player.unwrap_or(false)
+            // Collect loot and experience, then fire death events.
+            let drops = self.drop_loot(params.clone()).await;
+            let dropped_exp = if params.killed_by_player.unwrap_or(false)
                 && world.level_info.load().game_rules.mob_drops
             {
-                let amount = dyn_self.get_experience_reward(cause);
-                if amount > 0 {
-                    ExperienceOrbEntity::spawn(&world, self.entity.pos.load(), amount).await;
+                dyn_self.get_experience_reward(cause) as i32
+            } else {
+                0
+            };
+
+            let killer = cause
+                .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+
+            let server = world.server.upgrade().expect("server is gone");
+
+            let keep_inventory;
+            let keep_level;
+
+            let (final_drops, final_exp) = if self.entity.entity_type == &EntityType::PLAYER {
+                if world.get_player_by_id(self.entity.entity_id).is_some()
+                {
+                    let player_arc = world
+                        .get_player_by_id(self.entity.entity_id)
+                        .expect("player not found in world");
+                    let player_death_event = PlayerDeathEvent::new(
+                        player_arc.clone(),
+                        damage_type,
+                        killer.clone(),
+                        drops.clone(),
+                        dropped_exp,
+                    );
+                    let player_death_event =
+                        server.plugin_manager.fire(player_death_event).await;
+
+                    keep_inventory = player_death_event.keep_inventory;
+                    keep_level = player_death_event.keep_level;
+                    player_arc
+                        .keep_inventory_on_death
+                        .store(keep_inventory, Ordering::Relaxed);
+                    player_arc
+                        .keep_level_on_death
+                        .store(keep_level, Ordering::Relaxed);
+
+                    let entity_death_event = EntityDeathEvent::new(
+                        dyn_self.clone(),
+                        damage_type,
+                        killer.clone(),
+                        player_death_event.drops,
+                        player_death_event.dropped_exp,
+                    );
+                    let entity_death_event =
+                        server.plugin_manager.fire(entity_death_event).await;
+
+                    (entity_death_event.drops, entity_death_event.dropped_exp)
+                } else {
+                    (drops, dropped_exp)
                 }
+            } else {
+                let entity_death_event = EntityDeathEvent::new(
+                    dyn_self.clone(),
+                    damage_type,
+                    killer,
+                    drops,
+                    dropped_exp,
+                );
+                let entity_death_event = server.plugin_manager.fire(entity_death_event).await;
+                (entity_death_event.drops, entity_death_event.dropped_exp)
+            };
+
+            // Apply mutated drops and XP.
+            let block_pos = self.entity.block_pos.load();
+            for stack in final_drops {
+                world.drop_stack(&block_pos, stack).await;
             }
+            if final_exp > 0 {
+                ExperienceOrbEntity::spawn(&world, self.entity.pos.load(), final_exp as u32).await;
+            }
+
             self.entity.pose.store(EntityPose::Dying);
 
             self.drop_equipment().await;
@@ -1469,13 +1540,12 @@ impl LivingEntity {
         }
     }
 
-    async fn drop_loot(&self, params: LootContextParameters) {
+    async fn drop_loot(&self, params: LootContextParameters) -> Vec<ItemStack> {
+        let mut drops = Vec::new();
         if let Some(loot_table) = &self.get_entity().entity_type.loot_table {
-            let pos = self.entity.block_pos.load();
-            for stack in loot_table.get_loot(params) {
-                self.entity.world.load().drop_stack(&pos, stack).await;
-            }
+            drops.extend(loot_table.get_loot(params));
         }
+        drops
     }
 
     async fn tick_effects(&self) {
@@ -2042,7 +2112,7 @@ impl EntityBase for LivingEntity {
                 };
 
             // Total damage after reductions
-            let effective_amount = amount * (1.0 - resistance_reduction);
+            let mut effective_amount = amount * (1.0 - resistance_reduction);
 
             if resistance_reduction > 0.0 {
                 let resisted = amount * resistance_reduction;
@@ -2159,6 +2229,53 @@ impl EntityBase for LivingEntity {
 
                     return false;
                 }
+            }
+
+            // Fire EntityDamageEvent / EntityDamageByEntityEvent so plugins can
+            // cancel or mutate damage.
+            let victim_arc = world
+                .get_entity_by_id(self.entity.entity_id)
+                .expect("damaged entity not found in world");
+            let server = world.server.upgrade().expect("server is gone");
+
+            if let Some(source) = source {
+                let damager = world
+                    .get_entity_by_id(source.get_entity().entity_id)
+                    .expect("damager not found in world");
+                let attacker = cause
+                    .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+
+                let event = EntityDamageByEntityEvent::new(
+                    victim_arc,
+                    damager,
+                    attacker,
+                    damage_type,
+                    amount,
+                    effective_amount,
+                );
+                let event = server.plugin_manager.fire(event).await;
+
+                if event.cancelled {
+                    return false;
+                }
+
+                amount = event.damage;
+                effective_amount = event.final_damage;
+            } else {
+                let event = EntityDamageEvent::new(
+                    victim_arc,
+                    damage_type,
+                    amount,
+                    effective_amount,
+                );
+                let event = server.plugin_manager.fire(event).await;
+
+                if event.cancelled {
+                    return false;
+                }
+
+                amount = event.damage;
+                effective_amount = event.final_damage;
             }
 
             // Apply hurt cooldown logic

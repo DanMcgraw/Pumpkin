@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 pub mod block;
 pub mod entity;
+#[cfg(test)]
+pub mod phase3_tests;
 pub mod player;
 pub mod server;
 pub mod world;

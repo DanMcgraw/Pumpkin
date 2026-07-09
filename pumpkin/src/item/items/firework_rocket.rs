@@ -5,6 +5,7 @@ use crate::entity::player::Player;
 use crate::entity::projectile::firework_rocket::FireworkRocketEntity;
 use crate::entity::{Entity, EntityBase};
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use crate::server::Server;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
@@ -45,7 +46,22 @@ impl ItemBehaviour for FireworkRocketItem {
                 &EntityType::FIREWORK_ROCKET,
             );
             let entity = FireworkRocketEntity::new(entity);
-            world.spawn_entity(Arc::new(entity)).await;
+            let rocket_arc: Arc<dyn EntityBase> = Arc::new(entity);
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(rocket_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
+                .await;
+            if launch_event.cancelled {
+                return;
+            }
+            world.spawn_entity(rocket_arc).await;
         })
     }
 
@@ -63,7 +79,22 @@ impl ItemBehaviour for FireworkRocketItem {
                     &EntityType::FIREWORK_ROCKET,
                 );
                 let entity = FireworkRocketEntity::new_shot(entity, player.get_entity());
-                world.spawn_entity(Arc::new(entity)).await;
+                let rocket_arc: Arc<dyn EntityBase> = Arc::new(entity);
+                let shooter = world
+                    .get_player_by_id(player.entity_id())
+                    .map(|p| p as Arc<dyn EntityBase>);
+                let launch_event = ProjectileLaunchEvent::new(rocket_arc.clone(), shooter);
+                let launch_event = world
+                    .server
+                    .upgrade()
+                    .expect("server is gone")
+                    .plugin_manager
+                    .fire(launch_event)
+                    .await;
+                if launch_event.cancelled {
+                    return;
+                }
+                world.spawn_entity(rocket_arc).await;
             }
         })
     }

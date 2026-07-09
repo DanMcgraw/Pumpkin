@@ -8,6 +8,7 @@ use crate::entity::projectile::{
     lingering_potion::LingeringPotionEntity, splash_potion::SplashPotionEntity,
 };
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -93,7 +94,23 @@ impl ItemBehaviour for SplashPotionItem {
                 .thrown
                 .set_velocity_from(player.get_entity(), pitch, yaw, 0.0, POWER, 1.0);
 
-            world.spawn_entity(Arc::new(splash)).await;
+            let splash_arc: Arc<dyn EntityBase> = Arc::new(splash);
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(splash_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
+                .await;
+            if launch_event.cancelled {
+                return;
+            }
+
+            world.spawn_entity(splash_arc).await;
 
             // Decrement the used stack (clear)
             if used_main {
@@ -160,7 +177,23 @@ impl ItemBehaviour for LingeringPotionItem {
             ling.thrown
                 .set_velocity_from(player.get_entity(), pitch, yaw, 0.0, POWER, 1.0);
 
-            world.spawn_entity(Arc::new(ling)).await;
+            let ling_arc: Arc<dyn EntityBase> = Arc::new(ling);
+            let shooter = world
+                .get_player_by_id(player.entity_id())
+                .map(|p| p as Arc<dyn EntityBase>);
+            let launch_event = ProjectileLaunchEvent::new(ling_arc.clone(), shooter);
+            let launch_event = world
+                .server
+                .upgrade()
+                .expect("server is gone")
+                .plugin_manager
+                .fire(launch_event)
+                .await;
+            if launch_event.cancelled {
+                return;
+            }
+
+            world.spawn_entity(ling_arc).await;
 
             // Decrement the used stack (clear)
             if used_main {
