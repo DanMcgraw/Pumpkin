@@ -15,7 +15,10 @@ use pumpkin_inventory::{
     screen_handler::{BoxFuture, InventoryPlayer, ScreenHandlerFactory, SharedScreenHandler},
 };
 use pumpkin_macros::pumpkin_block;
-use pumpkin_util::text::TextComponent;
+use pumpkin_util::{
+    math::position::BlockPos,
+    text::TextComponent,
+};
 use pumpkin_world::inventory::Inventory;
 use tokio::sync::Mutex;
 
@@ -31,6 +34,7 @@ struct FurnaceScreenFactory {
     inventory: Arc<dyn Inventory>,
     property_delegate: Arc<dyn PropertyDelegate>,
     experience_container: Arc<dyn ExperienceContainer>,
+    block_pos: BlockPos,
 }
 
 impl FurnaceScreenFactory {
@@ -38,11 +42,13 @@ impl FurnaceScreenFactory {
         inventory: Arc<dyn Inventory>,
         property_delegate: Arc<dyn PropertyDelegate>,
         experience_container: Arc<dyn ExperienceContainer>,
+        block_pos: BlockPos,
     ) -> Self {
         Self {
             inventory,
             property_delegate,
             experience_container,
+            block_pos,
         }
     }
 }
@@ -62,6 +68,7 @@ impl ScreenHandlerFactory for FurnaceScreenFactory {
                 self.property_delegate.clone(),
                 self.experience_container.clone(),
                 WindowType::Furnace,
+                self.block_pos,
             )
             .await;
 
@@ -99,7 +106,7 @@ impl BlockBehaviour for FurnaceBlock {
                     )
                     .await;
                 let furnace_screen_factory =
-                    FurnaceScreenFactory::new(inventory, property_delegate, experience_container);
+                    FurnaceScreenFactory::new(inventory, property_delegate, experience_container, *args.position);
                 args.player
                     .open_handled_screen(&furnace_screen_factory, Some(*args.position))
                     .await;

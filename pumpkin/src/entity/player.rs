@@ -98,9 +98,14 @@ use crate::data::SaveJSONConfiguration;
 use crate::entity::{EntityBaseFuture, NbtFuture, TeleportFuture};
 use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
+use crate::plugin::player::craft_item::CraftItemEvent;
 use crate::plugin::player::exp_change::PlayerExpChangeEvent;
+use crate::plugin::player::furnace_extract::FurnaceExtractEvent;
+use crate::plugin::player::inventory_drag::InventoryDragEvent;
 use crate::plugin::player::inventory_interact::InventoryClickEvent;
+use crate::plugin::player::inventory_open::InventoryOpenEvent;
 use crate::plugin::player::player_change_world::PlayerChangeWorldEvent;
+use crate::plugin::player::player_drop_item::PlayerDropItemEvent;
 use crate::plugin::player::player_gamemode_change::PlayerGamemodeChangeEvent;
 use crate::plugin::player::player_permission_check::PlayerPermissionCheckEvent;
 use crate::plugin::player::player_teleport::PlayerTeleportEvent;
@@ -3080,6 +3085,18 @@ impl Player {
     }
 
     pub async fn drop_item(&self, item_stack: ItemStack) {
+        if let Some(server) = self.world().server.upgrade() {
+            if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
+                let event = server
+                    .plugin_manager
+                    .fire(PlayerDropItemEvent::new(&player, item_stack.clone()))
+                    .await;
+                if event.cancelled {
+                    return;
+                }
+            }
+        }
+
         self.increment_stat(
             statistics::StatisticCategory::Dropped,
             item_stack.item.id as i32,
@@ -3654,6 +3671,17 @@ impl Player {
             let window_type = screen_handler_temp
                 .window_type()
                 .expect("Can't open PlayerScreenHandler");
+            drop(screen_handler_temp);
+
+            if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
+                let event = server
+                    .plugin_manager
+                    .fire(InventoryOpenEvent::new(self, window_type, block_pos))
+                    .await;
+                if event.cancelled {
+                    return None;
+                }
+            }
 
             let display_name = screen_handler_factory.get_display_name();
             let java_packet =
@@ -3688,7 +3716,6 @@ impl Player {
                 .enqueue_packet_editioned(&java_packet, &bedrock_packet)
                 .await;
 
-            drop(screen_handler_temp);
             self.on_screen_handler_opened(screen_handler.clone()).await;
             *self.current_screen_handler.lock().await = screen_handler;
             self.open_container_pos.store(block_pos);
@@ -3722,6 +3749,17 @@ impl Player {
         let window_type = screen_handler_temp
             .window_type()
             .expect("Can't open PlayerScreenHandler");
+        drop(screen_handler_temp);
+
+        if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
+            let event = server
+                .plugin_manager
+                .fire(InventoryOpenEvent::new(self, window_type, None))
+                .await;
+            if event.cancelled {
+                return;
+            }
+        }
 
         let java_packet = COpenScreen::new(sync_id.into(), (window_type as i32).into(), &title);
 
@@ -3754,7 +3792,6 @@ impl Player {
             .enqueue_packet_editioned(&java_packet, &bedrock_packet)
             .await;
 
-        drop(screen_handler_temp);
         self.on_screen_handler_opened(screen_handler.clone()).await;
         *self.current_screen_handler.lock().await = screen_handler;
         self.open_container_pos.store(None);
@@ -3930,6 +3967,47 @@ impl Player {
                     // Dragging items into slots
                     screen_handler.cancel().await;
                     return;
+                }
+
+                // Fire InventoryDragEvent at drag end (stage 2) so plugins can
+                // observe or cancel the whole drag.
+                let drag_stage = packet.button & 3;
+                if drag_stage == 2 {
+                    let drag_button = (packet.button >> 2) & 3;
+                    let drag_click_type = match drag_button {
+                        1 => ClickType::Right,
+                        2 => ClickType::Middle,
+                        _ => ClickType::Left,
+                    };
+                    let slots = screen_handler
+                        .get_behaviour()
+                        .drag_slots
+                        .iter()
+                        .map(|&slot| slot as i16)
+                        .collect();
+                    let cursor = Some(
+                        screen_handler
+                            .get_behaviour()
+                            .cursor_stack
+                            .lock()
+                            .await
+                            .clone(),
+                    );
+
+                    let event = server
+                        .plugin_manager
+                        .fire(InventoryDragEvent::new(
+                            self,
+                            screen_handler.window_type(),
+                            slots,
+                            cursor,
+                            drag_click_type,
+                        ))
+                        .await;
+                    if event.cancelled {
+                        screen_handler.cancel().await;
+                        return;
+                    }
                 }
             }
             SlotActionType::PickupAll => {
@@ -5208,6 +5286,51 @@ impl InventoryPlayer for Player {
     ) -> PlayerFuture<'_, ()> {
         Box::pin(async move {
             self.increment_stat(category, stat_id, amount).await;
+        })
+    }
+
+    fn on_craft_item(
+        &self,
+        result: &ItemStack,
+        window_type: Option<WindowType>,
+    ) -> PlayerFuture<'_, ()> {
+        let result = result.clone();
+        Box::pin(async move {
+            if let Some(server) = self.world().server.upgrade() {
+                if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
+                    let event = server
+                        .plugin_manager
+                        .fire(CraftItemEvent::new(player, result, window_type))
+                        .await;
+                    if event.cancelled {
+                        return;
+                    }
+                }
+            }
+        })
+    }
+
+    fn on_furnace_extract(
+        &self,
+        block_pos: BlockPos,
+        item: &ItemStack,
+        experience: i32,
+    ) -> PlayerFuture<'_, ()> {
+        let item = item.clone();
+        Box::pin(async move {
+            if let Some(server) = self.world().server.upgrade() {
+                if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
+                    server
+                        .plugin_manager
+                        .fire(FurnaceExtractEvent::new(
+                            player,
+                            block_pos,
+                            item,
+                            experience,
+                        ))
+                        .await;
+                }
+            }
         })
     }
 }

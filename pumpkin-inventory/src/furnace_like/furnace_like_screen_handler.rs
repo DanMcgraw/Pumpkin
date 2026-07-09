@@ -19,6 +19,7 @@
 use std::{any::Any, pin::Pin, sync::Arc};
 
 use pumpkin_data::{fuels::is_fuel, item_stack::ItemStack, screen::WindowType};
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::{
     block::entities::{ExperienceContainer, PropertyDelegate},
     inventory::Inventory,
@@ -48,6 +49,8 @@ pub struct FurnaceLikeScreenHandler {
     experience_container: Arc<dyn ExperienceContainer>,
     /// Core screen handler behavior (slots, sync ID, properties, listeners).
     behaviour: ScreenHandlerBehaviour,
+    /// The position of the furnace block in the world.
+    block_pos: BlockPos,
 }
 
 impl FurnaceLikeScreenHandler {
@@ -60,6 +63,7 @@ impl FurnaceLikeScreenHandler {
     /// - `property_delegate` - Delegate for accessing furnace properties
     /// - `experience_container` - Container that tracks smelting experience
     /// - `window_type` - The window type (Furnace, Smoker, or `BlastFurnace`)
+    /// - `block_pos` - The position of the furnace block in the world
     pub async fn new(
         sync_id: u8,
         player_inventory: &Arc<PlayerInventory>,
@@ -67,6 +71,7 @@ impl FurnaceLikeScreenHandler {
         property_delegate: Arc<dyn PropertyDelegate>,
         experience_container: Arc<dyn ExperienceContainer>,
         window_type: WindowType,
+        block_pos: BlockPos,
     ) -> Self {
         struct FurnaceLikeScreenListener;
         impl ScreenHandlerListener for FurnaceLikeScreenListener {
@@ -89,6 +94,7 @@ impl FurnaceLikeScreenHandler {
             inventory,
             experience_container,
             behaviour: ScreenHandlerBehaviour::new(sync_id, Some(window_type)),
+            block_pos,
         };
 
         // 0: Fire icon (fuel left) counting from fuel burn time down to 0 (in-game ticks)
@@ -127,6 +133,7 @@ impl FurnaceLikeScreenHandler {
         self.add_slot(Arc::new(FurnaceOutputSlot::new(
             self.inventory.clone(),
             self.experience_container.clone(),
+            self.block_pos,
         )));
     }
 }

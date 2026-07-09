@@ -374,6 +374,9 @@ macro_rules! impl_block_entity_for_cooking {
                 world: &'a Arc<$crate::world::World>,
             ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
                 Box::pin(async move {
+                    let Some(server) = world.server.upgrade() else {
+                        return;
+                    };
                     let is_burning = self.is_burning();
                     let mut is_dirty = false;
                     if self.is_burning() {
@@ -411,23 +414,40 @@ macro_rules! impl_block_entity_for_cooking {
                                 base_fuel_ticks
                             };
 
-                            self.set_lit_time_remaining(adjusted_fuel_ticks);
-                            self.set_lit_total_time(adjusted_fuel_ticks);
+                            let fuel = bottom_items.clone();
+                            let block = world.get_block(&self.position);
+                            let event = server
+                                .plugin_manager
+                                .fire($crate::plugin::block::furnace_burn::FurnaceBurnEvent::new(
+                                    block,
+                                    self.position,
+                                    world.clone(),
+                                    fuel,
+                                    adjusted_fuel_ticks,
+                                ))
+                                .await;
+                            if event.cancelled {
+                                // Don't start burning or consume fuel if cancelled.
+                                drop(bottom_items);
+                            } else {
+                                self.set_lit_time_remaining(adjusted_fuel_ticks);
+                                self.set_lit_total_time(adjusted_fuel_ticks);
 
-                            if self.is_burning() {
-                                is_dirty = true;
-                                if !bottom_items.is_empty() {
-                                    bottom_items.decrement(1);
-                                    if let Some(remainder_id) =
-                                        pumpkin_data::recipe_remainder::get_recipe_remainder_id(
-                                            bottom_items.item.id,
-                                        )
-                                        && bottom_items.is_empty()
-                                        && let Some(remainder_item) =
-                                            pumpkin_data::item::Item::from_id(remainder_id)
-                                    {
-                                        drop(bottom_items);
-                                        self.set_stack(1, ItemStack::new(1, remainder_item)).await;
+                                if self.is_burning() {
+                                    is_dirty = true;
+                                    if !bottom_items.is_empty() {
+                                        bottom_items.decrement(1);
+                                        if let Some(remainder_id) =
+                                            pumpkin_data::recipe_remainder::get_recipe_remainder_id(
+                                                bottom_items.item.id,
+                                            )
+                                            && bottom_items.is_empty()
+                                            && let Some(remainder_item) =
+                                                pumpkin_data::item::Item::from_id(remainder_id)
+                                        {
+                                            drop(bottom_items);
+                                            self.set_stack(1, ItemStack::new(1, remainder_item)).await;
+                                        }
                                     }
                                 }
                             }
@@ -442,8 +462,37 @@ macro_rules! impl_block_entity_for_cooking {
                                     let cooking_total_time = cooking_recipe.cookingtime;
                                     self.set_cooking_total_time(cooking_total_time as u16);
 
-                                    self.craft_recipe(Some(cooking_recipe)).await;
-                                    is_dirty = true;
+                                    let input = self.items[0].lock().await.clone();
+                                    let fuel = self.items[1].lock().await.clone();
+                                    let output = if let Some(output_item) =
+                                        pumpkin_data::item::Item::from_registry_key(
+                                            cooking_recipe
+                                                .result
+                                                .id
+                                                .strip_prefix("minecraft:")
+                                                .expect("Recipe ID should have minecraft: prefix"),
+                                        )
+                                    {
+                                        ItemStack::new(cooking_recipe.result.count, output_item)
+                                    } else {
+                                        ItemStack::EMPTY.clone()
+                                    };
+                                    let block = world.get_block(&self.position);
+                                    let event = server
+                                        .plugin_manager
+                                        .fire($crate::plugin::block::furnace_smelt::FurnaceSmeltEvent::new(
+                                            block,
+                                            self.position,
+                                            world.clone(),
+                                            input,
+                                            fuel,
+                                            output,
+                                        ))
+                                        .await;
+                                    if !event.cancelled {
+                                        self.craft_recipe(Some(cooking_recipe)).await;
+                                        is_dirty = true;
+                                    }
                                 }
                             }
                         } else {

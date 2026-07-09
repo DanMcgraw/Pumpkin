@@ -1,5 +1,6 @@
 use crate::block::entities::BlockEntity;
 use crate::entity::experience_orb::ExperienceOrbEntity;
+use crate::plugin::inventory::InventoryMoveItemEvent;
 use crate::world::World;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::{BlockProperties, FacingHopper, HopperLikeProperties};
@@ -173,6 +174,26 @@ impl HopperBlockEntity {
                     //TODO WorldlyContainer
                     let backup = item.clone();
                     let one_item = item.split(1);
+                    if let Some(server) = world.server.upgrade() {
+                        let source = entity.clone().get_inventory();
+                        let destination = world
+                            .get_block_entity(&self.position)
+                            .and_then(|e| e.get_inventory());
+                        let event = server
+                            .plugin_manager
+                            .fire(InventoryMoveItemEvent::new(
+                                one_item.clone(),
+                                source,
+                                destination,
+                                Some(*pos_up),
+                                Some(self.position),
+                            ))
+                            .await;
+                        if event.cancelled {
+                            *item = backup;
+                            return false;
+                        }
+                    }
                     if Self::add_one_item(container.as_ref(), self, one_item).await {
                         // If extracting from furnace output slot (index 2), drop XP as orbs
                         const FURNACE_OUTPUT_SLOT: usize = 2;
@@ -205,7 +226,7 @@ impl HopperBlockEntity {
         // TODO getEntityContainer
 
         if let Some(entity) = world.get_block_entity(&self.position.offset(to_offset(&self.facing)))
-            && let Some(container) = entity.get_inventory()
+            && let Some(container) = entity.clone().get_inventory()
         {
             // TODO check WorldlyContainer
             let mut is_full = true;
@@ -226,6 +247,26 @@ impl HopperBlockEntity {
                     //TODO WorldlyContainer
                     let backup = item.clone();
                     let one_item = item.split(1);
+                    if let Some(server) = world.server.upgrade() {
+                        let source = world
+                            .get_block_entity(&self.position)
+                            .and_then(|e| e.get_inventory());
+                        let destination = entity.clone().get_inventory();
+                        let event = server
+                            .plugin_manager
+                            .fire(InventoryMoveItemEvent::new(
+                                one_item.clone(),
+                                source,
+                                destination,
+                                Some(self.position),
+                                Some(entity.get_position()),
+                            ))
+                            .await;
+                        if event.cancelled {
+                            *item = backup;
+                            return false;
+                        }
+                    }
                     if Self::add_one_item(self, container.as_ref(), one_item).await {
                         return true;
                     }

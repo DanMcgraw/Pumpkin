@@ -8,6 +8,9 @@ pub mod block_piston_extend;
 pub mod block_piston_retract;
 pub mod block_place;
 pub mod block_redstone;
+pub mod brew;
+pub mod furnace_burn;
+pub mod furnace_smelt;
 
 use pumpkin_data::Block;
 

@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 
 use crate::block::blocks::redstone::block_receives_redstone_power;
 use crate::block::registry::BlockActionResult;
+use crate::plugin::inventory::InventoryMoveItemEvent;
 use crate::block::{
     BlockBehaviour, BlockFuture, NormalUseArgs, OnNeighborUpdateArgs, OnPlaceArgs,
     OnScheduledTickArgs, PlacedArgs,
@@ -170,19 +171,49 @@ impl BlockBehaviour for DropperBlock {
                         .offset(props.facing.to_block_direction().to_offset());
 
                     if let Some(entity) = args.world.get_block_entity(&target_pos)
-                        && let Some(container) = entity.get_inventory()
+                        && let Some(container) = entity.clone().get_inventory()
                     {
                         let backup = item.clone();
                         let one_item = item.split(1);
 
-                        if HopperBlockEntity::add_one_item(dropper, container.as_ref(), one_item)
-                            .await
-                        {
-                            return;
+                        let mut moved = false;
+                        if let Some(server) = args.world.server.upgrade() {
+                            let source = args
+                                .world
+                                .get_block_entity(args.position)
+                                .and_then(|e| e.get_inventory());
+                            let destination = entity.clone().get_inventory();
+                            let event = server
+                                .plugin_manager
+                                .fire(InventoryMoveItemEvent::new(
+                                    one_item.clone(),
+                                    source,
+                                    destination,
+                                    Some(*args.position),
+                                    Some(entity.get_position()),
+                                ))
+                                .await;
+                            if !event.cancelled {
+                                moved = HopperBlockEntity::add_one_item(
+                                    dropper,
+                                    container.as_ref(),
+                                    one_item,
+                                )
+                                .await;
+                            }
+                        } else {
+                            moved = HopperBlockEntity::add_one_item(
+                                dropper,
+                                container.as_ref(),
+                                one_item,
+                            )
+                            .await;
                         }
 
+                        if moved {
+                            return;
+                        }
                         *item = backup;
-                        return;
                     }
 
                     // No container found, dispense item into the world

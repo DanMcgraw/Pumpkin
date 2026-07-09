@@ -9,6 +9,7 @@
 use std::sync::{Arc, atomic::AtomicU8};
 
 use pumpkin_data::{fuels::is_fuel, item::Item, statistic::StatisticCategory};
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::{block::entities::ExperienceContainer, inventory::Inventory};
 
 use tracing::debug;
@@ -102,6 +103,8 @@ pub struct FurnaceOutputSlot {
     pub inventory: Arc<dyn Inventory>,
     pub experience_container: Arc<dyn ExperienceContainer>,
     pub id: AtomicU8,
+    /// The position of the furnace block in the world.
+    pub block_pos: BlockPos,
 }
 
 impl FurnaceOutputSlot {
@@ -110,14 +113,17 @@ impl FurnaceOutputSlot {
     /// # Arguments
     /// - `inventory` - The furnace's inventory
     /// - `experience_container` - Container that tracks accumulated experience
+    /// - `block_pos` - The position of the furnace block in the world
     pub fn new(
         inventory: Arc<dyn Inventory>,
         experience_container: Arc<dyn ExperienceContainer>,
+        block_pos: BlockPos,
     ) -> Self {
         Self {
             inventory,
             experience_container,
             id: AtomicU8::new(0),
+            block_pos,
         }
     }
 }
@@ -144,6 +150,12 @@ impl Slot for FurnaceOutputSlot {
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             debug!("FurnaceOutputSlot: on_take_item called");
+            // Extract accumulated experience and award to player
+            let experience = self.experience_container.extract_experience();
+            debug!("FurnaceOutputSlot: extracted experience = {experience}");
+            player
+                .on_furnace_extract(self.block_pos, stack, experience)
+                .await;
             player
                 .increment_stat(
                     StatisticCategory::Crafted,
@@ -151,9 +163,6 @@ impl Slot for FurnaceOutputSlot {
                     stack.item_count as i32,
                 )
                 .await;
-            // Extract accumulated experience and award to player
-            let experience = self.experience_container.extract_experience();
-            debug!("FurnaceOutputSlot: extracted experience = {experience}");
             if experience > 0 {
                 debug!("FurnaceOutputSlot: awarding {experience} xp to player");
                 player.award_experience(experience).await;

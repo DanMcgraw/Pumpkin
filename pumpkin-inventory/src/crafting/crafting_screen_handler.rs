@@ -49,6 +49,8 @@ pub struct ResultSlot {
     pub result: Arc<Mutex<ItemStack>>,
     /// Provider for dynamic recipes.
     pub recipe_provider: Option<Arc<dyn RecipeProvider>>,
+    /// The window type of the crafting screen, if known.
+    pub window_type: Option<WindowType>,
 }
 
 pub struct RecipeResult {
@@ -327,12 +329,14 @@ impl ResultSlot {
     pub fn new(
         inventory: Arc<dyn RecipeInputInventory>,
         provider: Option<Arc<dyn RecipeProvider>>,
+        window_type: Option<WindowType>,
     ) -> Self {
         Self {
             inventory,
             id: AtomicU8::new(0),
             result: Arc::new(Mutex::new(ItemStack::EMPTY.clone())),
             recipe_provider: provider,
+            window_type,
         }
     }
 
@@ -442,6 +446,7 @@ impl Slot for ResultSlot {
         stack: &'a ItemStack,
     ) -> BoxFuture<'a, ()> {
         Box::pin(async move {
+            player.on_craft_item(stack, self.window_type).await;
             player
                 .increment_stat(
                     StatisticCategory::Crafted,
@@ -542,7 +547,11 @@ pub trait CraftingScreenHandler<I: RecipeInputInventory>:
         provider: Option<Arc<dyn RecipeProvider>>,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            let result_slot = Arc::new(ResultSlot::new(crafing_inventory.clone(), provider));
+            let result_slot = Arc::new(ResultSlot::new(
+                crafing_inventory.clone(),
+                provider,
+                self.window_type(),
+            ));
             self.add_slot(result_slot.clone());
             let width = crafing_inventory.get_width();
             let height = crafing_inventory.get_height();

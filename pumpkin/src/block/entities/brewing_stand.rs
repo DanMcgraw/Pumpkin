@@ -8,6 +8,7 @@ use std::sync::{
 };
 
 use crate::block::entities::PropertyDelegate;
+use crate::plugin::block::brew::BrewEvent;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::data_component_impl::DataComponentImpl;
 use pumpkin_data::item::Item;
@@ -101,6 +102,30 @@ impl BrewingStandBlockEntity {
 
     /// Perform brewing on all valid potion slots
     async fn do_brew(&self, world: &Arc<crate::world::World>, ingredient: &ItemStack) {
+        if let Some(server) = world.server.upgrade() {
+            let potions = vec![
+                self.items[0].lock().await.clone(),
+                self.items[1].lock().await.clone(),
+                self.items[2].lock().await.clone(),
+            ];
+            let fuel = self.fuel.load(Ordering::Relaxed);
+            let block = world.get_block(&self.position);
+            let event = server
+                .plugin_manager
+                .fire(BrewEvent::new(
+                    block,
+                    self.position,
+                    world.clone(),
+                    ingredient.clone(),
+                    potions,
+                    fuel,
+                ))
+                .await;
+            if event.cancelled {
+                return;
+            }
+        }
+
         let ingredient_id = ingredient.get_item().id;
 
         // Apply recipes to each slot

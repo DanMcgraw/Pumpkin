@@ -37,6 +37,7 @@ use pumpkin_data::{
     screen::WindowType,
     statistic::StatisticCategory,
 };
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_protocol::{
     codec::item_stack_seralizer::OptionalItemStackHash,
     java::{
@@ -189,6 +190,26 @@ pub trait InventoryPlayer: Send + Sync {
 
     /// Awards experience points to the player (used for furnace smelting, etc.)
     fn award_experience(&self, amount: i32) -> PlayerFuture<'_, ()>;
+
+    /// Called when the player takes an item from a crafting result slot.
+    fn on_craft_item(
+        &self,
+        result: &ItemStack,
+        window_type: Option<WindowType>,
+    ) -> PlayerFuture<'_, ()> {
+        let _ = (result, window_type);
+        Box::pin(async {})
+    }
+
+    /// Called when the player takes an item from a furnace output slot.
+    fn on_furnace_extract(
+        &self,
+        _block_pos: BlockPos,
+        _item: &ItemStack,
+        _experience: i32,
+    ) -> PlayerFuture<'_, ()> {
+        Box::pin(async {})
+    }
 
     /// Increments a statistic for the player.
     fn increment_stat(
