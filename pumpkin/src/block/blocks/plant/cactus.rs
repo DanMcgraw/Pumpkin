@@ -13,6 +13,7 @@ use crate::block::{
     BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs,
     OnEntityCollisionArgs, OnScheduledTickArgs, RandomTickArgs,
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 
 #[pumpkin_block("minecraft:cactus")]
 pub struct CactusBlock;
@@ -46,28 +47,44 @@ impl BlockBehaviour for CactusBlock {
                 if age == 8 && can_place_at(args.world.as_ref(), &block_up) {
                     let d = if i >= 3 { 0.25 } else { 0.1 };
                     if rand::rng().random_range(0.0..1.0) <= d {
+                        let Some(flower_state_id) = fire_block_grow(
+                            args.world,
+                            block_up,
+                            Block::CACTUS_FLOWER.default_state.id,
+                        )
+                        .await
+                        else {
+                            return;
+                        };
                         args.world
-                            .set_block_state(
-                                &block_up,
-                                Block::CACTUS_FLOWER.default_state.id,
-                                BlockFlags::NOTIFY_ALL,
-                            )
+                            .set_block_state(&block_up, flower_state_id, BlockFlags::NOTIFY_ALL)
                             .await;
                     }
                 } else if age == 15 && i < 3 {
+                    let Some(top_state_id) =
+                        fire_block_grow(args.world, block_up, Block::CACTUS.default_state.id).await
+                    else {
+                        return;
+                    };
                     args.world
-                        .set_block_state(
-                            &block_up,
-                            Block::CACTUS.default_state.id,
-                            BlockFlags::NOTIFY_ALL,
-                        )
+                        .set_block_state(&block_up, top_state_id, BlockFlags::NOTIFY_ALL)
                         .await;
+
                     let mut new_props = CactusLikeProperties::default(&Block::CACTUS);
                     new_props.age = 0;
+                    let Some(reset_state_id) = fire_block_grow(
+                        args.world,
+                        *args.position,
+                        new_props.to_state_id(&Block::CACTUS),
+                    )
+                    .await
+                    else {
+                        return;
+                    };
                     args.world
                         .set_block_state(
                             args.position,
-                            new_props.to_state_id(&Block::CACTUS),
+                            reset_state_id,
                             BlockFlags::SKIP_BLOCK_ENTITY_REPLACED_CALLBACK,
                         )
                         .await;
@@ -77,10 +94,19 @@ impl BlockBehaviour for CactusBlock {
                 }
                 if age < 15 {
                     props.age = age + 1;
+                    let Some(new_state_id) = fire_block_grow(
+                        args.world,
+                        *args.position,
+                        props.to_state_id(&Block::CACTUS),
+                    )
+                    .await
+                    else {
+                        return;
+                    };
                     args.world
                         .set_block_state(
                             args.position,
-                            props.to_state_id(&Block::CACTUS),
+                            new_state_id,
                             BlockFlags::SKIP_BLOCK_ENTITY_REPLACED_CALLBACK,
                         )
                         .await;

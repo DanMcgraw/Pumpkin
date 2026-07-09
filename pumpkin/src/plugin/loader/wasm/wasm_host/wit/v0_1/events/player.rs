@@ -58,6 +58,7 @@ use crate::plugin::{
     },
 };
 use bytes::Bytes;
+use pumpkin_util::Hand;
 
 const fn to_wasm_fish_state(state: PlayerFishState) -> WasmPlayerFishState {
     match state {
@@ -719,6 +720,7 @@ impl ToFromWasmEvent for PlayerInteractEvent {
                 action: from_wasm_interact_action(data.action),
                 clicked_pos: data.clicked_pos.map(from_wasm_block_position),
                 block: from_wasm_block_name(&data.block),
+                hand: Hand::Right,
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

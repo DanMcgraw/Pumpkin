@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::entity::player::Player;
 use pumpkin_data::Block;
 use pumpkin_macros::{Event, cancellable};
-use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::{Hand, math::position::BlockPos};
 
 use super::PlayerEvent;
 
@@ -26,6 +26,9 @@ pub struct PlayerInteractEvent {
 
     /// The block that was interacted with.
     pub block: &'static Block,
+
+    /// The hand used for the interaction.
+    pub hand: Hand,
 }
 
 impl PlayerInteractEvent {
@@ -37,6 +40,7 @@ impl PlayerInteractEvent {
     /// - `action`: The type of interaction performed.
     /// - `block`: The block that was interacted with.
     /// - `clicked_pos`: The optional position of the block that was clicked.
+    /// - `hand`: The hand used for the interaction.
     ///
     /// # Returns
     ///
@@ -46,12 +50,14 @@ impl PlayerInteractEvent {
         action: InteractAction,
         block: &'static Block,
         clicked_pos: Option<BlockPos>,
+        hand: Hand,
     ) -> Self {
         Self {
             player: Arc::clone(player),
             action,
             block,
             clicked_pos,
+            hand,
             cancelled: false,
         }
     }
@@ -92,5 +98,21 @@ impl InteractAction {
 impl PlayerEvent for PlayerInteractEvent {
     fn get_player(&self) -> &Arc<Player> {
         &self.player
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interact_action_classifiers_work() {
+        assert!(InteractAction::LeftClickAir.is_left_click());
+        assert!(InteractAction::LeftClickBlock.is_left_click());
+        assert!(!InteractAction::LeftClickAir.is_right_click());
+
+        assert!(InteractAction::RightClickAir.is_right_click());
+        assert!(InteractAction::RightClickBlock.is_right_click());
+        assert!(!InteractAction::RightClickBlock.is_left_click());
     }
 }

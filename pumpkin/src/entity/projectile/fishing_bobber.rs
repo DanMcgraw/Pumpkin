@@ -6,6 +6,7 @@ use crate::{
     entity::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity, player::Player,
     },
+    plugin::player::fish::{PlayerFishEvent, PlayerFishState},
     server::Server,
 };
 use pumpkin_data::item_stack::ItemStack;
@@ -13,6 +14,7 @@ use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::tracked_data::TrackedData;
 use pumpkin_protocol::java::client::play::Metadata;
+use pumpkin_util::Hand;
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::vector3::Vector3;
 
@@ -47,14 +49,35 @@ impl FishingBobberEntity {
         }
     }
 
-    pub async fn reel_in(&self, player: &Player) -> i32 {
+    pub async fn reel_in(&self, player: Arc<Player>) -> i32 {
         use pumpkin_data::item::Item;
         let world = self.entity.world.load();
         let hooked_id = self.hooked_entity_id.load(Ordering::Relaxed);
+        let hook_uuid = self.entity.entity_uuid;
+
+        let Some(server) = world.server.upgrade() else {
+            return 0;
+        };
 
         if hooked_id != 0
             && let Some(hooked) = world.get_entity_by_id(hooked_id)
         {
+            let caught_uuid = hooked.get_entity().entity_uuid;
+            let caught_type = hooked.get_entity().entity_type.resource_name.to_string();
+            let event = PlayerFishEvent::new(
+                player.clone(),
+                Some(caught_uuid),
+                hook_uuid,
+                caught_type,
+                PlayerFishState::CaughtEntity,
+                Hand::Right,
+                0,
+            );
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return 0;
+            }
+
             let player_pos = player.get_entity().pos.load();
             let hooked_pos = hooked.get_entity().pos.load();
             let delta = player_pos - hooked_pos;
@@ -67,6 +90,20 @@ impl FishingBobberEntity {
         }
 
         if self.bite_countdown.load(Ordering::Relaxed) > 0 {
+            let event = PlayerFishEvent::new(
+                player.clone(),
+                None,
+                hook_uuid,
+                String::new(),
+                PlayerFishState::CaughtFish,
+                Hand::Right,
+                1,
+            );
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return 0;
+            }
+
             // Caught something!
             player
                 .increment_stat(
@@ -87,6 +124,17 @@ impl FishingBobberEntity {
             );
             return 1;
         }
+
+        let event = PlayerFishEvent::new(
+            player.clone(),
+            None,
+            hook_uuid,
+            String::new(),
+            PlayerFishState::FailedAttempt,
+            Hand::Right,
+            0,
+        );
+        server.plugin_manager.fire(event).await;
 
         0
     }
@@ -119,6 +167,8 @@ impl FishingBobberEntity {
         let mut velocity = entity.velocity.load();
         let start_pos = entity.pos.load();
 
+        let hook_uuid = entity.entity_uuid;
+
         if entity.touching_water.load(Ordering::Relaxed) {
             velocity.y += 0.02; // Buoyancy
 
@@ -138,17 +188,35 @@ impl FishingBobberEntity {
                 let wait = self.wait_countdown.load(Ordering::Relaxed);
                 if wait > 0 {
                     self.wait_countdown.store(wait - 1, Ordering::Relaxed);
-                } else {
-                    // Start bite
-                    self.bite_countdown.store(40, Ordering::Relaxed);
-                    self.wait_countdown
-                        .store(rand::random::<i32>().abs() % 600 + 100, Ordering::Relaxed);
+                } else if let Some(player) = world.get_player_by_id(self.owner_id) {
+                    let mut cancelled = false;
+                    if let Some(server) = world.server.upgrade() {
+                        let event = PlayerFishEvent::new(
+                            player,
+                            None,
+                            hook_uuid,
+                            String::new(),
+                            PlayerFishState::Bite,
+                            Hand::Right,
+                            0,
+                        );
+                        cancelled = server.plugin_manager.fire(event).await.cancelled;
+                    }
 
-                    world.play_sound(
-                        Sound::EntityFishingBobberSplash,
-                        SoundCategory::Neutral,
-                        &entity.pos.load(),
-                    );
+                    if cancelled {
+                        self.wait_countdown
+                            .store(rand::random::<i32>().abs() % 600 + 100, Ordering::Relaxed);
+                    } else {
+                        self.bite_countdown.store(40, Ordering::Relaxed);
+                        self.wait_countdown
+                            .store(rand::random::<i32>().abs() % 600 + 100, Ordering::Relaxed);
+
+                        world.play_sound(
+                            Sound::EntityFishingBobberSplash,
+                            SoundCategory::Neutral,
+                            &entity.pos.load(),
+                        );
+                    }
                 }
             }
         } else {
@@ -184,8 +252,26 @@ impl FishingBobberEntity {
             .get_block_collisions(search_box, caller.as_ref())
             .await;
         if !block_cols.is_empty() {
-            self.in_ground.store(true, Ordering::Relaxed);
-            entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
+            let mut cancelled = false;
+            if let Some(player) = world.get_player_by_id(self.owner_id) {
+                if let Some(server) = world.server.upgrade() {
+                    let event = PlayerFishEvent::new(
+                        player,
+                        None,
+                        hook_uuid,
+                        String::new(),
+                        PlayerFishState::InGround,
+                        Hand::Right,
+                        0,
+                    );
+                    cancelled = server.plugin_manager.fire(event).await.cancelled;
+                }
+            }
+
+            if !cancelled {
+                self.in_ground.store(true, Ordering::Relaxed);
+                entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
+            }
             return;
         }
 

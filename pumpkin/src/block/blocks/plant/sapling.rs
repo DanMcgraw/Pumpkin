@@ -9,6 +9,7 @@ use crate::block::blocks::plant::PlantBlockBase;
 use crate::block::{
     BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs, RandomTickArgs,
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 use crate::world::World;
 
 type SaplingProperties = pumpkin_data::block_properties::OakSaplingLikeProperties;
@@ -22,8 +23,12 @@ impl SaplingBlock {
         let mut props = SaplingProperties::from_state_id(state, block);
         if props.stage == 0 {
             props.stage = 1;
+            let new_state_id = props.to_state_id(block);
+            let Some(new_state_id) = fire_block_grow(world, *pos, new_state_id).await else {
+                return;
+            };
             world
-                .set_block_state(pos, props.to_state_id(block), BlockFlags::NOTIFY_ALL)
+                .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_ALL)
                 .await;
         } else {
             //TODO generate tree

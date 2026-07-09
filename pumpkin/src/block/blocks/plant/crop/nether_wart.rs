@@ -15,6 +15,7 @@ use crate::{
         BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs, RandomTickArgs,
         blocks::plant::{PlantBlockBase, crop::CropBlockBase},
     },
+    plugin::api::events::block::block_grow::fire_block_grow,
     world::World,
 };
 
@@ -83,12 +84,12 @@ impl CropBlockBase for NetherWartBlock {
         let (block, state) = world.get_block_and_state_id(pos);
         let age = self.get_age(state, block);
         if age < self.max_age() && rand::rng().random_range(0..=10) == 0 {
+            let new_state_id = self.state_with_age(block, state, age + 1);
+            let Some(new_state_id) = fire_block_grow(world, *pos, new_state_id).await else {
+                return;
+            };
             world
-                .set_block_state(
-                    pos,
-                    self.state_with_age(block, state, age + 1),
-                    BlockFlags::NOTIFY_NEIGHBORS,
-                )
+                .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
                 .await;
         }
     }

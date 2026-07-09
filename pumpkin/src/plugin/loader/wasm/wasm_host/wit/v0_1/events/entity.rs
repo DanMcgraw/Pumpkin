@@ -38,6 +38,7 @@ impl ToFromWasmEvent for EntitySpawnEvent {
             Event::EntitySpawnEvent(data) => Self {
                 world: consume_world(state, &data.target_world),
                 entity: consume_entity(state, &data.entity),
+                spawn_reason: String::from("natural"),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

@@ -90,7 +90,7 @@ impl BreedGoal {
         let parent_pos = entity.pos.load();
         let baby = from_type(entity.entity_type, parent_pos, &world, Uuid::new_v4());
         baby.get_entity().set_age(-24000);
-        world.spawn_entity(baby).await;
+        world.spawn_entity_with_reason(baby, "breeding").await;
     }
 }
 

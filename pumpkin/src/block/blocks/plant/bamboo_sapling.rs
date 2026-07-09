@@ -14,6 +14,7 @@ use crate::block::{
     OnNeighborUpdateArgs, UseWithItemArgs, blocks::plant::PlantBlockBase,
     registry::BlockActionResult,
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 
 #[pumpkin_block("minecraft:bamboo_sapling")]
 pub struct BambooSaplingBlock;
@@ -90,12 +91,14 @@ impl BlockBehaviour for BambooSaplingBlock {
             let mut props_new =
                 BambooLikeProperties::from_state_id(Block::BAMBOO.default_state.id, &Block::BAMBOO);
             props_new.leaves = BambooLeaves::Small;
+            let new_state_id = props_new.to_state_id(&Block::BAMBOO);
+            let above_pos = args.position.up();
+            let Some(new_state_id) = fire_block_grow(args.world, above_pos, new_state_id).await
+            else {
+                return;
+            };
             args.world
-                .set_block_state(
-                    &args.position.up(),
-                    props_new.to_state_id(&Block::BAMBOO),
-                    BlockFlags::NOTIFY_ALL,
-                )
+                .set_block_state(&above_pos, new_state_id, BlockFlags::NOTIFY_ALL)
                 .await;
         })
     }

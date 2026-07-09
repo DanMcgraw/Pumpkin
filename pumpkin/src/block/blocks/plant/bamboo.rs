@@ -19,6 +19,7 @@ use crate::block::{
     GetStateForNeighborUpdateArgs, OnPlaceArgs, OnScheduledTickArgs, RandomTickArgs,
     UseWithItemArgs,
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 use crate::world::World;
 
 #[pumpkin_block("minecraft:bamboo")]
@@ -197,8 +198,12 @@ async fn update_leaves_and_grow(world: Arc<World>, position: &BlockPos) {
         !((bamboo_count < 11 || rand::rng().random::<f32>() >= 0.25) && bamboo_count != 15),
     );
 
+    let new_state_id = props.to_state_id(block);
+    let Some(new_state_id) = fire_block_grow(&world, above_pos, new_state_id).await else {
+        return;
+    };
     world
-        .set_block_state(&above_pos, props.to_state_id(block), BlockFlags::NOTIFY_ALL)
+        .set_block_state(&above_pos, new_state_id, BlockFlags::NOTIFY_ALL)
         .await;
 }
 

@@ -61,7 +61,7 @@ impl ItemBehaviour for SpawnEggItem {
                 mob.get_entity().set_rotation(yaw, 0.0);
 
                 // Broadcast the new mob to all players
-                world.spawn_entity(mob).await;
+                world.spawn_entity_with_reason(mob, "spawn_egg").await;
                 item.decrement_unless_creative(player.gamemode.load(), 1);
                 // TODO: send/configure additional commands/data based on the type of entity (horse, slime, etc)
             }

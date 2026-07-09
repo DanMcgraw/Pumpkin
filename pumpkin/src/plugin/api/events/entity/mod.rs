@@ -6,4 +6,4 @@ pub mod entity_spawn;
 pub use chunk_entity_load::ChunkEntityLoadEvent;
 pub use chunk_entity_unload::ChunkEntityUnloadEvent;
 pub use entity_remove::EntityRemoveEvent;
-pub use entity_spawn::EntitySpawnEvent;
+pub use entity_spawn::{EntitySpawnEvent, spawn_reason};

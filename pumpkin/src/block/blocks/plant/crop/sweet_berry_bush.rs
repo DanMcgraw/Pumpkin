@@ -7,6 +7,7 @@ use crate::{
         blocks::plant::{PlantBlockBase, crop::CropBlockBase},
         registry::BlockActionResult,
     },
+    plugin::api::events::block::block_grow::fire_block_grow,
     world::World,
 };
 use pumpkin_data::{
@@ -189,12 +190,12 @@ impl CropBlockBase for SweetBerryBushBlock {
                 return;
             }
             if rand::rng().random_range(0..=25) == 0 {
+                let new_state_id = self.state_with_age(block, state, age + 1);
+                let Some(new_state_id) = fire_block_grow(world, *pos, new_state_id).await else {
+                    return;
+                };
                 world
-                    .set_block_state(
-                        pos,
-                        self.state_with_age(block, state, age + 1),
-                        BlockFlags::NOTIFY_NEIGHBORS,
-                    )
+                    .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
                     .await;
             }
         }

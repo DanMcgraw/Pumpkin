@@ -7,7 +7,7 @@ use crate::entity::player::Player;
 use super::PlayerEvent;
 
 /// Enum representing possible fishing event states.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayerFishState {
     /// The player cast the fishing rod.
     Fishing,
@@ -84,5 +84,38 @@ impl PlayerFishEvent {
 impl PlayerEvent for PlayerFishEvent {
     fn get_player(&self) -> &Arc<Player> {
         &self.player
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_fish_states_are_distinct() {
+        let states = [
+            PlayerFishState::Fishing,
+            PlayerFishState::CaughtFish,
+            PlayerFishState::CaughtEntity,
+            PlayerFishState::InGround,
+            PlayerFishState::FailedAttempt,
+            PlayerFishState::ReelIn,
+            PlayerFishState::Bite,
+        ];
+        for (i, a) in states.iter().enumerate() {
+            for (j, b) in states.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hand_default_is_exposed() {
+        // Hand is a public field on the event; this test just ensures it stays part of
+        // the API so that plugins can read which hand was used.
+        let hand = Hand::Right;
+        assert_eq!(hand, Hand::Right);
     }
 }

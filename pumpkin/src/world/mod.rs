@@ -2595,7 +2595,11 @@ impl World {
             .get_or_fetch_chunk(center_chunk, std::clone::Clone::clone)
             .await;
 
-        player.chunk_manager.lock().await.mark_chunk_as_sent(center_chunk, &chunk);
+        player
+            .chunk_manager
+            .lock()
+            .await
+            .mark_chunk_as_sent(center_chunk, &chunk);
 
         chunker::update_position(player).await;
 
@@ -3471,7 +3475,11 @@ impl World {
             .await;
 
         // Mark center chunk as sent so send_world_info -> update_position does not enqueue/send it twice
-        player.chunk_manager.lock().await.mark_chunk_as_sent(center_chunk, &chunk);
+        player
+            .chunk_manager
+            .lock()
+            .await
+            .mark_chunk_as_sent(center_chunk, &chunk);
 
         // Load chunks and send world info FIRST (before teleport packet)
         target_world
@@ -4258,9 +4266,18 @@ impl World {
     }
 
     pub async fn spawn_entity(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
+        self.spawn_entity_with_reason(entity, "natural").await;
+    }
+
+    pub async fn spawn_entity_with_reason(
+        self: &Arc<Self>,
+        entity: Arc<dyn EntityBase>,
+        spawn_reason: impl Into<String>,
+    ) {
         self.broadcast_entity_spawn(&entity);
         entity.init_data_tracker().await;
-        self.add_entity_silent(entity).await;
+        self.add_entity_silent_with_reason(entity, spawn_reason)
+            .await;
     }
 
     pub fn broadcast_entity_spawn(&self, entity: &Arc<dyn EntityBase>) {
@@ -4280,6 +4297,15 @@ impl World {
 
     #[allow(clippy::unused_async)]
     pub async fn add_entity_silent(self: &Arc<Self>, entity: Arc<dyn EntityBase>) {
+        self.add_entity_silent_with_reason(entity, "natural").await;
+    }
+
+    #[allow(clippy::unused_async)]
+    pub async fn add_entity_silent_with_reason(
+        self: &Arc<Self>,
+        entity: Arc<dyn EntityBase>,
+        spawn_reason: impl Into<String>,
+    ) {
         let base_entity = entity.get_entity();
 
         // Guard against duplicate entities with the same UUID.
@@ -4306,7 +4332,7 @@ impl World {
             new_entities
         });
 
-        let event = EntitySpawnEvent::new(self.clone(), entity.clone());
+        let event = EntitySpawnEvent::new(self.clone(), entity.clone(), spawn_reason);
         let event = self
             .server
             .upgrade()
@@ -5811,8 +5837,9 @@ mod entity_chunk_index_tests {
         let entity = create_entity(&world, Vector3::new(10.0, 64.0, 10.0));
         let chunk_pos = entity.get_entity().chunk_pos.load();
 
-        let mut spawn_event = EntitySpawnEvent::new(world.clone(), entity.clone());
+        let mut spawn_event = EntitySpawnEvent::new(world.clone(), entity.clone(), "natural");
         assert!(!spawn_event.cancelled());
+        assert_eq!(spawn_event.spawn_reason, "natural");
         spawn_event.set_cancelled(true);
         assert!(spawn_event.cancelled());
 

@@ -8,9 +8,11 @@ use crate::entity::player::Player;
 use crate::entity::projectile::fishing_bobber::FishingBobberEntity;
 use crate::entity::{Entity, EntityBase};
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::sound::{Sound, SoundCategory};
+use pumpkin_util::Hand;
 
 pub struct FishingRodItem;
 
@@ -56,15 +58,37 @@ impl ItemBehaviour for FishingRodItem {
                     .store(bobber.entity.entity_id, Ordering::Relaxed);
 
                 let bobber_arc: Arc<FishingBobberEntity> = Arc::new(bobber);
-                world.spawn_entity(bobber_arc).await;
+                world.spawn_entity_with_reason(bobber_arc, "fishing").await;
             } else {
                 // Reel in
                 if let Some(bobber_base) = world.get_entity_by_id(bobber_id) {
                     if let Some(bobber) =
                         bobber_base.cast_any().downcast_ref::<FishingBobberEntity>()
                     {
-                        let _result = bobber.reel_in(player).await;
-                        // TODO: give items
+                        let hook_uuid = bobber.entity.entity_uuid;
+                        let player_arc = world.get_player_by_id(player.entity_id());
+                        let mut reel_cancelled = false;
+                        if let Some(player_arc) = player_arc.clone() {
+                            if let Some(server) = world.server.upgrade() {
+                                let event = PlayerFishEvent::new(
+                                    player_arc,
+                                    None,
+                                    hook_uuid,
+                                    String::new(),
+                                    PlayerFishState::ReelIn,
+                                    Hand::Right,
+                                    0,
+                                );
+                                reel_cancelled = server.plugin_manager.fire(event).await.cancelled;
+                            }
+                        }
+
+                        if !reel_cancelled {
+                            if let Some(player_arc) = player_arc {
+                                let _result = bobber.reel_in(player_arc).await;
+                                // TODO: give items
+                            }
+                        }
                     }
                     bobber_base.get_entity().remove().await;
                 }

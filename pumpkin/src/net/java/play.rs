@@ -1302,9 +1302,16 @@ impl JavaClient {
                 InteractAction::LeftClickBlock,
                 player.world().get_block(&hit_pos),
                 Some(hit_pos),
+                hand,
             )
         } else {
-            PlayerInteractEvent::new(player, InteractAction::LeftClickAir, &Block::AIR, None)
+            PlayerInteractEvent::new(
+                player,
+                InteractAction::LeftClickAir,
+                &Block::AIR,
+                None,
+                hand,
+            )
         };
 
         let server = player.world().server.upgrade().unwrap();
@@ -2184,6 +2191,7 @@ impl JavaClient {
             InteractAction::RightClickBlock,
             block,
             Some(position),
+            hand,
         );
 
         send_cancellable! {{
@@ -2420,9 +2428,16 @@ impl JavaClient {
                 InteractAction::RightClickBlock,
                 player.world().get_block(&hit_pos),
                 Some(hit_pos),
+                hand,
             )
         } else {
-            PlayerInteractEvent::new(player, InteractAction::RightClickAir, &Block::AIR, None)
+            PlayerInteractEvent::new(
+                player,
+                InteractAction::RightClickAir,
+                &Block::AIR,
+                None,
+                hand,
+            )
         };
         self.prepare_hand_item_for_use(player, hand, &item_in_hand)
             .await;

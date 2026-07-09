@@ -3,6 +3,7 @@ use crate::block::{
     RandomTickArgs,
     blocks::plant::{PlantBlockBase, crop::get_available_moisture},
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 use pumpkin_data::{
     Block, BlockDirection, BlockId, BlockStateId,
     block_properties::{
@@ -84,12 +85,14 @@ impl BlockBehaviour for StemBlock {
                 let props = StemProperties::from_state_id(state, block);
                 let age = i32::from(props.age);
                 if age < 7 {
+                    let new_state_id = Self::state_with_age(block, state, age + 1);
+                    let Some(new_state_id) =
+                        fire_block_grow(args.world, *args.position, new_state_id).await
+                    else {
+                        return;
+                    };
                     args.world
-                        .set_block_state(
-                            args.position,
-                            Self::state_with_age(block, state, age + 1),
-                            BlockFlags::NOTIFY_NEIGHBORS,
-                        )
+                        .set_block_state(args.position, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
                         .await;
                 } else {
                     let dir = BlockDirection::random_horizontal(&mut RandomGenerator::Xoroshiro(
@@ -104,17 +107,30 @@ impl BlockBehaviour for StemBlock {
                     {
                         let attached_stem = Self::get_attached_stem(dir, block);
                         let gourd = Self::get_gourd(block);
+
+                        let Some(gourd_state_id) =
+                            fire_block_grow(args.world, plant_block_pos, gourd.default_state.id)
+                                .await
+                        else {
+                            return;
+                        };
                         args.world
                             .set_block_state(
                                 &plant_block_pos,
-                                gourd.default_state.id,
+                                gourd_state_id,
                                 BlockFlags::NOTIFY_NEIGHBORS,
                             )
                             .await;
+
+                        let Some(attached_state_id) =
+                            fire_block_grow(args.world, *args.position, attached_stem).await
+                        else {
+                            return;
+                        };
                         args.world
                             .set_block_state(
                                 args.position,
-                                attached_stem,
+                                attached_state_id,
                                 BlockFlags::NOTIFY_NEIGHBORS,
                             )
                             .await;

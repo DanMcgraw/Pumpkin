@@ -15,6 +15,7 @@ use crate::block::{
     BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs,
     OnScheduledTickArgs, RandomTickArgs,
 };
+use crate::plugin::api::events::block::block_grow::fire_block_grow;
 
 #[pumpkin_block("minecraft:sugar_cane")]
 pub struct SugarCaneBlock;
@@ -39,25 +40,35 @@ impl BlockBehaviour for SugarCaneBlock {
                 let state_id = args.world.get_block_state(args.position).id;
                 let age = CactusLikeProperties::from_state_id(state_id, args.block).age;
                 if age == 15 {
+                    let above_pos = args.position.up();
+                    let Some(top_state_id) = fire_block_grow(args.world, above_pos, state_id).await
+                    else {
+                        return;
+                    };
                     args.world
-                        .set_block_state(&args.position.up(), state_id, BlockFlags::empty())
+                        .set_block_state(&above_pos, top_state_id, BlockFlags::empty())
                         .await;
+
                     let props = CactusLikeProperties { age: 0 };
+                    let Some(new_state_id) =
+                        fire_block_grow(args.world, *args.position, props.to_state_id(args.block))
+                            .await
+                    else {
+                        return;
+                    };
                     args.world
-                        .set_block_state(
-                            args.position,
-                            props.to_state_id(args.block),
-                            BlockFlags::empty(),
-                        )
+                        .set_block_state(args.position, new_state_id, BlockFlags::empty())
                         .await;
                 } else {
                     let props = CactusLikeProperties { age: age + 1 };
+                    let Some(new_state_id) =
+                        fire_block_grow(args.world, *args.position, props.to_state_id(args.block))
+                            .await
+                    else {
+                        return;
+                    };
                     args.world
-                        .set_block_state(
-                            args.position,
-                            props.to_state_id(args.block),
-                            BlockFlags::empty(),
-                        )
+                        .set_block_state(args.position, new_state_id, BlockFlags::empty())
                         .await;
                 }
             }

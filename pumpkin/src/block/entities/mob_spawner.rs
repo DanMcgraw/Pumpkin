@@ -140,7 +140,7 @@ impl BlockEntity for MobSpawnerBlockEntity {
                         world,
                         uuid::Uuid::new_v4(),
                     );
-                    world.spawn_entity(entity).await;
+                    world.spawn_entity_with_reason(entity, "spawner").await;
                     world.sync_world_event(WorldEvent::ParticlesMobblockSpawn, self.position, 0);
                     update_spawns = true;
                 }

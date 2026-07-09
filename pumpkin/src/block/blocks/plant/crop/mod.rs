@@ -11,7 +11,7 @@ use pumpkin_world::world::{BlockAccessor, BlockFlags};
 use rand::RngExt;
 
 use crate::{
-    block::blocks::plant::PlantBlockBase, plugin::api::events::block::block_grow::BlockGrowEvent,
+    block::blocks::plant::PlantBlockBase, plugin::api::events::block::block_grow::fire_block_grow,
     world::World,
 };
 
@@ -54,22 +54,10 @@ trait CropBlockBase: PlantBlockBase {
         if age < self.max_age() {
             let f = get_available_moisture(world, pos, block).await;
             if rand::rng().random_range(0..=(25.0 / f).floor() as i64) == 0 {
-                let mut new_state_id = self.state_with_age(block, state, age + 1);
-                if let Some(server) = world.server.upgrade() {
-                    let event = BlockGrowEvent::new(
-                        world.clone(),
-                        block,
-                        state,
-                        Block::from_state_id(new_state_id),
-                        new_state_id,
-                        *pos,
-                    );
-                    let event = server.plugin_manager.fire(event).await;
-                    if event.cancelled {
-                        return;
-                    }
-                    new_state_id = event.new_state_id;
-                }
+                let new_state_id = self.state_with_age(block, state, age + 1);
+                let Some(new_state_id) = fire_block_grow(world, *pos, new_state_id).await else {
+                    return;
+                };
                 world
                     .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
                     .await;

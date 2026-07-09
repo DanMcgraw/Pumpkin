@@ -5,11 +5,12 @@ use crate::entity::player::Player;
 
 use super::PlayerEvent;
 
-/// An event that occurs when a player executes a command
+/// An event that occurs when a player sends a command for execution.
+///
+/// This is Pumpkin's equivalent of Bukkit's `PlayerCommandPreprocessEvent`. Plugins may
+/// inspect or rewrite the raw command string and cancel it to prevent dispatch.
 ///
 /// If the event is cancelled, the command will not be executed.
-///
-/// This event contains information about the player and the command being executed.
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct PlayerCommandSendEvent {
