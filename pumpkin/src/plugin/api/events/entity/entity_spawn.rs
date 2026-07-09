@@ -90,7 +90,7 @@ mod tests {
             Vector3::new(0.0, 64.0, 0.0),
             &EntityType::PIG,
         ));
-        let mut event = EntitySpawnEvent::new(world.clone(), entity, "spawn_egg");
+        let mut event = EntitySpawnEvent::new(world, entity, "spawn_egg");
         assert_eq!(event.spawn_reason, "spawn_egg");
         assert!(!event.cancelled());
         event.set_cancelled(true);

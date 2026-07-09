@@ -549,7 +549,7 @@ impl EntityBase for ItemEntity {
                             .get_item_entity()
                             .expect("entity should be an item"),
                         item_stack,
-                        count_before as u8,
+                        count_before,
                     ))
                     .await;
                 if event.cancelled {

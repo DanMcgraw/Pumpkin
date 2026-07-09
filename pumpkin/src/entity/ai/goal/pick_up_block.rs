@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::{Goal, GoalFuture, to_goal_ticks};
 use crate::entity::mob::Mob;
 use crate::entity::mob::enderman::EndermanEntity;
+use crate::plugin::api::events::entity::entity_change_block::EntityChangeBlockEvent;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::tag::{self, Taggable};
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
@@ -81,7 +82,19 @@ impl Goal for PickUpBlockGoal {
                 return;
             }
 
-            let default_state_id = block.default_state.id;
+            let (old_block, old_state_id) = world.get_block_and_state_id(&target_pos);
+            let default_state_id = old_block.default_state.id;
+
+            let Some(entity) = world.get_entity_by_id(entity.entity_id) else {
+                return;
+            };
+            let server = world.server.upgrade().expect("server is gone");
+            let event =
+                EntityChangeBlockEvent::new(entity, target_pos, old_state_id, BlockStateId::AIR);
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return;
+            }
 
             // TODO: Emit game event (BLOCK_DESTROY)
             world

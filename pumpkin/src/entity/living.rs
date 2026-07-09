@@ -32,12 +32,12 @@ use crate::entity::attributes::ModifierOperation;
 use crate::entity::mob::slime::SlimeEntity;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
 use crate::entity::{EntityBaseFuture, NbtFuture};
-use crate::server::Server;
 use crate::plugin::api::events::entity::{
     entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
     entity_death::EntityDeathEvent,
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
+use crate::server::Server;
 use crate::world::loot::{LootContextParameters, LootTableExt};
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::attributes::Attributes;
@@ -1300,6 +1300,7 @@ impl LivingEntity {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn on_death(
         &self,
         damage_type: DamageType,
@@ -1359,7 +1360,7 @@ impl LivingEntity {
             };
 
             // Collect loot and experience, then fire death events.
-            let drops = self.drop_loot(params.clone()).await;
+            let drops = self.drop_loot(params.clone());
             let dropped_exp = if params.killed_by_player.unwrap_or(false)
                 && world.level_info.load().game_rules.mob_drops
             {
@@ -1368,8 +1369,8 @@ impl LivingEntity {
                 0
             };
 
-            let killer = cause
-                .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+            let killer =
+                cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
 
             let server = world.server.upgrade().expect("server is gone");
 
@@ -1377,8 +1378,7 @@ impl LivingEntity {
             let keep_level;
 
             let (final_drops, final_exp) = if self.entity.entity_type == &EntityType::PLAYER {
-                if world.get_player_by_id(self.entity.entity_id).is_some()
-                {
+                if world.get_player_by_id(self.entity.entity_id).is_some() {
                     let player_arc = world
                         .get_player_by_id(self.entity.entity_id)
                         .expect("player not found in world");
@@ -1389,8 +1389,7 @@ impl LivingEntity {
                         drops.clone(),
                         dropped_exp,
                     );
-                    let player_death_event =
-                        server.plugin_manager.fire(player_death_event).await;
+                    let player_death_event = server.plugin_manager.fire(player_death_event).await;
 
                     keep_inventory = player_death_event.keep_inventory;
                     keep_level = player_death_event.keep_level;
@@ -1408,8 +1407,7 @@ impl LivingEntity {
                         player_death_event.drops,
                         player_death_event.dropped_exp,
                     );
-                    let entity_death_event =
-                        server.plugin_manager.fire(entity_death_event).await;
+                    let entity_death_event = server.plugin_manager.fire(entity_death_event).await;
 
                     (entity_death_event.drops, entity_death_event.dropped_exp)
                 } else {
@@ -1540,7 +1538,7 @@ impl LivingEntity {
         }
     }
 
-    async fn drop_loot(&self, params: LootContextParameters) -> Vec<ItemStack> {
+    fn drop_loot(&self, params: LootContextParameters) -> Vec<ItemStack> {
         let mut drops = Vec::new();
         if let Some(loot_table) = &self.get_entity().entity_type.loot_table {
             drops.extend(loot_table.get_loot(params));
@@ -2242,8 +2240,8 @@ impl EntityBase for LivingEntity {
                 let damager = world
                     .get_entity_by_id(source.get_entity().entity_id)
                     .expect("damager not found in world");
-                let attacker = cause
-                    .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+                let attacker =
+                    cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
 
                 let event = EntityDamageByEntityEvent::new(
                     victim_arc,
@@ -2262,12 +2260,8 @@ impl EntityBase for LivingEntity {
                 amount = event.damage;
                 effective_amount = event.final_damage;
             } else {
-                let event = EntityDamageEvent::new(
-                    victim_arc,
-                    damage_type,
-                    amount,
-                    effective_amount,
-                );
+                let event =
+                    EntityDamageEvent::new(victim_arc, damage_type, amount, effective_amount);
                 let event = server.plugin_manager.fire(event).await;
 
                 if event.cancelled {

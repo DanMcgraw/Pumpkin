@@ -3,9 +3,7 @@ mod tests {
     use std::sync::{Arc, Weak};
 
     use pumpkin_config::world::LevelConfig;
-    use pumpkin_data::{
-        entity::EntityType, item_stack::ItemStack,
-    };
+    use pumpkin_data::{entity::EntityType, item_stack::ItemStack};
     use pumpkin_util::{
         math::{position::BlockPos, vector3::Vector3},
         world_seed::Seed,
@@ -20,19 +18,17 @@ mod tests {
             api::events::entity::{
                 entity_breed::EntityBreedEvent,
                 entity_combust_by_entity::EntityCombustByEntityEvent,
-                entity_explode::EntityExplodeEvent,
-                entity_pickup_item::EntityPickupItemEvent,
+                entity_explode::EntityExplodeEvent, entity_pickup_item::EntityPickupItemEvent,
                 entity_target::EntityTargetEvent,
                 entity_target_living_entity::EntityTargetLivingEntityEvent,
-                entity_transform::EntityTransformEvent,
-                explosion_prime::ExplosionPrimeEvent,
+                entity_transform::EntityTransformEvent, explosion_prime::ExplosionPrimeEvent,
                 potion_splash::PotionSplashEvent,
             },
         },
         world::{LevelData, World},
     };
 
-    async fn test_world() -> Arc<World> {
+    fn test_world() -> Arc<World> {
         let temp_dir = tempdir().unwrap();
         let level = Level::from_root_folder(
             &LevelConfig::default(),
@@ -41,9 +37,9 @@ mod tests {
             pumpkin_data::dimension::Dimension::OVERWORLD,
             None,
         );
-        let level_info = Arc::new(arc_swap::ArcSwap::new(Arc::new(LevelData::default(
-            Seed(0),
-        ))));
+        let level_info = Arc::new(arc_swap::ArcSwap::new(Arc::new(LevelData::default(Seed(
+            0,
+        )))));
         Arc::new(World::load(
             level,
             level_info,
@@ -63,9 +59,9 @@ mod tests {
 
     #[tokio::test]
     async fn entity_breed_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let mother = test_entity(world.clone());
-        let father = test_entity(world.clone());
+        let father = test_entity(world);
         let mut event = EntityBreedEvent::new(
             mother,
             father,
@@ -83,9 +79,9 @@ mod tests {
 
     #[tokio::test]
     async fn entity_target_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let mob = test_entity(world.clone());
-        let target = test_entity(world.clone());
+        let target = test_entity(world);
         let mut event = EntityTargetEvent::new(mob, Some(target), Some("test"));
         assert!(!event.cancelled());
         event.reason = Some("changed");
@@ -96,9 +92,9 @@ mod tests {
 
     #[tokio::test]
     async fn entity_target_living_entity_event_is_cancellable() {
-        let world = test_world().await;
+        let world = test_world();
         let mob = test_entity(world.clone());
-        let target = test_entity(world.clone());
+        let target = test_entity(world);
         let mut event = EntityTargetLivingEntityEvent::new(mob, target);
         assert!(!event.cancelled());
         event.set_cancelled(true);
@@ -107,10 +103,10 @@ mod tests {
 
     #[tokio::test]
     async fn entity_pickup_item_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let entity = test_entity(world.clone());
         let item_entity = Arc::new(crate::entity::item::ItemEntity::new(
-            Entity::new(world.clone(), Vector3::new(0.0, 64.0, 0.0), &EntityType::ITEM),
+            Entity::new(world, Vector3::new(0.0, 64.0, 0.0), &EntityType::ITEM),
             ItemStack::new(1, &pumpkin_data::item::Item::STONE),
         ));
         let mut event = EntityPickupItemEvent::new(
@@ -128,9 +124,9 @@ mod tests {
 
     #[tokio::test]
     async fn entity_combust_by_entity_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let entity = test_entity(world.clone());
-        let combuster = test_entity(world.clone());
+        let combuster = test_entity(world);
         let mut event = EntityCombustByEntityEvent::new(entity, combuster, 5.0);
         assert!(!event.cancelled());
         event.duration = 10.0;
@@ -141,8 +137,8 @@ mod tests {
 
     #[tokio::test]
     async fn entity_explode_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
-        let entity = test_entity(world.clone());
+        let world = test_world();
+        let entity = test_entity(world);
         let mut event = EntityExplodeEvent::new(
             Some(entity),
             Vector3::new(0.0, 64.0, 0.0),
@@ -160,14 +156,10 @@ mod tests {
 
     #[tokio::test]
     async fn explosion_prime_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
-        let entity = test_entity(world.clone());
-        let mut event = ExplosionPrimeEvent::new(
-            Some(entity),
-            Vector3::new(0.0, 64.0, 0.0),
-            3.0,
-            false,
-        );
+        let world = test_world();
+        let entity = test_entity(world);
+        let mut event =
+            ExplosionPrimeEvent::new(Some(entity), Vector3::new(0.0, 64.0, 0.0), 3.0, false);
         assert!(!event.cancelled());
         event.radius = 5.0;
         event.fire = true;
@@ -179,8 +171,8 @@ mod tests {
 
     #[tokio::test]
     async fn entity_transform_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
-        let entity = test_entity(world.clone());
+        let world = test_world();
+        let entity = test_entity(world);
         let mut event = EntityTransformEvent::new(entity, &EntityType::ZOMBIE, Some("test"));
         assert!(!event.cancelled());
         event.reason = Some("changed");
@@ -191,9 +183,9 @@ mod tests {
 
     #[tokio::test]
     async fn potion_splash_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let entity = test_entity(world.clone());
-        let affected = test_entity(world.clone());
+        let affected = test_entity(world);
         let mut event = PotionSplashEvent::new(
             entity,
             Vector3::new(0.0, 64.0, 0.0),

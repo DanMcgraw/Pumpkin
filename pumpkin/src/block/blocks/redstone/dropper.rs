@@ -4,13 +4,13 @@ use tokio::sync::Mutex;
 
 use crate::block::blocks::redstone::block_receives_redstone_power;
 use crate::block::registry::BlockActionResult;
-use crate::plugin::inventory::InventoryMoveItemEvent;
 use crate::block::{
     BlockBehaviour, BlockFuture, NormalUseArgs, OnNeighborUpdateArgs, OnPlaceArgs,
     OnScheduledTickArgs, PlacedArgs,
 };
 use crate::entity::item::ItemEntity;
 use crate::entity::{Entity, EntityBase};
+use crate::plugin::inventory::InventoryMoveItemEvent;
 
 use crate::block::entities::dropper::DropperBlockEntity;
 use crate::block::entities::hopper::HopperBlockEntity;
@@ -181,7 +181,7 @@ impl BlockBehaviour for DropperBlock {
                             let source = args
                                 .world
                                 .get_block_entity(args.position)
-                                .and_then(|e| e.get_inventory());
+                                .and_then(crate::block::entities::BlockEntity::get_inventory);
                             let destination = entity.clone().get_inventory();
                             let event = server
                                 .plugin_manager

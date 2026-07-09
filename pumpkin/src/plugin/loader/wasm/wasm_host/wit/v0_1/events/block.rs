@@ -3,8 +3,10 @@ use pumpkin_data::BlockStateId;
 use crate::plugin::{
     block::{
         block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
-        block_can_build::BlockCanBuildEvent, block_grow::BlockGrowEvent,
+        block_can_build::BlockCanBuildEvent, block_form::BlockFormEvent,
+        block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
         block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
+        structure_grow::StructureGrowEvent,
     },
     loader::wasm::wasm_host::{
         state::PluginHostState,
@@ -15,7 +17,8 @@ use crate::plugin::{
             },
             pumpkin::plugin::event::{
                 BlockBreakEventData, BlockBurnEventData, BlockCanBuildEventData,
-                BlockGrowEventData, BlockPlaceEventData, BlockRedstoneEventData, Event,
+                BlockFormEventData, BlockGrowEventData, BlockMultiPlaceEventData,
+                BlockPlaceEventData, BlockRedstoneEventData, Event, StructureGrowEventData,
             },
         },
     },
@@ -192,6 +195,109 @@ impl ToFromWasmEvent for BlockPlaceEvent {
                 block_placed_against: from_wasm_block_name(&data.block_placed_against),
                 block_position: from_wasm_block_position(data.block_pos),
                 can_build: data.can_build,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockFormEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::BlockFormEvent(BlockFormEventData {
+            target_world,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_pos),
+            new_block: to_wasm_block_name(self.new_block),
+            new_state_id: self.new_state_id.as_u16(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockFormEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                block: from_wasm_block_name(&data.block),
+                block_pos: from_wasm_block_position(data.block_pos),
+                new_block: from_wasm_block_name(&data.new_block),
+                new_state_id: BlockStateId::new_or_air(data.new_state_id),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockMultiPlaceEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let player = state
+            .add_player(self.player.clone())
+            .expect("failed to add player resource");
+
+        Event::BlockMultiPlaceEvent(BlockMultiPlaceEventData {
+            player,
+            block_placed: to_wasm_block_name(self.block_placed),
+            block_placed_against: to_wasm_block_name(self.block_placed_against),
+            primary_pos: to_wasm_block_position(self.primary_pos),
+            affected_positions: self
+                .affected_positions
+                .iter()
+                .copied()
+                .map(to_wasm_block_position)
+                .collect(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockMultiPlaceEvent(data) => Self {
+                player: consume_player(state, &data.player),
+                block_placed: from_wasm_block_name(&data.block_placed),
+                block_placed_against: from_wasm_block_name(&data.block_placed_against),
+                primary_pos: from_wasm_block_position(data.primary_pos),
+                affected_positions: data
+                    .affected_positions
+                    .into_iter()
+                    .map(from_wasm_block_position)
+                    .collect(),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for StructureGrowEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::StructureGrowEvent(StructureGrowEventData {
+            target_world,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_pos),
+            placed_feature: self.placed_feature.to_name().to_string(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::StructureGrowEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                block: from_wasm_block_name(&data.block),
+                block_pos: from_wasm_block_position(data.block_pos),
+                placed_feature: pumpkin_data::placed_feature::PlacedFeature::from_name(
+                    &data.placed_feature,
+                )
+                .expect("invalid placed feature name"),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

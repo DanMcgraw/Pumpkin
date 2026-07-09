@@ -22,7 +22,9 @@ use crate::{
         OnSyncedBlockEventArgs, PlacedArgs,
         blocks::{piston::piston_head::PistonHeadProperties, redstone::is_emitting_redstone_power},
     },
-    plugin::block::{block_piston_extend::BlockPistonExtendEvent, block_piston_retract::BlockPistonRetractEvent},
+    plugin::block::{
+        block_piston_extend::BlockPistonExtendEvent, block_piston_retract::BlockPistonRetractEvent,
+    },
     world::World,
 };
 

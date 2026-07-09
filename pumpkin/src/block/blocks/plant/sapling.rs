@@ -1,5 +1,6 @@
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::BlockProperties;
+use pumpkin_data::placed_feature::PlacedFeature;
 use pumpkin_macros::pumpkin_block_from_tag;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::world::BlockFlags;
@@ -9,7 +10,9 @@ use crate::block::blocks::plant::PlantBlockBase;
 use crate::block::{
     BlockBehaviour, BlockFuture, CanPlaceAtArgs, GetStateForNeighborUpdateArgs, RandomTickArgs,
 };
-use crate::plugin::api::events::block::block_grow::fire_block_grow;
+use crate::plugin::api::events::block::{
+    block_grow::fire_block_grow, structure_grow::StructureGrowEvent,
+};
 use crate::world::World;
 
 type SaplingProperties = pumpkin_data::block_properties::OakSaplingLikeProperties;
@@ -18,6 +21,22 @@ type SaplingProperties = pumpkin_data::block_properties::OakSaplingLikePropertie
 pub struct SaplingBlock;
 
 impl SaplingBlock {
+    const fn select_tree_feature(block: &'static pumpkin_data::Block) -> Option<PlacedFeature> {
+        // TODO: detect 2x2 arrangements for spruce, jungle, and dark oak.
+        Some(match block.id {
+            pumpkin_data::BlockId::OAK_SAPLING => PlacedFeature::OakChecked,
+            pumpkin_data::BlockId::SPRUCE_SAPLING => PlacedFeature::SpruceChecked,
+            pumpkin_data::BlockId::BIRCH_SAPLING => PlacedFeature::BirchChecked,
+            pumpkin_data::BlockId::JUNGLE_SAPLING => PlacedFeature::JungleTree,
+            pumpkin_data::BlockId::ACACIA_SAPLING => PlacedFeature::AcaciaChecked,
+            pumpkin_data::BlockId::DARK_OAK_SAPLING => PlacedFeature::DarkOakChecked,
+            pumpkin_data::BlockId::CHERRY_SAPLING => PlacedFeature::CherryChecked,
+            pumpkin_data::BlockId::PALE_OAK_SAPLING => PlacedFeature::PaleOakChecked,
+            pumpkin_data::BlockId::MANGROVE_PROPAGULE => PlacedFeature::MangroveChecked,
+            _ => return None,
+        })
+    }
+
     async fn generate(&self, world: &Arc<World>, pos: &BlockPos) {
         let (block, state) = world.get_block_and_state_id(pos);
         let mut props = SaplingProperties::from_state_id(state, block);
@@ -31,7 +50,18 @@ impl SaplingBlock {
                 .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_ALL)
                 .await;
         } else {
-            //TODO generate tree
+            let Some(server) = world.server.upgrade() else {
+                return;
+            };
+            let Some(placed_feature) = Self::select_tree_feature(block) else {
+                return;
+            };
+
+            let event = StructureGrowEvent::new(world.clone(), block, *pos, placed_feature);
+            let event = server.plugin_manager.fire(event).await;
+            if !event.cancelled {
+                // TODO: generate the tree/feature in the live world
+            }
         }
     }
 }

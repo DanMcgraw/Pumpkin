@@ -43,6 +43,7 @@ impl ItemBehaviour for TridentItem {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_stopped_using<'a>(
         &'a self,
         _stack: &'a ItemStack,

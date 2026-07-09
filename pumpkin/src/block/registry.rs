@@ -135,14 +135,19 @@ use crate::block::{
 };
 use crate::entity::EntityBase;
 use crate::entity::player::Player;
+use crate::plugin::api::events::block::block_multi_place::BlockMultiPlaceEvent;
 use crate::server::Server;
 use crate::world::World;
 use pumpkin_data::BlockStateId;
+use pumpkin_data::block_properties::{
+    BlockProperties, OakDoorLikeProperties, SmallDripleafLikeProperties, WhiteBedLikeProperties,
+};
 use pumpkin_data::block_rotation::{Mirror, Rotation};
 use pumpkin_data::fluid::Fluid;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::{Block, BlockDirection, BlockId, BlockState};
+use pumpkin_data::tag::Taggable;
+use pumpkin_data::{Block, BlockDirection, BlockId, BlockState, HorizontalFacingExt};
 use pumpkin_protocol::java::server::play::SUseItemOn;
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
@@ -391,6 +396,48 @@ pub enum BlockPlacingError {
     BlockOutOfWorld,
 }
 
+/// Computes the secondary positions that will be set when a multi-block item is placed.
+///
+/// Returns `Some(positions)` if the block is known to create additional blocks, or `None` for
+/// ordinary single-block placements.
+fn compute_multi_place_positions(
+    placed_block: &'static Block,
+    primary_pos: BlockPos,
+    new_state_id: BlockStateId,
+) -> Option<Vec<BlockPos>> {
+    if placed_block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_BEDS) {
+        let props = WhiteBedLikeProperties::from_state_id(new_state_id, placed_block);
+        return Some(vec![
+            primary_pos.offset(props.facing.to_block_direction().to_offset()),
+        ]);
+    }
+
+    if placed_block.has_tag(&pumpkin_data::tag::Block::MINECRAFT_DOORS) {
+        let _props = OakDoorLikeProperties::from_state_id(new_state_id, placed_block);
+        return Some(vec![primary_pos.offset(BlockDirection::Up.to_offset())]);
+    }
+
+    if placed_block.id == BlockId::TALL_GRASS
+        || placed_block.id == BlockId::LARGE_FERN
+        || placed_block.id == BlockId::SUNFLOWER
+        || placed_block.id == BlockId::LILAC
+        || placed_block.id == BlockId::PEONY
+        || placed_block.id == BlockId::ROSE_BUSH
+        || placed_block.id == BlockId::PITCHER_PLANT
+    {
+        return Some(vec![primary_pos.offset(BlockDirection::Up.to_offset())]);
+    }
+
+    if placed_block.id == BlockId::SMALL_DRIPLEAF {
+        let props = SmallDripleafLikeProperties::from_state_id(new_state_id, placed_block);
+        if props.half == pumpkin_data::block_properties::DoubleBlockHalf::Lower {
+            return Some(vec![primary_pos.offset(BlockDirection::Up.to_offset())]);
+        }
+    }
+
+    None
+}
+
 impl BlockRegistry {
     fn entity_blocks_block_placement(entity: &dyn EntityBase) -> bool {
         let base_entity = entity.get_entity();
@@ -603,6 +650,22 @@ impl BlockRegistry {
             .await;
         if event.cancelled {
             return Ok(None);
+        }
+
+        if let Some(affected_positions) =
+            compute_multi_place_positions(placed_block, final_block_pos, new_state)
+        {
+            let event = BlockMultiPlaceEvent::new(
+                player.clone(),
+                placed_block,
+                clicked_block,
+                final_block_pos,
+                affected_positions,
+            );
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return Ok(None);
+            }
         }
 
         let _replaced_id = world

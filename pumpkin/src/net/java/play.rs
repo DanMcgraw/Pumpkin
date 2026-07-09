@@ -1863,14 +1863,9 @@ impl JavaClient {
                     // Fire BlockDamageEvent so plugins can prepare abilities or toggle
                     // instant-break behavior.
                     let speed = block::calc_block_breaking(player, state, block).await;
-                    let insta_break =
-                        speed >= 1.0 || player.gamemode.load() == GameMode::Creative;
-                    let damage_event = BlockDamageEvent::new(
-                        player.clone(),
-                        block,
-                        position,
-                        insta_break,
-                    );
+                    let insta_break = speed >= 1.0 || player.gamemode.load() == GameMode::Creative;
+                    let damage_event =
+                        BlockDamageEvent::new(player.clone(), block, position, insta_break);
                     let damage_event = server.plugin_manager.fire(damage_event).await;
 
                     if damage_event.cancelled {

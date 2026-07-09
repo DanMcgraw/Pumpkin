@@ -12,6 +12,7 @@ use crate::{
     entity::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity, player::Player,
     },
+    plugin::api::events::entity::entity_block_form::EntityBlockFormEvent,
     server::Server,
     world::World,
 };
@@ -72,15 +73,18 @@ impl EntityBase for FallingEntity {
             entity.tick_block_collisions(caller, server).await;
             if entity.on_ground.load(Ordering::Relaxed) {
                 entity.velocity.store(velo.multiply(0.7, -0.5, 0.7));
-                entity
-                    .world
-                    .load()
-                    .set_block_state(
-                        &self.entity.block_pos.load(),
-                        self.block_state_id,
-                        BlockFlags::NOTIFY_ALL,
-                    )
-                    .await;
+                let world = entity.world.load();
+                let block_pos = self.entity.block_pos.load();
+
+                let event =
+                    EntityBlockFormEvent::new(caller.clone(), block_pos, self.block_state_id);
+                let server = world.server.upgrade().expect("server is gone");
+                let event = server.plugin_manager.fire(event).await;
+                if !event.cancelled {
+                    world
+                        .set_block_state(&block_pos, event.new_state_id, BlockFlags::NOTIFY_ALL)
+                        .await;
+                }
                 entity.remove().await;
             }
 

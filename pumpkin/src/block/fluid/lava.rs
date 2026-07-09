@@ -2,6 +2,7 @@ use super::flowing_trait::FlowingFluid;
 use crate::{
     block::{BlockFuture, FluidMetadata, blocks::fire::fire::FireBlock, fluid::FluidBehaviour},
     entity::EntityBase,
+    plugin::api::events::block::block_form::fire_block_form,
     world::World,
 };
 use pumpkin_data::{
@@ -86,9 +87,11 @@ impl FlowingLava {
         }
 
         let fire_state_id = FireBlock.get_state_for_position(world.as_ref(), &Block::FIRE, pos);
-        world
-            .set_block_state(pos, fire_state_id, BlockFlags::NOTIFY_ALL)
-            .await;
+        if let Some(fire_state_id) = fire_block_form(world, *pos, fire_state_id).await {
+            world
+                .set_block_state(pos, fire_state_id, BlockFlags::NOTIFY_ALL)
+                .await;
+        }
     }
 
     async fn receive_neighbor_fluids(
@@ -108,30 +111,30 @@ impl FlowingLava {
                 if dir == BlockDirection::Down {
                     return true;
                 }
-                let block = if is_still {
+                let new_block = if is_still {
                     Block::OBSIDIAN
                 } else {
                     Block::COBBLESTONE
                 };
-                world
-                    .set_block_state(
-                        block_pos,
-                        block.default_state.id,
-                        BlockFlags::NOTIFY_NEIGHBORS,
-                    )
-                    .await;
-                world.sync_world_event(WorldEvent::LavaFizz, *block_pos, 0);
+                if let Some(new_state_id) =
+                    fire_block_form(world, *block_pos, new_block.default_state.id).await
+                {
+                    world
+                        .set_block_state(block_pos, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
+                        .await;
+                    world.sync_world_event(WorldEvent::LavaFizz, *block_pos, 0);
+                }
                 return false;
             }
             if below_is_soul_soil && world.get_block(&neighbor_pos) == &Block::BLUE_ICE {
-                world
-                    .set_block_state(
-                        block_pos,
-                        Block::BASALT.default_state.id,
-                        BlockFlags::NOTIFY_NEIGHBORS,
-                    )
-                    .await;
-                world.sync_world_event(WorldEvent::LavaFizz, *block_pos, 0);
+                if let Some(new_state_id) =
+                    fire_block_form(world, *block_pos, Block::BASALT.default_state.id).await
+                {
+                    world
+                        .set_block_state(block_pos, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
+                        .await;
+                    world.sync_world_event(WorldEvent::LavaFizz, *block_pos, 0);
+                }
                 return false;
             }
         }
@@ -319,10 +322,14 @@ impl FlowingFluid for FlowingLava {
         if new_props.level == Level::L8 && new_props.falling == Falling::True {
             // Stone creation when lava meets water
             if block == &Block::WATER {
-                world
-                    .set_block_state(pos, Block::STONE.default_state.id, BlockFlags::NOTIFY_ALL)
-                    .await;
-                world.sync_world_event(WorldEvent::LavaFizz, *pos, 0);
+                if let Some(new_state_id) =
+                    fire_block_form(world, *pos, Block::STONE.default_state.id).await
+                {
+                    world
+                        .set_block_state(pos, new_state_id, BlockFlags::NOTIFY_ALL)
+                        .await;
+                    world.sync_world_event(WorldEvent::LavaFizz, *pos, 0);
+                }
                 return;
             }
         }

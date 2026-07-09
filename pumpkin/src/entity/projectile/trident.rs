@@ -316,23 +316,14 @@ impl EntityBase for TridentEntity {
 
             // Fire ProjectileHitEvent so plugins can observe or cancel the impact.
             let (hit_entity, hit_block, hit_block_pos) = match &hit {
-                ProjectileHit::Entity { entity: target, .. } => {
-                    (Some(target.clone()), None, None)
-                }
-                ProjectileHit::Block { pos, .. } => {
-                    (None, Some(world.get_block(pos)), Some(*pos))
-                }
+                ProjectileHit::Entity { entity: target, .. } => (Some(target.clone()), None, None),
+                ProjectileHit::Block { pos, .. } => (None, Some(world.get_block(pos)), Some(*pos)),
             };
             let caller = world
                 .get_entity_by_id(entity.entity_id)
                 .expect("trident not found in world");
             let server = world.server.upgrade().expect("server is gone");
-            let hit_event = ProjectileHitEvent::new(
-                caller,
-                hit_entity,
-                hit_block,
-                hit_block_pos,
-            );
+            let hit_event = ProjectileHitEvent::new(caller, hit_entity, hit_block, hit_block_pos);
             let hit_event = server.plugin_manager.fire(hit_event).await;
             if hit_event.cancelled {
                 return;

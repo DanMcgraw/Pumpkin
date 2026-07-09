@@ -14,6 +14,7 @@ use crate::entity::{
     mob::{Mob, MobEntity},
     player::Player,
 };
+use crate::plugin::api::events::entity::entity_change_block::EntityChangeBlockEvent;
 
 pub mod flight_history;
 pub mod phase;
@@ -617,9 +618,17 @@ impl EnderDragonEntity {
 
         let world = self.mob_entity.living_entity.entity.world.load();
         let bbox = self.mob_entity.living_entity.entity.bounding_box.load();
+        let entity_id = self.mob_entity.living_entity.entity.entity_id;
 
         let min = bbox.min_block_pos();
         let max = bbox.max_block_pos();
+
+        let Some(entity) = world.get_entity_by_id(entity_id) else {
+            return;
+        };
+        let Some(server) = world.server.upgrade() else {
+            return;
+        };
 
         for pos in BlockPos::iterate(min, max) {
             let block = world.get_block(&pos);
@@ -630,9 +639,15 @@ impl EnderDragonEntity {
                 && block != &Block::END_PORTAL
                 && block != &Block::END_PORTAL_FRAME
             {
-                world
-                    .set_block_state(&pos, BlockStateId::AIR, BlockFlags::NOTIFY_ALL)
-                    .await;
+                let state_id = world.get_block_state_id(&pos);
+                let event =
+                    EntityChangeBlockEvent::new(entity.clone(), pos, state_id, BlockStateId::AIR);
+                let event = server.plugin_manager.fire(event).await;
+                if !event.cancelled {
+                    world
+                        .set_block_state(&pos, BlockStateId::AIR, BlockFlags::NOTIFY_ALL)
+                        .await;
+                }
             }
         }
     }

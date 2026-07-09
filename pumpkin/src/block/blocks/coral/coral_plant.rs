@@ -10,6 +10,7 @@ use crate::block::{
     OnPlaceArgs, OnScheduledTickArgs, PlacedArgs,
     blocks::coral::{is_dead_coral, scan_for_water, try_schedule_die_tick},
 };
+use crate::plugin::api::events::block::block_form::fire_block_form;
 pub struct CoralPlantBlock;
 impl BlockMetadata for CoralPlantBlock {
     fn ids() -> Box<[BlockId]> {
@@ -49,9 +50,13 @@ impl BlockBehaviour for CoralPlantBlock {
                         CoralPlantLikeProperties::from_state_id(current_state.id, args.block);
                     props.to_state_id(get_dead_type(args.block.id).unwrap_or_default().to_block())
                 };
-                args.world
-                    .set_block_state(args.position, dead_block_state_id, BlockFlags::empty())
-                    .await;
+                if let Some(new_state_id) =
+                    fire_block_form(args.world, *args.position, dead_block_state_id).await
+                {
+                    args.world
+                        .set_block_state(args.position, new_state_id, BlockFlags::empty())
+                        .await;
+                }
             }
         })
     }

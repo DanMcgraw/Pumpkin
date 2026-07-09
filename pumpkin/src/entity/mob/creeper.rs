@@ -115,12 +115,8 @@ impl CreeperEntity {
             .get_entity_by_id(entity.entity_id)
             .expect("creeper should exist");
         if let Some(server) = world.server.upgrade() {
-            let prime_event = ExplosionPrimeEvent::new(
-                Some(creeper.clone()),
-                pos,
-                radius * multiplier,
-                false,
-            );
+            let prime_event =
+                ExplosionPrimeEvent::new(Some(creeper.clone()), pos, radius * multiplier, false);
             let prime_event = server.plugin_manager.fire(prime_event).await;
             if prime_event.cancelled {
                 return;

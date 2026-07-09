@@ -348,6 +348,7 @@ impl EntityBase for ArrowEntity {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_hit(&self, hit: ProjectileHit) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             let entity = self.get_entity();
@@ -355,23 +356,15 @@ impl EntityBase for ArrowEntity {
 
             // Fire ProjectileHitEvent so plugins can observe or cancel the impact.
             let (hit_entity, hit_block, hit_block_pos) = match &hit {
-                ProjectileHit::Entity { entity: target, .. } => {
-                    (Some(target.clone()), None, None)
-                }
-                ProjectileHit::Block { pos, .. } => {
-                    (None, Some(world.get_block(pos)), Some(*pos))
-                }
+                ProjectileHit::Entity { entity: target, .. } => (Some(target.clone()), None, None),
+                ProjectileHit::Block { pos, .. } => (None, Some(world.get_block(pos)), Some(*pos)),
             };
             let caller = world
                 .get_entity_by_id(entity.entity_id)
                 .expect("arrow not found in world");
             let server = world.server.upgrade().expect("server is gone");
-            let hit_event = ProjectileHitEvent::new(
-                caller.clone(),
-                hit_entity,
-                hit_block,
-                hit_block_pos,
-            );
+            let hit_event =
+                ProjectileHitEvent::new(caller.clone(), hit_entity, hit_block, hit_block_pos);
             let hit_event = server.plugin_manager.fire(hit_event).await;
             if hit_event.cancelled {
                 return;
@@ -429,11 +422,8 @@ impl EntityBase for ArrowEntity {
                             .owner_id
                             .and_then(|id| world.get_entity_by_id(id))
                             .unwrap_or_else(|| caller.clone());
-                        let event = EntityCombustByEntityEvent::new(
-                            target.clone(),
-                            combuster,
-                            duration,
-                        );
+                        let event =
+                            EntityCombustByEntityEvent::new(target.clone(), combuster, duration);
                         let event = server.plugin_manager.fire(event).await;
                         if !event.cancelled {
                             target.get_entity().set_on_fire_for_ticks(100);

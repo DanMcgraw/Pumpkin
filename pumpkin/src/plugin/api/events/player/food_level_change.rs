@@ -23,7 +23,7 @@ pub struct FoodLevelChangeEvent {
 impl FoodLevelChangeEvent {
     /// Creates a new [`FoodLevelChangeEvent`].
     #[must_use]
-    pub fn new(player: Arc<Player>, food_level: u8) -> Self {
+    pub const fn new(player: Arc<Player>, food_level: u8) -> Self {
         Self {
             player,
             food_level,

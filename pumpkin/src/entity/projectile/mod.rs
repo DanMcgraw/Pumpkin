@@ -116,6 +116,7 @@ impl NBTStorage for ThrownItemEntity {}
 
 impl ThrownItemEntity {
     /// Process a tick for projectile movement and collisions
+    #[allow(clippy::too_many_lines)]
     pub async fn process_tick<'a>(&'a self, caller: &'a Arc<dyn EntityBase>, _server: &'a Server) {
         let entity = self.get_entity();
         let world = entity.world.load();
@@ -223,20 +224,12 @@ impl ThrownItemEntity {
 
             // Fire ProjectileHitEvent so plugins can observe or cancel the impact.
             let (hit_entity, hit_block, hit_block_pos) = match &h {
-                ProjectileHit::Entity { entity: target, .. } => {
-                    (Some(target.clone()), None, None)
-                }
-                ProjectileHit::Block { pos, .. } => {
-                    (None, Some(world.get_block(pos)), Some(*pos))
-                }
+                ProjectileHit::Entity { entity: target, .. } => (Some(target.clone()), None, None),
+                ProjectileHit::Block { pos, .. } => (None, Some(world.get_block(pos)), Some(*pos)),
             };
             let server = world.server.upgrade().expect("server is gone");
-            let hit_event = ProjectileHitEvent::new(
-                caller.clone(),
-                hit_entity,
-                hit_block,
-                hit_block_pos,
-            );
+            let hit_event =
+                ProjectileHitEvent::new(caller.clone(), hit_entity, hit_block, hit_block_pos);
             let hit_event = server.plugin_manager.fire(hit_event).await;
             if hit_event.cancelled {
                 // Allow the projectile to keep flying; reset has_hit so future

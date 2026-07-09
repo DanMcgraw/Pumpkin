@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::{Goal, GoalFuture, to_goal_ticks};
 use crate::entity::mob::Mob;
 use crate::entity::mob::enderman::EndermanEntity;
+use crate::plugin::api::events::entity::entity_block_form::EntityBlockFormEvent;
 use pumpkin_data::Block;
 use pumpkin_data::block_properties::is_air;
 use pumpkin_util::math::position::BlockPos;
@@ -76,8 +77,17 @@ impl Goal for PlaceBlockGoal {
             }
 
             // TODO: Validate canPlaceAt and check entity collisions at target position
+            let Some(entity) = world.get_entity_by_id(entity.entity_id) else {
+                return;
+            };
+            let event = EntityBlockFormEvent::new(entity, target_pos, block_state_id);
+            let server = world.server.upgrade().expect("server is gone");
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                return;
+            }
             world
-                .set_block_state(&target_pos, block_state_id, BlockFlags::NOTIFY_ALL)
+                .set_block_state(&target_pos, event.new_state_id, BlockFlags::NOTIFY_ALL)
                 .await;
             self.enderman.set_carried_block(None);
         })

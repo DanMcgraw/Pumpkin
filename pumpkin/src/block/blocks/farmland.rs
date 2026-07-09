@@ -7,6 +7,7 @@ use crate::block::GetStateForNeighborUpdateArgs;
 use crate::block::OnPlaceArgs;
 use crate::block::OnScheduledTickArgs;
 use crate::block::RandomTickArgs;
+use crate::plugin::api::events::block::block_form::fire_block_form;
 use crate::world::World;
 use pumpkin_data::Block;
 use pumpkin_data::BlockDirection;
@@ -31,13 +32,13 @@ impl BlockBehaviour for FarmlandBlock {
     fn on_scheduled_tick<'a>(&'a self, args: OnScheduledTickArgs<'a>) -> BlockFuture<'a, ()> {
         Box::pin(async move {
             // TODO: push up entities
-            args.world
-                .set_block_state(
-                    args.position,
-                    Block::DIRT.default_state.id,
-                    BlockFlags::NOTIFY_ALL,
-                )
-                .await;
+            if let Some(new_state_id) =
+                fire_block_form(args.world, *args.position, Block::DIRT.default_state.id).await
+            {
+                args.world
+                    .set_block_state(args.position, new_state_id, BlockFlags::NOTIFY_ALL)
+                    .await;
+            }
         })
     }
 
@@ -73,13 +74,13 @@ impl BlockBehaviour for FarmlandBlock {
             if is_water_nearby(args.world, args.position) {
                 let mut props = FarmlandProperties::default(args.block);
                 props.moisture = 7;
-                args.world
-                    .set_block_state(
-                        args.position,
-                        props.to_state_id(args.block),
-                        BlockFlags::NOTIFY_NEIGHBORS,
-                    )
-                    .await;
+                if let Some(new_state_id) =
+                    fire_block_form(args.world, *args.position, props.to_state_id(args.block)).await
+                {
+                    args.world
+                        .set_block_state(args.position, new_state_id, BlockFlags::NOTIFY_NEIGHBORS)
+                        .await;
+                }
             } else {
                 let state_id = args.world.get_block_state_id(args.position);
                 let mut props = FarmlandProperties::from_state_id(state_id, args.block);
@@ -90,23 +91,36 @@ impl BlockBehaviour for FarmlandBlock {
                         .has_tag(&tag::Block::MINECRAFT_MAINTAINS_FARMLAND)
                     {
                         //TODO push entities up
+                        if let Some(new_state_id) = fire_block_form(
+                            args.world,
+                            *args.position,
+                            Block::DIRT.default_state.id,
+                        )
+                        .await
+                        {
+                            args.world
+                                .set_block_state(
+                                    args.position,
+                                    new_state_id,
+                                    BlockFlags::NOTIFY_NEIGHBORS,
+                                )
+                                .await;
+                        }
+                    }
+                } else {
+                    props.moisture -= 1;
+                    if let Some(new_state_id) =
+                        fire_block_form(args.world, *args.position, props.to_state_id(args.block))
+                            .await
+                    {
                         args.world
                             .set_block_state(
                                 args.position,
-                                Block::DIRT.default_state.id,
+                                new_state_id,
                                 BlockFlags::NOTIFY_NEIGHBORS,
                             )
                             .await;
                     }
-                } else {
-                    props.moisture -= 1;
-                    args.world
-                        .set_block_state(
-                            args.position,
-                            props.to_state_id(args.block),
-                            BlockFlags::NOTIFY_NEIGHBORS,
-                        )
-                        .await;
                 }
             }
         })

@@ -1,5 +1,6 @@
 use super::{Controls, Goal, GoalFuture};
 use crate::entity::mob::Mob;
+use crate::plugin::api::events::entity::entity_change_block::EntityChangeBlockEvent;
 use pumpkin_data::Block;
 use pumpkin_data::tag::{self, Taggable};
 use pumpkin_world::world::BlockFlags;
@@ -70,28 +71,54 @@ impl Goal for EatGrassGoal {
                 let block_pos = entity.block_pos.load();
                 let world = entity.world.load_full();
 
+                let entity = world.get_entity_by_id(entity.entity_id);
+                let Some(entity) = entity else {
+                    return;
+                };
+                let server = world.server.upgrade().expect("server is gone");
+
                 let block_at_pos = world.get_block(&block_pos);
                 if block_at_pos.has_tag(&tag::Block::MINECRAFT_EDIBLE_FOR_SHEEP) {
-                    world
-                        .set_block_state(
-                            &block_pos,
-                            Block::AIR.default_state.id,
-                            BlockFlags::NOTIFY_ALL,
-                        )
-                        .await;
-                    mob.on_eating_grass().await;
-                } else {
-                    let below_pos = block_pos.down();
-                    let block_below = world.get_block(&below_pos);
-                    if block_below.id == Block::GRASS_BLOCK.id {
+                    let state_id = world.get_block_state_id(&block_pos);
+                    let event = EntityChangeBlockEvent::new(
+                        entity.clone(),
+                        block_pos,
+                        state_id,
+                        Block::AIR.default_state.id,
+                    );
+                    let event = server.plugin_manager.fire(event).await;
+                    if !event.cancelled {
                         world
                             .set_block_state(
-                                &below_pos,
-                                Block::DIRT.default_state.id,
+                                &block_pos,
+                                Block::AIR.default_state.id,
                                 BlockFlags::NOTIFY_ALL,
                             )
                             .await;
                         mob.on_eating_grass().await;
+                    }
+                } else {
+                    let below_pos = block_pos.down();
+                    let block_below = world.get_block(&below_pos);
+                    if block_below.id == Block::GRASS_BLOCK.id {
+                        let state_id = world.get_block_state_id(&below_pos);
+                        let event = EntityChangeBlockEvent::new(
+                            entity.clone(),
+                            below_pos,
+                            state_id,
+                            Block::DIRT.default_state.id,
+                        );
+                        let event = server.plugin_manager.fire(event).await;
+                        if !event.cancelled {
+                            world
+                                .set_block_state(
+                                    &below_pos,
+                                    Block::DIRT.default_state.id,
+                                    BlockFlags::NOTIFY_ALL,
+                                )
+                                .await;
+                            mob.on_eating_grass().await;
+                        }
                     }
                 }
             }

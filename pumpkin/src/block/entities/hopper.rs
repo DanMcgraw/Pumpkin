@@ -178,7 +178,7 @@ impl HopperBlockEntity {
                         let source = entity.clone().get_inventory();
                         let destination = world
                             .get_block_entity(&self.position)
-                            .and_then(|e| e.get_inventory());
+                            .and_then(super::BlockEntity::get_inventory);
                         let event = server
                             .plugin_manager
                             .fire(InventoryMoveItemEvent::new(
@@ -250,7 +250,7 @@ impl HopperBlockEntity {
                     if let Some(server) = world.server.upgrade() {
                         let source = world
                             .get_block_entity(&self.position)
-                            .and_then(|e| e.get_inventory());
+                            .and_then(super::BlockEntity::get_inventory);
                         let destination = entity.clone().get_inventory();
                         let event = server
                             .plugin_manager

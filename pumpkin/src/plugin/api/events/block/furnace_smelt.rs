@@ -34,7 +34,7 @@ pub struct FurnaceSmeltEvent {
 impl FurnaceSmeltEvent {
     /// Creates a new [`FurnaceSmeltEvent`].
     #[must_use]
-    pub fn new(
+    pub const fn new(
         block: &'static Block,
         block_position: BlockPos,
         world: Arc<World>,

@@ -44,7 +44,7 @@ impl BlockPistonRetractEvent {
     /// # Returns
     /// A new `BlockPistonRetractEvent`.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         world: Arc<World>,
         piston_pos: BlockPos,
         piston_block: &'static Block,

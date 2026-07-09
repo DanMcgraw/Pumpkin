@@ -1,7 +1,7 @@
 use super::{Entity, EntityBase, NBTStorage, living::LivingEntity, player::Player};
 use crate::{
-    entity::EntityBaseFuture,
-    plugin::api::events::entity::explosion_prime::ExplosionPrimeEvent, server::Server,
+    entity::EntityBaseFuture, plugin::api::events::entity::explosion_prime::ExplosionPrimeEvent,
+    server::Server,
 };
 use core::f32;
 use pumpkin_data::{Block, meta_data_type::MetaDataType, tracked_data::TrackedData};

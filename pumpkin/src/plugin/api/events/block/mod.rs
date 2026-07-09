@@ -3,7 +3,9 @@ pub mod block_burn;
 pub mod block_can_build;
 pub mod block_damage;
 pub mod block_drop_item;
+pub mod block_form;
 pub mod block_grow;
+pub mod block_multi_place;
 pub mod block_piston_extend;
 pub mod block_piston_retract;
 pub mod block_place;
@@ -11,6 +13,7 @@ pub mod block_redstone;
 pub mod brew;
 pub mod furnace_burn;
 pub mod furnace_smelt;
+pub mod structure_grow;
 
 use pumpkin_data::Block;
 

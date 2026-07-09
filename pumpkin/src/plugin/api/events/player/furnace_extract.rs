@@ -26,7 +26,7 @@ pub struct FurnaceExtractEvent {
 impl FurnaceExtractEvent {
     /// Creates a new [`FurnaceExtractEvent`].
     #[must_use]
-    pub fn new(
+    pub const fn new(
         player: Arc<Player>,
         block_position: BlockPos,
         item: ItemStack,

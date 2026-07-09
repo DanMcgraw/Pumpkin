@@ -5,6 +5,7 @@ use crate::{
         blocks::coral::{is_dead_coral, scan_for_water, try_schedule_die_tick},
     },
     entity::EntityBase,
+    plugin::api::events::block::block_form::fire_block_form,
 };
 use pumpkin_data::{
     Block, BlockDirection, BlockId, BlockStateId, FacingExt, HorizontalFacingExt,
@@ -138,9 +139,13 @@ impl BlockBehaviour for CoralFanBlock {
                     props.to_state_id(get_dead_type(args.block.id).expect("not a coral block"))
                 };
 
-                args.world
-                    .set_block_state(args.position, dead_block_state_id, BlockFlags::empty())
-                    .await;
+                if let Some(new_state_id) =
+                    fire_block_form(args.world, *args.position, dead_block_state_id).await
+                {
+                    args.world
+                        .set_block_state(args.position, new_state_id, BlockFlags::empty())
+                        .await;
+                }
             }
         })
     }

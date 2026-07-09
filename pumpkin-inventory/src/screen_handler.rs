@@ -37,7 +37,6 @@ use pumpkin_data::{
     screen::WindowType,
     statistic::StatisticCategory,
 };
-use pumpkin_util::math::position::BlockPos;
 use pumpkin_protocol::{
     codec::item_stack_seralizer::OptionalItemStackHash,
     java::{
@@ -48,6 +47,7 @@ use pumpkin_protocol::{
         server::play::SlotActionType,
     },
 };
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::{
     block::entities::PropertyDelegate,

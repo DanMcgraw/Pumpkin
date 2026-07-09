@@ -4,11 +4,7 @@ mod tests {
 
     use pumpkin_config::world::LevelConfig;
     use pumpkin_data::{
-        Block,
-        damage::DamageType,
-        dimension::Dimension,
-        entity::EntityType,
-        item_stack::ItemStack,
+        Block, damage::DamageType, dimension::Dimension, entity::EntityType, item_stack::ItemStack,
     };
     use pumpkin_util::{
         math::{position::BlockPos, vector3::Vector3},
@@ -24,16 +20,14 @@ mod tests {
             Cancellable,
             api::events::entity::{
                 entity_damage::EntityDamageEvent,
-                entity_damage_by_entity::EntityDamageByEntityEvent,
-                entity_death::EntityDeathEvent,
-                projectile_hit::ProjectileHitEvent,
-                projectile_launch::ProjectileLaunchEvent,
+                entity_damage_by_entity::EntityDamageByEntityEvent, entity_death::EntityDeathEvent,
+                projectile_hit::ProjectileHitEvent, projectile_launch::ProjectileLaunchEvent,
             },
         },
         world::{LevelData, World},
     };
 
-    async fn test_world() -> Arc<World> {
+    fn test_world() -> Arc<World> {
         let temp_dir = tempdir().unwrap();
         let level = Level::from_root_folder(
             &LevelConfig::default(),
@@ -42,9 +36,9 @@ mod tests {
             Dimension::OVERWORLD,
             None,
         );
-        let level_info = Arc::new(arc_swap::ArcSwap::new(Arc::new(LevelData::default(
-            Seed(0),
-        ))));
+        let level_info = Arc::new(arc_swap::ArcSwap::new(Arc::new(LevelData::default(Seed(
+            0,
+        )))));
         Arc::new(World::load(
             level,
             level_info,
@@ -64,8 +58,8 @@ mod tests {
 
     #[tokio::test]
     async fn entity_damage_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
-        let entity = test_entity(world.clone());
+        let world = test_world();
+        let entity = test_entity(world);
         let mut event = EntityDamageEvent::new(entity, DamageType::ARROW, 5.0, 5.0);
         assert!(!event.cancelled());
         event.damage = 3.0;
@@ -78,10 +72,10 @@ mod tests {
 
     #[tokio::test]
     async fn entity_damage_by_entity_event_is_cancellable_and_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let victim = test_entity(world.clone());
         let damager = test_entity(world.clone());
-        let attacker = test_entity(world.clone());
+        let attacker = test_entity(world);
         let mut event = EntityDamageByEntityEvent::new(
             victim,
             damager,
@@ -101,9 +95,9 @@ mod tests {
 
     #[tokio::test]
     async fn entity_death_event_drops_and_experience_are_mutable() {
-        let world = test_world().await;
+        let world = test_world();
         let entity = test_entity(world.clone());
-        let killer = test_entity(world.clone());
+        let killer = test_entity(world);
         let mut event = EntityDeathEvent::new(
             entity,
             DamageType::ARROW,
@@ -119,9 +113,9 @@ mod tests {
 
     #[tokio::test]
     async fn projectile_launch_event_is_cancellable() {
-        let world = test_world().await;
+        let world = test_world();
         let projectile = test_entity(world.clone());
-        let shooter = test_entity(world.clone());
+        let shooter = test_entity(world);
         let mut event = ProjectileLaunchEvent::new(projectile, Some(shooter));
         assert!(!event.cancelled());
         event.set_cancelled(true);
@@ -130,9 +124,9 @@ mod tests {
 
     #[tokio::test]
     async fn projectile_hit_event_is_cancellable() {
-        let world = test_world().await;
+        let world = test_world();
         let projectile = test_entity(world.clone());
-        let hit_entity = test_entity(world.clone());
+        let hit_entity = test_entity(world);
         let mut event = ProjectileHitEvent::new(
             projectile,
             Some(hit_entity),

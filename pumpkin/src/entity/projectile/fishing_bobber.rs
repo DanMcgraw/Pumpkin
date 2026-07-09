@@ -189,8 +189,7 @@ impl FishingBobberEntity {
                 if wait > 0 {
                     self.wait_countdown.store(wait - 1, Ordering::Relaxed);
                 } else if let Some(player) = world.get_player_by_id(self.owner_id) {
-                    let mut cancelled = false;
-                    if let Some(server) = world.server.upgrade() {
+                    let cancelled = if let Some(server) = world.server.upgrade() {
                         let event = PlayerFishEvent::new(
                             player,
                             None,
@@ -200,8 +199,10 @@ impl FishingBobberEntity {
                             Hand::Right,
                             0,
                         );
-                        cancelled = server.plugin_manager.fire(event).await.cancelled;
-                    }
+                        server.plugin_manager.fire(event).await.cancelled
+                    } else {
+                        false
+                    };
 
                     if cancelled {
                         self.wait_countdown
@@ -252,21 +253,22 @@ impl FishingBobberEntity {
             .get_block_collisions(search_box, caller.as_ref())
             .await;
         if !block_cols.is_empty() {
-            let mut cancelled = false;
-            if let Some(player) = world.get_player_by_id(self.owner_id) {
-                if let Some(server) = world.server.upgrade() {
-                    let event = PlayerFishEvent::new(
-                        player,
-                        None,
-                        hook_uuid,
-                        String::new(),
-                        PlayerFishState::InGround,
-                        Hand::Right,
-                        0,
-                    );
-                    cancelled = server.plugin_manager.fire(event).await.cancelled;
-                }
-            }
+            let cancelled = if let Some(player) = world.get_player_by_id(self.owner_id)
+                && let Some(server) = world.server.upgrade()
+            {
+                let event = PlayerFishEvent::new(
+                    player,
+                    None,
+                    hook_uuid,
+                    String::new(),
+                    PlayerFishState::InGround,
+                    Hand::Right,
+                    0,
+                );
+                server.plugin_manager.fire(event).await.cancelled
+            } else {
+                false
+            };
 
             if !cancelled {
                 self.in_ground.store(true, Ordering::Relaxed);

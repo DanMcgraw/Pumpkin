@@ -1897,11 +1897,18 @@ impl Player {
         let entity = self.get_entity();
         if entity.is_fall_flying() {
             let has_elytra = {
-                let chest_stack = self.living_entity.entity_equipment.lock().await.get(&EquipmentSlot::CHEST);
+                let chest_stack = self
+                    .living_entity
+                    .entity_equipment
+                    .lock()
+                    .await
+                    .get(&EquipmentSlot::CHEST);
                 let stack = chest_stack.lock().await;
                 stack.item.id == pumpkin_data::item::Item::ELYTRA.id
                     && !stack.is_empty()
-                    && stack.get_max_damage().map_or(true, |max| stack.get_damage() < max - 1)
+                    && stack
+                        .get_max_damage()
+                        .is_none_or(|max| stack.get_damage() < max - 1)
             };
             if !has_elytra {
                 entity.set_fall_flying(false).await;
@@ -3101,15 +3108,15 @@ impl Player {
     }
 
     pub async fn drop_item(&self, item_stack: ItemStack) {
-        if let Some(server) = self.world().server.upgrade() {
-            if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
-                let event = server
-                    .plugin_manager
-                    .fire(PlayerDropItemEvent::new(&player, item_stack.clone()))
-                    .await;
-                if event.cancelled {
-                    return;
-                }
+        if let Some(server) = self.world().server.upgrade()
+            && let Some(player) = self.world().get_player_by_id(self.entity_id())
+        {
+            let event = server
+                .plugin_manager
+                .fire(PlayerDropItemEvent::new(&player, item_stack.clone()))
+                .await;
+            if event.cancelled {
+                return;
             }
         }
 
@@ -5312,15 +5319,15 @@ impl InventoryPlayer for Player {
     ) -> PlayerFuture<'_, ()> {
         let result = result.clone();
         Box::pin(async move {
-            if let Some(server) = self.world().server.upgrade() {
-                if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
-                    let event = server
-                        .plugin_manager
-                        .fire(CraftItemEvent::new(player, result, window_type))
-                        .await;
-                    if event.cancelled {
-                        return;
-                    }
+            if let Some(server) = self.world().server.upgrade()
+                && let Some(player) = self.world().get_player_by_id(self.entity_id())
+            {
+                let event = server
+                    .plugin_manager
+                    .fire(CraftItemEvent::new(player, result, window_type))
+                    .await;
+                if !event.cancelled {
+                    // crafting result is applied elsewhere
                 }
             }
         })
@@ -5334,18 +5341,15 @@ impl InventoryPlayer for Player {
     ) -> PlayerFuture<'_, ()> {
         let item = item.clone();
         Box::pin(async move {
-            if let Some(server) = self.world().server.upgrade() {
-                if let Some(player) = self.world().get_player_by_id(self.entity_id()) {
-                    server
-                        .plugin_manager
-                        .fire(FurnaceExtractEvent::new(
-                            player,
-                            block_pos,
-                            item,
-                            experience,
-                        ))
-                        .await;
-                }
+            if let Some(server) = self.world().server.upgrade()
+                && let Some(player) = self.world().get_player_by_id(self.entity_id())
+            {
+                server
+                    .plugin_manager
+                    .fire(FurnaceExtractEvent::new(
+                        player, block_pos, item, experience,
+                    ))
+                    .await;
             }
         })
     }

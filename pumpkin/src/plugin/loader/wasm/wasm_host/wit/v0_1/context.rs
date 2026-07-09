@@ -201,8 +201,10 @@ async fn register_block_event(
 ) {
     use crate::plugin::block::{
         block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
-        block_can_build::BlockCanBuildEvent, block_grow::BlockGrowEvent,
+        block_can_build::BlockCanBuildEvent, block_form::BlockFormEvent,
+        block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
         block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
+        structure_grow::StructureGrowEvent,
     };
 
     match event_type {
@@ -221,11 +223,62 @@ async fn register_block_event(
         EventType::BlockGrowEvent => {
             register_typed_event::<BlockGrowEvent>(resource, handler, priority, blocking).await;
         }
+        EventType::BlockFormEvent => {
+            register_typed_event::<BlockFormEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::BlockMultiPlaceEvent => {
+            register_typed_event::<BlockMultiPlaceEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::StructureGrowEvent => {
+            register_typed_event::<StructureGrowEvent>(resource, handler, priority, blocking).await;
+        }
         EventType::BlockPlaceEvent => {
             register_typed_event::<BlockPlaceEvent>(resource, handler, priority, blocking).await;
         }
         _ => {
             tracing::error!("non-block event should not be routed to register_block_event");
+        }
+    }
+}
+async fn register_entity_event(
+    resource: &ContextResource,
+    handler: &Arc<WasmPluginEventHandler>,
+    priority: crate::plugin::EventPriority,
+    blocking: bool,
+    event_type: EventType,
+) {
+    use crate::plugin::entity::{
+        chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
+        entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
+        entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
+    };
+
+    match event_type {
+        EventType::EntitySpawnEvent => {
+            register_typed_event::<EntitySpawnEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::EntityRemoveEvent => {
+            register_typed_event::<EntityRemoveEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::ChunkEntityLoadEvent => {
+            register_typed_event::<ChunkEntityLoadEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::ChunkEntityUnloadEvent => {
+            register_typed_event::<ChunkEntityUnloadEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::EntityBlockFormEvent => {
+            register_typed_event::<EntityBlockFormEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::EntityChangeBlockEvent => {
+            register_typed_event::<EntityChangeBlockEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        _ => {
+            tracing::error!("non-entity event should not be routed to register_entity_event");
         }
     }
 }
@@ -347,8 +400,19 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             | EventType::BlockBurnEvent
             | EventType::BlockCanBuildEvent
             | EventType::BlockGrowEvent
+            | EventType::BlockFormEvent
+            | EventType::BlockMultiPlaceEvent
+            | EventType::StructureGrowEvent
             | EventType::BlockPlaceEvent) => {
                 register_block_event(resource, &handler, priority, blocking, event_type).await;
+            }
+            event_type @ (EventType::EntitySpawnEvent
+            | EventType::EntityRemoveEvent
+            | EventType::ChunkEntityLoadEvent
+            | EventType::ChunkEntityUnloadEvent
+            | EventType::EntityBlockFormEvent
+            | EventType::EntityChangeBlockEvent) => {
+                register_entity_event(resource, &handler, priority, blocking, event_type).await;
             }
             event_type => {
                 register_player_event(resource, &handler, priority, blocking, event_type).await;

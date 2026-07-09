@@ -23,7 +23,11 @@ pub struct CraftItemEvent {
 impl CraftItemEvent {
     /// Creates a new [`CraftItemEvent`].
     #[must_use]
-    pub fn new(player: Arc<Player>, result: ItemStack, window_type: Option<WindowType>) -> Self {
+    pub const fn new(
+        player: Arc<Player>,
+        result: ItemStack,
+        window_type: Option<WindowType>,
+    ) -> Self {
         Self {
             player,
             result,

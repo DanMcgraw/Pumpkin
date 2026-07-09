@@ -67,27 +67,26 @@ impl ItemBehaviour for FishingRodItem {
                     {
                         let hook_uuid = bobber.entity.entity_uuid;
                         let player_arc = world.get_player_by_id(player.entity_id());
-                        let mut reel_cancelled = false;
-                        if let Some(player_arc) = player_arc.clone() {
-                            if let Some(server) = world.server.upgrade() {
-                                let event = PlayerFishEvent::new(
-                                    player_arc,
-                                    None,
-                                    hook_uuid,
-                                    String::new(),
-                                    PlayerFishState::ReelIn,
-                                    Hand::Right,
-                                    0,
-                                );
-                                reel_cancelled = server.plugin_manager.fire(event).await.cancelled;
-                            }
-                        }
+                        let reel_cancelled = if let Some(player_arc) = player_arc.clone()
+                            && let Some(server) = world.server.upgrade()
+                        {
+                            let event = PlayerFishEvent::new(
+                                player_arc,
+                                None,
+                                hook_uuid,
+                                String::new(),
+                                PlayerFishState::ReelIn,
+                                Hand::Right,
+                                0,
+                            );
+                            server.plugin_manager.fire(event).await.cancelled
+                        } else {
+                            false
+                        };
 
-                        if !reel_cancelled {
-                            if let Some(player_arc) = player_arc {
-                                let _result = bobber.reel_in(player_arc).await;
-                                // TODO: give items
-                            }
+                        if !reel_cancelled && let Some(player_arc) = player_arc {
+                            let _result = bobber.reel_in(player_arc).await;
+                            // TODO: give items
                         }
                     }
                     bobber_base.get_entity().remove().await;

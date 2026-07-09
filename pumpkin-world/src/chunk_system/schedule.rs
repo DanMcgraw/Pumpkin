@@ -1067,9 +1067,7 @@ impl GenerationSchedule {
 
             // Process unload queue after a short grace period to batch writes together
             // and act as a brief memory cache if a player walks back into the chunk.
-            if !self.unload_chunks.is_empty()
-                && self.last_unload.elapsed() >= Self::UNLOAD_GRACE
-            {
+            if !self.unload_chunks.is_empty() && self.last_unload.elapsed() >= Self::UNLOAD_GRACE {
                 self.process_unload_queue();
                 self.last_unload = std::time::Instant::now();
             }

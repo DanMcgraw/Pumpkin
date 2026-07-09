@@ -34,7 +34,7 @@ pub struct BrewEvent {
 impl BrewEvent {
     /// Creates a new [`BrewEvent`].
     #[must_use]
-    pub fn new(
+    pub const fn new(
         block: &'static Block,
         block_position: BlockPos,
         world: Arc<World>,

@@ -6,7 +6,9 @@ use crate::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, player::Player,
         projectile::ThrownItemEntity,
     },
-    plugin::api::events::entity::potion_splash::PotionSplashEvent,
+    plugin::api::events::entity::{
+        entity_change_block::EntityChangeBlockEvent, potion_splash::PotionSplashEvent,
+    },
     server::Server,
 };
 use pumpkin_data::item_stack::ItemStack;
@@ -67,8 +69,15 @@ fn is_water_potion(stack: &ItemStack) -> bool {
 }
 
 /// Extinguishes fire (including soul fire) at the hit position and its four horizontal neighbors.
-async fn extinguish_fire(world: &Arc<crate::world::World>, hit_pos: Vector3<f64>) {
+async fn extinguish_fire(
+    world: &Arc<crate::world::World>,
+    entity: Arc<dyn EntityBase>,
+    hit_pos: Vector3<f64>,
+) {
     let air_state_id = Block::AIR.default_state.id;
+    let Some(server) = world.server.upgrade() else {
+        return;
+    };
 
     let neighbors = [
         hit_pos,
@@ -87,20 +96,25 @@ async fn extinguish_fire(world: &Arc<crate::world::World>, hit_pos: Vector3<f64>
         let state_id = world.get_block_state_id(&pos);
         let raw_block_id = state_id.to_block_id();
         if raw_block_id == BlockId::FIRE || raw_block_id == BlockId::SOUL_FIRE {
-            world
-                .set_block_state(&pos, air_state_id, BlockFlags::NOTIFY_ALL)
-                .await;
+            let event = EntityChangeBlockEvent::new(entity.clone(), pos, state_id, air_state_id);
+            let event = server.plugin_manager.fire(event).await;
+            if !event.cancelled {
+                world
+                    .set_block_state(&pos, air_state_id, BlockFlags::NOTIFY_ALL)
+                    .await;
+            }
         }
     }
 }
 
 pub(crate) async fn extinguish_fire_if_water_potion(
     world: &Arc<crate::world::World>,
+    entity: Arc<dyn EntityBase>,
     hit_pos: Vector3<f64>,
     stack: &ItemStack,
 ) {
     if is_water_potion(stack) {
-        extinguish_fire(world, hit_pos).await;
+        extinguish_fire(world, entity, hit_pos).await;
     }
 }
 
@@ -164,6 +178,7 @@ impl EntityBase for SplashPotionEntity {
         self
     }
 
+    #[allow(clippy::too_many_lines)]
     fn on_hit(&self, hit: crate::entity::projectile::ProjectileHit) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             let world = self.get_entity().world.load();
@@ -171,7 +186,10 @@ impl EntityBase for SplashPotionEntity {
 
             // Only extinguish fire for plain water potions
             let stack = self.item_stack.read().await.clone();
-            extinguish_fire_if_water_potion(&world, hit_pos, &stack).await;
+            let potion_entity = world
+                .get_entity_by_id(self.get_entity().entity_id)
+                .expect("splash potion should exist");
+            extinguish_fire_if_water_potion(&world, potion_entity, hit_pos, &stack).await;
 
             let effects = crate::item::potion::PotionContents::read_potion_effects(&stack);
 
@@ -267,9 +285,7 @@ impl EntityBase for SplashPotionEntity {
                 .collect();
 
             let (hit_block, hit_entity) = match hit {
-                crate::entity::projectile::ProjectileHit::Block { pos, .. } => {
-                    (Some(pos), None)
-                }
+                crate::entity::projectile::ProjectileHit::Block { pos, .. } => (Some(pos), None),
                 crate::entity::projectile::ProjectileHit::Entity { ref entity, .. } => {
                     (None, Some(entity.clone()))
                 }

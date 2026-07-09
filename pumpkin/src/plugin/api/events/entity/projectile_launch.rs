@@ -20,10 +20,7 @@ pub struct ProjectileLaunchEvent {
 impl ProjectileLaunchEvent {
     /// Creates a new [`ProjectileLaunchEvent`].
     #[must_use]
-    pub fn new(
-        projectile: Arc<dyn EntityBase>,
-        shooter: Option<Arc<dyn EntityBase>>,
-    ) -> Self {
+    pub fn new(projectile: Arc<dyn EntityBase>, shooter: Option<Arc<dyn EntityBase>>) -> Self {
         Self {
             projectile,
             shooter,

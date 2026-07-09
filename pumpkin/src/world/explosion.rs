@@ -296,10 +296,10 @@ impl Explosion {
         let blocks: FxHashMap<BlockPos, (&'static Block, &'static BlockState)> = explode_event
             .affected_blocks
             .iter()
-            .filter_map(|pos| {
+            .map(|pos| {
                 let state_id = world.get_block_state_id(pos);
                 let (block, state) = BlockState::from_id_with_block(state_id);
-                Some((*pos, (block, state)))
+                (*pos, (block, state))
             })
             .collect();
 

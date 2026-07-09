@@ -15,10 +15,7 @@ use pumpkin_inventory::{
     screen_handler::{BoxFuture, InventoryPlayer, ScreenHandlerFactory, SharedScreenHandler},
 };
 use pumpkin_macros::pumpkin_block;
-use pumpkin_util::{
-    math::position::BlockPos,
-    text::TextComponent,
-};
+use pumpkin_util::{math::position::BlockPos, text::TextComponent};
 use pumpkin_world::inventory::Inventory;
 use tokio::sync::Mutex;
 
@@ -104,8 +101,12 @@ impl BlockBehaviour for SmokerBlock {
                         1,
                     )
                     .await;
-                let smoker_screen_factory =
-                    SmokerScreenFactory::new(inventory, property_delegate, experience_container, *args.position);
+                let smoker_screen_factory = SmokerScreenFactory::new(
+                    inventory,
+                    property_delegate,
+                    experience_container,
+                    *args.position,
+                );
                 args.player
                     .open_handled_screen(&smoker_screen_factory, Some(*args.position))
                     .await;

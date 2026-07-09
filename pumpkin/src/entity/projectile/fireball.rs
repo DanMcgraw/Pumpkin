@@ -92,11 +92,8 @@ impl EntityBase for FireballEntity {
 
                 tokio::spawn(async move {
                     let server = world.server.upgrade().expect("server is gone");
-                    let event = EntityCombustByEntityEvent::new(
-                        entity_clone.clone(),
-                        combuster,
-                        5.0,
-                    );
+                    let event =
+                        EntityCombustByEntityEvent::new(entity_clone.clone(), combuster, 5.0);
                     let event = server.plugin_manager.fire(event).await;
                     if !event.cancelled {
                         entity_clone.get_entity().set_on_fire_for(5.0);

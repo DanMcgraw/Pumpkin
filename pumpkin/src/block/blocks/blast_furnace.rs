@@ -16,10 +16,7 @@ use pumpkin_inventory::{
     screen_handler::{BoxFuture, InventoryPlayer, ScreenHandlerFactory, SharedScreenHandler},
 };
 use pumpkin_macros::pumpkin_block;
-use pumpkin_util::{
-    math::position::BlockPos,
-    text::TextComponent,
-};
+use pumpkin_util::{math::position::BlockPos, text::TextComponent};
 use pumpkin_world::inventory::Inventory;
 use tokio::sync::Mutex;
 

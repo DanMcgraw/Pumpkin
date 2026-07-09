@@ -2,19 +2,24 @@ use crate::plugin::{
     Cancellable,
     entity::{
         chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
+        entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
         entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
     },
     loader::wasm::wasm_host::{
         state::PluginHostState,
         wit::v0_1::{
-            events::{ToFromWasmEvent, consume_entity, consume_world},
+            events::{
+                ToFromWasmEvent, consume_entity, consume_world, from_wasm_block_position,
+                to_wasm_block_position,
+            },
             pumpkin::plugin::event::{
-                ChunkEntityLoadEventData, ChunkEntityUnloadEventData, EntityRemoveEventData,
-                EntitySpawnEventData, Event,
+                ChunkEntityLoadEventData, ChunkEntityUnloadEventData, EntityBlockFormEventData,
+                EntityChangeBlockEventData, EntityRemoveEventData, EntitySpawnEventData, Event,
             },
         },
     },
 };
+use pumpkin_data::BlockStateId;
 use pumpkin_util::math::vector2::Vector2;
 
 impl ToFromWasmEvent for EntitySpawnEvent {
@@ -129,6 +134,62 @@ impl ToFromWasmEvent for ChunkEntityUnloadEvent {
                 world: consume_world(state, &data.target_world),
                 entity: consume_entity(state, &data.entity),
                 chunk_pos: Vector2::new(data.chunk_x, data.chunk_z),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityBlockFormEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityBlockFormEvent(EntityBlockFormEventData {
+            entity,
+            block_pos: to_wasm_block_position(self.block_pos),
+            new_state_id: self.new_state_id.as_u16(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityBlockFormEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                block_pos: from_wasm_block_position(data.block_pos),
+                new_state_id: BlockStateId::new_or_air(data.new_state_id),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityChangeBlockEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityChangeBlockEvent(EntityChangeBlockEventData {
+            entity,
+            block_pos: to_wasm_block_position(self.block_pos),
+            old_state_id: self.old_state_id.as_u16(),
+            new_state_id: self.new_state_id.as_u16(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityChangeBlockEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                block_pos: from_wasm_block_position(data.block_pos),
+                old_state_id: BlockStateId::new_or_air(data.old_state_id),
+                new_state_id: BlockStateId::new_or_air(data.new_state_id),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

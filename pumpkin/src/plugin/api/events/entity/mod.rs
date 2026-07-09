@@ -1,6 +1,8 @@
 pub mod chunk_entity_load;
 pub mod chunk_entity_unload;
+pub mod entity_block_form;
 pub mod entity_breed;
+pub mod entity_change_block;
 pub mod entity_combust_by_entity;
 pub mod entity_damage;
 pub mod entity_damage_by_entity;
@@ -21,7 +23,9 @@ pub mod projectile_launch;
 
 pub use chunk_entity_load::ChunkEntityLoadEvent;
 pub use chunk_entity_unload::ChunkEntityUnloadEvent;
+pub use entity_block_form::EntityBlockFormEvent;
 pub use entity_breed::EntityBreedEvent;
+pub use entity_change_block::EntityChangeBlockEvent;
 pub use entity_combust_by_entity::EntityCombustByEntityEvent;
 pub use entity_damage::EntityDamageEvent;
 pub use entity_damage_by_entity::EntityDamageByEntityEvent;

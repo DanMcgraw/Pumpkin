@@ -24,11 +24,7 @@ pub struct InventoryOpenEvent {
 impl InventoryOpenEvent {
     /// Creates a new [`InventoryOpenEvent`].
     #[must_use]
-    pub fn new(
-        player: &Arc<Player>,
-        window_type: WindowType,
-        block_pos: Option<BlockPos>,
-    ) -> Self {
+    pub fn new(player: &Arc<Player>, window_type: WindowType, block_pos: Option<BlockPos>) -> Self {
         Self {
             player: Arc::clone(player),
             window_type,

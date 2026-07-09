@@ -4,6 +4,7 @@ use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::block::{BlockBehaviour, BlockFuture, OnNeighborUpdateArgs, PlacedArgs};
+use crate::plugin::api::events::block::block_form::fire_block_form;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
@@ -67,20 +68,25 @@ impl SpongeBlock {
         if water_blocks.is_empty() {
             false
         } else {
-            for water_pos in &water_blocks {
+            if fire_block_form(world, *position, Block::WET_SPONGE.default_state.id)
+                .await
+                .is_some()
+            {
+                for water_pos in &water_blocks {
+                    world
+                        .set_block_state(water_pos, BlockStateId::AIR, BlockFlags::NOTIFY_ALL)
+                        .await;
+                }
                 world
-                    .set_block_state(water_pos, BlockStateId::AIR, BlockFlags::NOTIFY_ALL)
+                    .set_block_state(
+                        position,
+                        Block::WET_SPONGE.default_state.id,
+                        BlockFlags::NOTIFY_ALL,
+                    )
                     .await;
-            }
-            world
-                .set_block_state(
-                    position,
-                    Block::WET_SPONGE.default_state.id,
-                    BlockFlags::NOTIFY_ALL,
-                )
-                .await;
 
-            world.play_block_sound(Sound::BlockSpongeAbsorb, SoundCategory::Blocks, *position);
+                world.play_block_sound(Sound::BlockSpongeAbsorb, SoundCategory::Blocks, *position);
+            }
 
             true
         }
@@ -112,13 +118,13 @@ impl BlockBehaviour for WetSpongeBlock {
     fn placed<'a>(&'a self, args: PlacedArgs<'a>) -> BlockFuture<'a, ()> {
         Box::pin(async move {
             // Check if placed in Nether, if so, dry out
-            if args.world.dimension == Dimension::THE_NETHER {
+            if args.world.dimension == Dimension::THE_NETHER
+                && let Some(new_state_id) =
+                    fire_block_form(args.world, *args.position, Block::SPONGE.default_state.id)
+                        .await
+            {
                 args.world
-                    .set_block_state(
-                        args.position,
-                        Block::SPONGE.default_state.id,
-                        BlockFlags::NOTIFY_ALL,
-                    )
+                    .set_block_state(args.position, new_state_id, BlockFlags::NOTIFY_ALL)
                     .await;
 
                 // Play dry sound and spawn smoke particles

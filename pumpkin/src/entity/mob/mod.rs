@@ -3,11 +3,11 @@ use crate::entity::EntityBaseFuture;
 use crate::entity::ai::control::MoveControlTrait;
 use crate::entity::ai::control::look_control::LookControl;
 use crate::entity::ai::control::move_control::MoveControl;
+use crate::entity::ai::goal::goal_selector::GoalSelector;
+use crate::entity::player::Player;
 use crate::plugin::api::events::entity::{
     entity_target::EntityTargetEvent, entity_target_living_entity::EntityTargetLivingEntityEvent,
 };
-use crate::entity::ai::goal::goal_selector::GoalSelector;
-use crate::entity::player::Player;
 use crate::server::Server;
 use crate::world::World;
 use crossbeam::atomic::AtomicCell;
@@ -231,15 +231,15 @@ impl MobEntity {
         }
 
         let final_target = event.target.clone();
-        if let Some(target) = &final_target {
-            if target.get_living_entity().is_some() {
-                let living_event = server
-                    .plugin_manager
-                    .fire(EntityTargetLivingEntityEvent::new(mob, target.clone()))
-                    .await;
-                if living_event.cancelled {
-                    return;
-                }
+        if let Some(target) = &final_target
+            && target.get_living_entity().is_some()
+        {
+            let living_event = server
+                .plugin_manager
+                .fire(EntityTargetLivingEntityEvent::new(mob, target.clone()))
+                .await;
+            if living_event.cancelled {
+                return;
             }
         }
 

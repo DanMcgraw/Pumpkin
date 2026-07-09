@@ -264,6 +264,32 @@ interface event {
         cancelled: bool
     }
 
+    record block-form-event-data {
+        target-world: %world,
+        block: string,
+        block-pos: block-pos,
+        new-block: string,
+        new-state-id: u16,
+        cancelled: bool
+    }
+
+    record block-multi-place-event-data {
+        player: player,
+        block-placed: string,
+        block-placed-against: string,
+        primary-pos: block-pos,
+        affected-positions: list<block-pos>,
+        cancelled: bool
+    }
+
+    record structure-grow-event-data {
+        target-world: %world,
+        block: string,
+        block-pos: block-pos,
+        placed-feature: string,
+        cancelled: bool
+    }
+
     record block-place-event-data {
         player: player,
         block-placed: string,
@@ -359,6 +385,21 @@ interface event {
         cancelled: bool
     }
 
+    record entity-block-form-event-data {
+        entity: entity,
+        block-pos: block-pos,
+        new-state-id: u16,
+        cancelled: bool
+    }
+
+    record entity-change-block-event-data {
+        entity: entity,
+        block-pos: block-pos,
+        old-state-id: u16,
+        new-state-id: u16,
+        cancelled: bool
+    }
+
     enum event-type {
         player-join-event,
         player-leave-event,
@@ -389,6 +430,9 @@ interface event {
         block-burn-event,
         block-can-build-event,
         block-grow-event,
+        block-form-event,
+        block-multi-place-event,
+        structure-grow-event,
         block-place-event,
         bedrock-form-response-event,
         custom-click-action-event,
@@ -403,6 +447,8 @@ interface event {
         entity-remove-event,
         chunk-entity-load-event,
         chunk-entity-unload-event,
+        entity-block-form-event,
+        entity-change-block-event,
     }
 
     variant event {
@@ -435,6 +481,9 @@ interface event {
         block-burn-event(block-burn-event-data),
         block-can-build-event(block-can-build-event-data),
         block-grow-event(block-grow-event-data),
+        block-form-event(block-form-event-data),
+        block-multi-place-event(block-multi-place-event-data),
+        structure-grow-event(structure-grow-event-data),
         block-place-event(block-place-event-data),
         bedrock-form-response-event(bedrock-form-response-event-data),
         custom-click-action-event(custom-click-action-event-data),
@@ -449,5 +498,7 @@ interface event {
         entity-remove-event(entity-remove-event-data),
         chunk-entity-load-event(chunk-entity-load-event-data),
         chunk-entity-unload-event(chunk-entity-unload-event-data),
+        entity-block-form-event(entity-block-form-event-data),
+        entity-change-block-event(entity-change-block-event-data),
     }
 }

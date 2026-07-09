@@ -6,7 +6,10 @@ use crate::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage,
         projectile::{ProjectileHit, ThrownItemEntity},
     },
-    plugin::api::events::entity::entity_combust_by_entity::EntityCombustByEntityEvent,
+    plugin::api::events::entity::{
+        entity_block_form::EntityBlockFormEvent,
+        entity_combust_by_entity::EntityCombustByEntityEvent,
+    },
     server::Server,
 };
 
@@ -82,11 +85,8 @@ impl EntityBase for SmallFireballEntity {
 
                     tokio::spawn(async move {
                         let server = world.server.upgrade().expect("server is gone");
-                        let event = EntityCombustByEntityEvent::new(
-                            entity_clone.clone(),
-                            combuster,
-                            5.0,
-                        );
+                        let event =
+                            EntityCombustByEntityEvent::new(entity_clone.clone(), combuster, 5.0);
                         let event = server.plugin_manager.fire(event).await;
                         if !event.cancelled {
                             entity_clone.get_entity().set_on_fire_for(5.0);
@@ -112,10 +112,21 @@ impl EntityBase for SmallFireballEntity {
                     };
                     let world = self.get_entity().world.load();
                     let fire_state = pumpkin_data::Block::FIRE.default_state.id;
+
+                    let Some(entity) = world.get_entity_by_id(self.get_entity().entity_id) else {
+                        return;
+                    };
+                    let server = world.server.upgrade().expect("server is gone");
+                    let event = EntityBlockFormEvent::new(entity, block_to_place, fire_state);
+                    let event = server.plugin_manager.fire(event).await;
+                    if event.cancelled {
+                        return;
+                    }
+
                     world
                         .set_block_state(
                             &block_to_place,
-                            fire_state,
+                            event.new_state_id,
                             pumpkin_world::world::BlockFlags::NOTIFY_ALL,
                         )
                         .await;
