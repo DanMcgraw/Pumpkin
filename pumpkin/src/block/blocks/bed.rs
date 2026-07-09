@@ -235,7 +235,7 @@ impl BlockBehaviour for BedBlock {
                     .await;
 
                 args.world
-                    .explode(bed_head_pos.to_centered_f64(), 5.0)
+                    .explode(bed_head_pos.to_centered_f64(), 5.0, None)
                     .await;
 
                 return BlockActionResult::SuccessServer;

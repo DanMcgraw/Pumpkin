@@ -6,6 +6,7 @@ use crate::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage,
         projectile::{ProjectileHit, ThrownItemEntity},
     },
+    plugin::api::events::entity::entity_combust_by_entity::EntityCombustByEntityEvent,
     server::Server,
 };
 
@@ -65,12 +66,31 @@ impl EntityBase for SmallFireballEntity {
 
     fn on_hit(&self, hit: ProjectileHit) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
+            let world = self.get_entity().world.load();
             match hit {
                 ProjectileHit::Entity { ref entity, .. } => {
                     let entity_clone = entity.clone();
+                    let combuster = self
+                        .thrown
+                        .owner_id
+                        .and_then(|id| world.get_entity_by_id(id))
+                        .unwrap_or_else(|| {
+                            world
+                                .get_entity_by_id(self.get_entity().entity_id)
+                                .expect("small fireball should exist")
+                        });
 
                     tokio::spawn(async move {
-                        entity_clone.get_entity().set_on_fire_for(5.0);
+                        let server = world.server.upgrade().expect("server is gone");
+                        let event = EntityCombustByEntityEvent::new(
+                            entity_clone.clone(),
+                            combuster,
+                            5.0,
+                        );
+                        let event = server.plugin_manager.fire(event).await;
+                        if !event.cancelled {
+                            entity_clone.get_entity().set_on_fire_for(5.0);
+                        }
                         let _ = entity_clone
                             .damage(
                                 entity_clone.as_ref(),

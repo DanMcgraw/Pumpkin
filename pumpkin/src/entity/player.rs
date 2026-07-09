@@ -98,6 +98,7 @@ use crate::data::SaveJSONConfiguration;
 use crate::entity::{EntityBaseFuture, NbtFuture, TeleportFuture};
 use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
+use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
 use crate::plugin::player::craft_item::CraftItemEvent;
 use crate::plugin::player::exp_change::PlayerExpChangeEvent;
 use crate::plugin::player::furnace_extract::FurnaceExtractEvent;
@@ -1074,7 +1075,22 @@ impl Player {
         {
             for (enchantment, level) in enchantments.enchantment.iter() {
                 if **enchantment == Enchantment::FIRE_ASPECT {
-                    victim_entity.set_on_fire_for_ticks(*level as u32 * 80);
+                    let duration = *level as f32 * 4.0;
+                    if let Some(combuster) = world.get_player_by_id(self.entity_id()) {
+                        let event = server
+                            .plugin_manager
+                            .fire(EntityCombustByEntityEvent::new(
+                                victim.clone(),
+                                combuster,
+                                duration,
+                            ))
+                            .await;
+                        if !event.cancelled {
+                            victim_entity.set_on_fire_for_ticks(*level as u32 * 80);
+                        }
+                    } else {
+                        victim_entity.set_on_fire_for_ticks(*level as u32 * 80);
+                    }
                 }
             }
         }

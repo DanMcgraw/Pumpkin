@@ -8,7 +8,9 @@ use crate::entity::player::Player;
 use crate::entity::projectile::arrow::{ArrowEntity, ArrowPickup};
 use crate::entity::{Entity, EntityBase};
 use crate::item::{ItemBehaviour, ItemMetadata};
-use crate::plugin::api::events::entity::projectile_launch::ProjectileLaunchEvent;
+use crate::plugin::api::events::entity::{
+    entity_shoot_bow::EntityShootBowEvent, projectile_launch::ProjectileLaunchEvent,
+};
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
@@ -197,17 +199,35 @@ impl BowItem {
         // Spawn the arrow entity in the world
         let arrow_arc: Arc<dyn EntityBase> = Arc::new(arrow);
 
+        let server = world.server.upgrade().expect("server is gone");
+
         let shooter = world
             .get_player_by_id(player.entity_id())
             .map(|p| p as Arc<dyn EntityBase>);
+        if let Some(player_arc) = world.get_player_by_id(player.entity_id()) {
+            let bow_stack = held.lock().await.clone();
+            let consumable = if gamemode == GameMode::Creative {
+                None
+            } else {
+                Some(ItemStack::new(1, &Item::ARROW))
+            };
+            let shoot_event = server
+                .plugin_manager
+                .fire(EntityShootBowEvent::new(
+                    player_arc,
+                    arrow_arc.clone(),
+                    bow_stack,
+                    consumable,
+                    power,
+                ))
+                .await;
+            if shoot_event.cancelled {
+                return;
+            }
+        }
+
         let launch_event = ProjectileLaunchEvent::new(arrow_arc.clone(), shooter);
-        let launch_event = world
-            .server
-            .upgrade()
-            .expect("server is gone")
-            .plugin_manager
-            .fire(launch_event)
-            .await;
+        let launch_event = server.plugin_manager.fire(launch_event).await;
         if launch_event.cancelled {
             return;
         }

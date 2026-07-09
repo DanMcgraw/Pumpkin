@@ -3,6 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::entity::{EntityBase, ai::pathfinder::NavigatorGoal, mob::Mob, r#type::from_type};
+use crate::plugin::api::events::entity::entity_breed::EntityBreedEvent;
 
 use super::{Controls, Goal, GoalFuture};
 
@@ -65,11 +66,12 @@ impl BreedGoal {
         let entity = mob.get_entity();
         let world = entity.world.load();
 
-        if let Some(player) = mob_entity
+        let breeder = mob_entity
             .breeder
             .load()
-            .and_then(|uuid| world.get_player_by_uuid(uuid))
-        {
+            .and_then(|uuid| world.get_player_by_uuid(uuid));
+
+        if let Some(player) = breeder.clone() {
             player
                 .increment_stat(
                     pumpkin_data::statistic::StatisticCategory::Custom,
@@ -88,6 +90,30 @@ impl BreedGoal {
         mate.set_breeding_cooldown(6000);
 
         let parent_pos = entity.pos.load();
+
+        if let Some(server) = world.server.upgrade() {
+            let mother = world
+                .get_entity_by_uuid(entity.entity_uuid)
+                .expect("breeding parent should exist");
+            let father = world
+                .get_entity_by_uuid(mate.get_entity().entity_uuid)
+                .expect("breeding mate should exist");
+            let event = server
+                .plugin_manager
+                .fire(EntityBreedEvent::new(
+                    mother,
+                    father,
+                    breeder,
+                    entity.entity_type,
+                    parent_pos,
+                    0,
+                ))
+                .await;
+            if event.cancelled {
+                return;
+            }
+        }
+
         let baby = from_type(entity.entity_type, parent_pos, &world, Uuid::new_v4());
         baby.get_entity().set_age(-24000);
         world.spawn_entity_with_reason(baby, "breeding").await;

@@ -10,6 +10,7 @@ use rustc_hash::FxHashMap;
 use crate::{
     block::{ExplodeArgs, drop_loot},
     entity::{Entity, EntityBase},
+    plugin::api::events::entity::entity_explode::EntityExplodeEvent,
     world::loot::LootContextParameters,
 };
 
@@ -18,12 +19,21 @@ use super::{BlockFlags, World};
 pub struct Explosion {
     power: f32,
     pos: Vector3<f64>,
+    source_entity: Option<Arc<dyn EntityBase>>,
 }
 
 impl Explosion {
     #[must_use]
-    pub const fn new(power: f32, pos: Vector3<f64>) -> Self {
-        Self { power, pos }
+    pub const fn new(
+        power: f32,
+        pos: Vector3<f64>,
+        source_entity: Option<Arc<dyn EntityBase>>,
+    ) -> Self {
+        Self {
+            power,
+            pos,
+            source_entity,
+        }
     }
 
     fn get_blocks_to_destroy(
@@ -266,6 +276,33 @@ impl Explosion {
     /// Returns the removed block count
     pub async fn explode(&self, world: &Arc<World>) -> u32 {
         let blocks = self.get_blocks_to_destroy(world);
+
+        // Fire EntityExplodeEvent so plugins can observe, mutate, or cancel the explosion.
+        let affected_blocks: Vec<BlockPos> = blocks.keys().copied().collect();
+        let mut explode_event = EntityExplodeEvent::new(
+            self.source_entity.clone(),
+            self.pos,
+            affected_blocks,
+            self.power,
+        );
+        if let Some(server) = world.server.upgrade() {
+            explode_event = server.plugin_manager.fire(explode_event).await;
+        }
+        if explode_event.cancelled {
+            return 0;
+        }
+
+        // Rebuild the block map from the (possibly modified) affected block list.
+        let blocks: FxHashMap<BlockPos, (&'static Block, &'static BlockState)> = explode_event
+            .affected_blocks
+            .iter()
+            .filter_map(|pos| {
+                let state_id = world.get_block_state_id(pos);
+                let (block, state) = BlockState::from_id_with_block(state_id);
+                Some((*pos, (block, state)))
+            })
+            .collect();
+
         self.damage_entities(world).await;
         for (pos, (block, state)) in &blocks {
             world

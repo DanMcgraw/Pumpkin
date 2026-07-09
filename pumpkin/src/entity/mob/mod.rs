@@ -3,6 +3,9 @@ use crate::entity::EntityBaseFuture;
 use crate::entity::ai::control::MoveControlTrait;
 use crate::entity::ai::control::look_control::LookControl;
 use crate::entity::ai::control::move_control::MoveControl;
+use crate::plugin::api::events::entity::{
+    entity_target::EntityTargetEvent, entity_target_living_entity::EntityTargetLivingEntityEvent,
+};
 use crate::entity::ai::goal::goal_selector::GoalSelector;
 use crate::entity::player::Player;
 use crate::server::Server;
@@ -189,6 +192,58 @@ impl MobEntity {
     pub fn is_breeding_ready(&self) -> bool {
         self.living_entity.entity.age.load(Relaxed) >= 0
             && self.breeding_cooldown.load(Relaxed) <= 0
+    }
+
+    /// Sets the mob's target, firing `EntityTargetEvent` and
+    /// `EntityTargetLivingEntityEvent` when the target changes.
+    pub async fn set_target_with_events(
+        &self,
+        new_target: Option<Arc<dyn EntityBase>>,
+        reason: Option<&'static str>,
+    ) {
+        let old_target = self.target.lock().await.clone();
+        let old_id = old_target.as_ref().map(|e| e.get_entity().entity_id);
+        let new_id = new_target.as_ref().map(|e| e.get_entity().entity_id);
+        if old_id == new_id {
+            return;
+        }
+
+        let world = self.living_entity.entity.world.load();
+        let Some(server) = world.server.upgrade() else {
+            *self.target.lock().await = new_target;
+            return;
+        };
+        let Some(mob) = world.get_entity_by_id(self.living_entity.entity.entity_id) else {
+            *self.target.lock().await = new_target;
+            return;
+        };
+
+        let event = server
+            .plugin_manager
+            .fire(EntityTargetEvent::new(
+                mob.clone(),
+                new_target.clone(),
+                reason,
+            ))
+            .await;
+        if event.cancelled {
+            return;
+        }
+
+        let final_target = event.target.clone();
+        if let Some(target) = &final_target {
+            if target.get_living_entity().is_some() {
+                let living_event = server
+                    .plugin_manager
+                    .fire(EntityTargetLivingEntityEvent::new(mob, target.clone()))
+                    .await;
+                if living_event.cancelled {
+                    return;
+                }
+            }
+        }
+
+        *self.target.lock().await = final_target;
     }
 
     pub async fn is_in_attack_range(&self, target: &dyn EntityBase) -> bool {
@@ -459,8 +514,9 @@ pub trait Mob: EntityBase + Send + Sync {
     /// Set or clear the mob's target. Override to add side effects when targeting changes.
     fn set_mob_target(&self, target: Option<Arc<dyn EntityBase>>) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
-            let mut mob_target = self.get_mob_entity().target.lock().await;
-            *mob_target = target;
+            self.get_mob_entity()
+                .set_target_with_events(target, Some("target_selector"))
+                .await;
         })
     }
 

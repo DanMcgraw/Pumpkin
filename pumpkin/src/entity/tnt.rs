@@ -1,5 +1,8 @@
 use super::{Entity, EntityBase, NBTStorage, living::LivingEntity, player::Player};
-use crate::{entity::EntityBaseFuture, server::Server};
+use crate::{
+    entity::EntityBaseFuture,
+    plugin::api::events::entity::explosion_prime::ExplosionPrimeEvent, server::Server,
+};
 use core::f32;
 use pumpkin_data::{Block, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_protocol::{codec::var_int::VarInt, java::client::play::Metadata};
@@ -64,12 +67,22 @@ impl EntityBase for TNTEntity {
 
             if fuse <= 1 {
                 // TNT explodes now
+                let world = self.entity.world.load();
+                let pos = self.entity.pos.load();
+                let entity = world
+                    .get_entity_by_id(self.entity.entity_id)
+                    .expect("tnt should exist");
+                if let Some(server) = world.server.upgrade() {
+                    let prime_event =
+                        ExplosionPrimeEvent::new(Some(entity.clone()), pos, self.power, false);
+                    let prime_event = server.plugin_manager.fire(prime_event).await;
+                    if prime_event.cancelled {
+                        self.entity.remove().await;
+                        return;
+                    }
+                }
                 self.entity.remove().await;
-                self.entity
-                    .world
-                    .load()
-                    .explode(self.entity.pos.load(), self.power)
-                    .await;
+                world.explode(pos, self.power, Some(entity)).await;
             } else {
                 // Safe decrement
                 self.fuse.store(fuse - 1, Relaxed);

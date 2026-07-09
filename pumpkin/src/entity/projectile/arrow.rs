@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 
 use crate::entity::projectile::ProjectileHit;
-use crate::plugin::api::events::entity::projectile_hit::ProjectileHitEvent;
+use crate::plugin::api::events::entity::{
+    entity_combust_by_entity::EntityCombustByEntityEvent, projectile_hit::ProjectileHitEvent,
+};
 use crate::{
     entity::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, living::LivingEntity, player::Player,
@@ -365,7 +367,7 @@ impl EntityBase for ArrowEntity {
                 .expect("arrow not found in world");
             let server = world.server.upgrade().expect("server is gone");
             let hit_event = ProjectileHitEvent::new(
-                caller,
+                caller.clone(),
                 hit_entity,
                 hit_block,
                 hit_block_pos,
@@ -422,7 +424,20 @@ impl EntityBase for ArrowEntity {
                         damage = damage.saturating_add(bonus);
                     }
                     if self.is_flame.load(Ordering::Relaxed) {
-                        target.get_entity().set_on_fire_for_ticks(100);
+                        let duration = 5.0f32;
+                        let combuster = self
+                            .owner_id
+                            .and_then(|id| world.get_entity_by_id(id))
+                            .unwrap_or_else(|| caller.clone());
+                        let event = EntityCombustByEntityEvent::new(
+                            target.clone(),
+                            combuster,
+                            duration,
+                        );
+                        let event = server.plugin_manager.fire(event).await;
+                        if !event.cancelled {
+                            target.get_entity().set_on_fire_for_ticks(100);
+                        }
                     }
 
                     target

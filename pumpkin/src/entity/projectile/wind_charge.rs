@@ -67,7 +67,7 @@ impl WindChargeEntity {
         self.get_entity()
             .world
             .load()
-            .explode(position, EXPLOSION_POWER)
+            .explode(position, EXPLOSION_POWER, None)
             .await;
     }
 

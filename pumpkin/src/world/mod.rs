@@ -3202,8 +3202,13 @@ impl World {
         player.set_health(20.0).await;
     }
 
-    pub async fn explode(self: &Arc<Self>, position: Vector3<f64>, power: f32) {
-        let explosion = Explosion::new(power, position);
+    pub async fn explode(
+        self: &Arc<Self>,
+        position: Vector3<f64>,
+        power: f32,
+        source_entity: Option<Arc<dyn EntityBase>>,
+    ) {
+        let explosion = Explosion::new(power, position, source_entity);
         let block_count = explosion.explode(self).await;
         let particle = if power < 2.0 {
             Particle::Explosion

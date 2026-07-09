@@ -56,7 +56,7 @@ impl EntityBase for EndCrystalEntity {
                 self.entity
                     .world
                     .load()
-                    .explode(self.entity.pos.load(), 6.0)
+                    .explode(self.entity.pos.load(), 6.0, None)
                     .await;
             }
 

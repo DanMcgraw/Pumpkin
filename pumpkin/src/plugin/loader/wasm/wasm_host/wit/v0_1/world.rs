@@ -546,6 +546,7 @@ impl pumpkin::plugin::world::HostWorld for PluginHostState {
         let explosion = Explosion::new(
             power,
             pumpkin_util::math::vector3::Vector3::new(pos.0, pos.1, pos.2),
+            None,
         );
         explosion.explode(&world_ref.provider).await;
         Ok(())

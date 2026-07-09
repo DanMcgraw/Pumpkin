@@ -8,6 +8,8 @@ pub mod inventory;
 pub mod phase3_tests;
 #[cfg(test)]
 pub mod phase4_tests;
+#[cfg(test)]
+pub mod phase5_tests;
 pub mod player;
 pub mod server;
 pub mod world;

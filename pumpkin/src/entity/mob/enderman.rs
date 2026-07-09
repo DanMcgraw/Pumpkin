@@ -236,9 +236,9 @@ impl EndermanEntity {
     }
 
     pub async fn set_target(&self, target: Option<Arc<dyn EntityBase>>) {
-        let mut mob_target = self.mob_entity.target.lock().await;
-        (*mob_target).clone_from(&target);
-        drop(mob_target);
+        self.mob_entity
+            .set_target_with_events(target.clone(), Some("target_selector"))
+            .await;
 
         if target.is_some() {
             self.set_angry(true);

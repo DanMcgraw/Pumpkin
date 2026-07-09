@@ -6,6 +6,7 @@ use crate::{
         Entity, EntityBase, EntityBaseFuture, NBTStorage, player::Player,
         projectile::ThrownItemEntity,
     },
+    plugin::api::events::entity::potion_splash::PotionSplashEvent,
     server::Server,
 };
 use pumpkin_data::item_stack::ItemStack;
@@ -251,33 +252,103 @@ impl EntityBase for SplashPotionEntity {
                 candidates.push(p.clone() as Arc<dyn EntityBase>);
             }
 
-            for cand in candidates {
-                let cand_clone = cand.clone();
-                let effs_clone: Vec<_> = effects.clone();
-                let hit_pos_clone = hit_pos;
-                tokio::spawn(async move {
-                    if let Some(living) = cand_clone.get_living_entity() {
-                        let pos = cand_clone.get_entity().pos.load();
-                        let dx = pos.x - hit_pos_clone.x;
-                        let dy = pos.y - hit_pos_clone.y;
-                        let dz = pos.z - hit_pos_clone.z;
-                        let dist = (dx * dx + dy * dy + dz * dz).sqrt();
-                        if dist > radius {
-                            return;
+            // Filter to living entities within splash radius for the event payload.
+            let affected_entities: Vec<Arc<dyn EntityBase>> = candidates
+                .iter()
+                .filter(|c| c.get_living_entity().is_some())
+                .filter(|c| {
+                    let pos = c.get_entity().pos.load();
+                    let dx = pos.x - hit_pos.x;
+                    let dy = pos.y - hit_pos.y;
+                    let dz = pos.z - hit_pos.z;
+                    (dx * dx + dy * dy + dz * dz).sqrt() <= radius
+                })
+                .cloned()
+                .collect();
+
+            let (hit_block, hit_entity) = match hit {
+                crate::entity::projectile::ProjectileHit::Block { pos, .. } => {
+                    (Some(pos), None)
+                }
+                crate::entity::projectile::ProjectileHit::Entity { ref entity, .. } => {
+                    (None, Some(entity.clone()))
+                }
+            };
+
+            if let Some(server) = world.server.upgrade() {
+                let potion_entity = world
+                    .get_entity_by_id(self.get_entity().entity_id)
+                    .expect("splash potion should exist");
+                let splash_event = PotionSplashEvent::new(
+                    potion_entity,
+                    hit_pos,
+                    hit_block,
+                    hit_entity,
+                    affected_entities.clone(),
+                    stack.clone(),
+                );
+                let splash_event = server.plugin_manager.fire(splash_event).await;
+                if splash_event.cancelled {
+                    return;
+                }
+                // Apply effects to the (possibly modified) affected entity list.
+                for cand in &splash_event.affected_entities {
+                    let cand_clone = cand.clone();
+                    let effs_clone: Vec<_> = effects.clone();
+                    let hit_pos_clone = hit_pos;
+                    tokio::spawn(async move {
+                        if let Some(living) = cand_clone.get_living_entity() {
+                            let pos = cand_clone.get_entity().pos.load();
+                            let dx = pos.x - hit_pos_clone.x;
+                            let dy = pos.y - hit_pos_clone.y;
+                            let dz = pos.z - hit_pos_clone.z;
+                            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if dist > radius {
+                                return;
+                            }
+
+                            // Distance scaling
+                            let scale = (1.0f32 - (dist as f32 / radius as f32)).max(0.0);
+
+                            crate::item::potion::PotionContents::apply_effects_to(
+                                living,
+                                effs_clone,
+                                scale,
+                                crate::item::potion::PotionApplicationSource::Normal,
+                            )
+                            .await;
                         }
+                    });
+                }
+            } else {
+                for cand in candidates {
+                    let cand_clone = cand.clone();
+                    let effs_clone: Vec<_> = effects.clone();
+                    let hit_pos_clone = hit_pos;
+                    tokio::spawn(async move {
+                        if let Some(living) = cand_clone.get_living_entity() {
+                            let pos = cand_clone.get_entity().pos.load();
+                            let dx = pos.x - hit_pos_clone.x;
+                            let dy = pos.y - hit_pos_clone.y;
+                            let dz = pos.z - hit_pos_clone.z;
+                            let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if dist > radius {
+                                return;
+                            }
 
-                        // Distance scaling
-                        let scale = (1.0f32 - (dist as f32 / radius as f32)).max(0.0);
+                            // Distance scaling
+                            let scale = (1.0f32 - (dist as f32 / radius as f32)).max(0.0);
 
-                        crate::item::potion::PotionContents::apply_effects_to(
-                            living,
-                            effs_clone,
-                            scale,
-                            crate::item::potion::PotionApplicationSource::Normal,
-                        )
-                        .await;
-                    }
-                });
+                            crate::item::potion::PotionContents::apply_effects_to(
+                                living,
+                                effs_clone,
+                                scale,
+                                crate::item::potion::PotionApplicationSource::Normal,
+                            )
+                            .await;
+                        }
+                    });
+                }
             }
         })
     }

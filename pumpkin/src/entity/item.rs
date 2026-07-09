@@ -26,6 +26,7 @@ use std::sync::{
 use tokio::sync::Mutex;
 
 use super::{Entity, EntityBase, NBTStorage, NbtFuture, living::LivingEntity, player::Player};
+use crate::plugin::api::events::entity::entity_pickup_item::EntityPickupItemEvent;
 
 pub struct ItemEntity {
     entity: Entity,
@@ -527,10 +528,34 @@ impl EntityBase for ItemEntity {
                 return;
             }
 
-            let (item_id, count_before) = {
+            let (item_id, count_before, item_stack) = {
                 let stack = self.item_stack.lock().await;
-                (stack.item.id, stack.item_count)
+                (stack.item.id, stack.item_count, stack.clone())
             };
+
+            let world = self.entity.world.load();
+            if let Some(server) = world.server.upgrade() {
+                let player_arc = world
+                    .get_player_by_id(player.entity_id())
+                    .expect("player should exist");
+                let item_entity_arc = world
+                    .get_entity_by_id(self.entity.entity_id)
+                    .expect("item entity should exist");
+                let event = server
+                    .plugin_manager
+                    .fire(EntityPickupItemEvent::new(
+                        player_arc,
+                        item_entity_arc
+                            .get_item_entity()
+                            .expect("entity should be an item"),
+                        item_stack,
+                        count_before as u8,
+                    ))
+                    .await;
+                if event.cancelled {
+                    return;
+                }
+            }
 
             let inserted = {
                 let mut stack = self.item_stack.lock().await;

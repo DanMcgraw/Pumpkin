@@ -25,6 +25,7 @@ use crate::entity::{
     mob::{Mob, MobEntity},
     player::Player,
 };
+use crate::plugin::api::events::entity::explosion_prime::ExplosionPrimeEvent;
 
 const DEFAULT_FUSE_TIME: i32 = 30;
 const DEFAULT_EXPLOSION_RADIUS: i32 = 3;
@@ -110,7 +111,22 @@ impl CreeperEntity {
             .store(true, Ordering::Relaxed);
         let world = entity.world.load();
         let pos = entity.pos.load();
-        world.explode(pos, radius * multiplier).await;
+        let creeper = world
+            .get_entity_by_id(entity.entity_id)
+            .expect("creeper should exist");
+        if let Some(server) = world.server.upgrade() {
+            let prime_event = ExplosionPrimeEvent::new(
+                Some(creeper.clone()),
+                pos,
+                radius * multiplier,
+                false,
+            );
+            let prime_event = server.plugin_manager.fire(prime_event).await;
+            if prime_event.cancelled {
+                return;
+            }
+        }
+        world.explode(pos, radius * multiplier, Some(creeper)).await;
         // TODO: spawn area effect cloud with potion effects
         entity.remove().await;
     }

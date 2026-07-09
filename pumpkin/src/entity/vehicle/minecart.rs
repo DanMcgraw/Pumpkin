@@ -186,7 +186,7 @@ impl EntityBase for MinecartEntity {
 
                     if new_fuse == 0 {
                         self.vehicle.entity.remove().await;
-                        world.explode(pos, 4.0).await;
+                        world.explode(pos, 4.0, None).await;
                     }
                 }
             }
