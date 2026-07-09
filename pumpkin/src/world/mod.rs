@@ -3726,6 +3726,9 @@ impl World {
                     let entity_nbts = std::mem::take(&mut *chunk.data.lock().await);
                     let mut entities_to_add: Vec<Arc<dyn EntityBase>> =
                         Vec::with_capacity(entity_nbts.len());
+                    let mut entities_to_send: Vec<Arc<dyn EntityBase>> =
+                        Vec::with_capacity(entity_nbts.len());
+                    let mut seen_entity_uuids = FxHashSet::default();
                     for entity_nbt in &entity_nbts {
                         let Some(id) = entity_nbt.get_string("id") else {
                             debug!("Entity has no ID");
@@ -3742,6 +3745,11 @@ impl World {
                         // across reloads (matching vanilla); only fall back to a
                         // fresh one if it is missing/corrupt.
                         let uuid = read_entity_uuid(entity_nbt).unwrap_or_else(Uuid::new_v4);
+                        if !seen_entity_uuids.insert(uuid) {
+                            trace!("Skipping duplicate entity UUID {uuid} in chunk {position:?}");
+                            continue;
+                        }
+
                         // Pos is zero since it will be read from nbt.
                         let entity =
                             from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, uuid);
@@ -3754,11 +3762,14 @@ impl World {
                         // stale data.
                         base_entity.velocity.store(Vector3::default());
 
-                        player
-                            .client
-                            .enqueue_packet(&base_entity.create_spawn_packet())
-                            .await;
-                        entity.send_initial_metadata(&player).await;
+                        if let Some(existing_entity) =
+                            world.get_entity_by_uuid(base_entity.entity_uuid)
+                        {
+                            if existing_entity.get_entity().chunk_pos.load() == position {
+                                entities_to_send.push(existing_entity);
+                            }
+                            continue;
+                        }
 
                         let event = ChunkEntityLoadEvent::new(
                             world.clone(),
@@ -3771,29 +3782,38 @@ impl World {
                             continue;
                         }
 
-                        world.insert_entity_into_chunk_index(&entity);
+                        if let Some(existing_entity) =
+                            world.get_entity_by_uuid(base_entity.entity_uuid)
+                        {
+                            if existing_entity.get_entity().chunk_pos.load() == position {
+                                entities_to_send.push(existing_entity);
+                            }
+                            continue;
+                        }
+
                         entities_to_add.push(entity);
                     }
 
-                    if !entities_to_add.is_empty() {
-                        world.entities.rcu(|current_entities| {
-                            let mut new_entities = (**current_entities).clone();
-                            new_entities.extend(entities_to_add.iter().cloned());
-                            new_entities
-                        });
+                    entities_to_send.extend(
+                        world
+                            .add_loaded_entities_to_live_set(entities_to_add)
+                            .into_iter()
+                            .filter(|entity| entity.get_entity().chunk_pos.load() == position),
+                    );
+                    for entity in entities_to_send {
+                        Self::send_entity_spawn_to_player(&entity, &player).await;
                     }
                 } else {
                     // The chunk's entities are already live (another watcher loaded
                     // them). Just send this player the spawn packets for the live
                     // entities currently in this chunk.
+                    let mut sent_entity_uuids = FxHashSet::default();
                     for entity in world.entities.load().iter() {
                         let base_entity = entity.get_entity();
-                        if base_entity.chunk_pos.load() == position {
-                            player
-                                .client
-                                .enqueue_packet(&base_entity.create_spawn_packet())
-                                .await;
-                            entity.send_initial_metadata(&player).await;
+                        if base_entity.chunk_pos.load() == position
+                            && sent_entity_uuids.insert(base_entity.entity_uuid)
+                        {
+                            Self::send_entity_spawn_to_player(entity, &player).await;
                         }
                     }
                 }
@@ -3802,6 +3822,57 @@ impl World {
             #[cfg(debug_assertions)]
             debug!("Chunks queued after {}ms", inst.elapsed().as_millis());
         });
+    }
+
+    fn add_loaded_entities_to_live_set(
+        &self,
+        entities: Vec<Arc<dyn EntityBase>>,
+    ) -> Vec<Arc<dyn EntityBase>> {
+        if entities.is_empty() {
+            return Vec::new();
+        }
+
+        self.entities.rcu(|current_entities| {
+            let mut new_entities = (**current_entities).clone();
+            for entity in &entities {
+                let entity_uuid = entity.get_entity().entity_uuid;
+                if !new_entities
+                    .iter()
+                    .any(|existing| existing.get_entity().entity_uuid == entity_uuid)
+                {
+                    new_entities.push(entity.clone());
+                }
+            }
+            new_entities
+        });
+
+        let mut live_entities = Vec::with_capacity(entities.len());
+        let mut seen_entity_uuids = FxHashSet::default();
+        for entity in entities {
+            let entity_uuid = entity.get_entity().entity_uuid;
+            if !seen_entity_uuids.insert(entity_uuid) {
+                continue;
+            }
+
+            let Some(live_entity) = self.get_entity_by_uuid(entity_uuid) else {
+                continue;
+            };
+
+            if Arc::ptr_eq(&live_entity, &entity) {
+                self.insert_entity_into_chunk_index(&entity);
+            }
+            live_entities.push(live_entity);
+        }
+        live_entities
+    }
+
+    async fn send_entity_spawn_to_player(entity: &Arc<dyn EntityBase>, player: &Arc<Player>) {
+        let base_entity = entity.get_entity();
+        player
+            .client
+            .enqueue_packet(&base_entity.create_spawn_packet())
+            .await;
+        entity.send_initial_metadata(player).await;
     }
 
     /// Gets a `Player` by an entity id
@@ -4329,10 +4400,14 @@ impl World {
 
     fn insert_entity_into_chunk_index(&self, entity: &Arc<dyn EntityBase>) {
         let chunk_pos = entity.get_entity().chunk_pos.load();
-        self.entities_by_chunk
-            .entry(chunk_pos)
-            .or_default()
-            .push(entity.clone());
+        let entity_uuid = entity.get_entity().entity_uuid;
+        let mut entry = self.entities_by_chunk.entry(chunk_pos).or_default();
+        if !entry
+            .iter()
+            .any(|existing| existing.get_entity().entity_uuid == entity_uuid)
+        {
+            entry.push(entity.clone());
+        }
     }
 
     fn remove_entity_from_chunk_index(&self, entity: &dyn EntityBase) {
@@ -4370,7 +4445,12 @@ impl World {
 
         if let Some(entity) = entity {
             if let Some(mut new_entry) = self.entities_by_chunk.get_mut(&new_chunk) {
-                new_entry.push(entity);
+                if !new_entry
+                    .iter()
+                    .any(|existing| existing.get_entity().entity_uuid == entity_uuid)
+                {
+                    new_entry.push(entity);
+                }
             } else {
                 self.entities_by_chunk.insert(new_chunk, vec![entity]);
             }
@@ -5943,6 +6023,36 @@ mod entity_chunk_index_tests {
 
         let chunk_pos = entity.get_entity().chunk_pos.load();
         assert!(world.entities_by_chunk.contains_key(&chunk_pos));
+        assert_eq!(world.entities_by_chunk.get(&chunk_pos).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn loaded_entities_are_deduplicated_by_uuid() {
+        let world = create_test_world();
+        let uuid = uuid::Uuid::new_v4();
+        let first = from_type(
+            &EntityType::ITEM,
+            Vector3::new(32.5, 64.0, 48.5),
+            &world,
+            uuid,
+        );
+        let second = from_type(
+            &EntityType::ITEM,
+            Vector3::new(32.5, 64.0, 48.5),
+            &world,
+            uuid,
+        );
+
+        let live_entities = world.add_loaded_entities_to_live_set(vec![first.clone()]);
+        assert_eq!(live_entities.len(), 1);
+        assert!(Arc::ptr_eq(&live_entities[0], &first));
+
+        let live_entities = world.add_loaded_entities_to_live_set(vec![second]);
+        assert_eq!(live_entities.len(), 1);
+        assert!(Arc::ptr_eq(&live_entities[0], &first));
+
+        let chunk_pos = first.get_entity().chunk_pos.load();
+        assert_eq!(world.entities.load().len(), 1);
         assert_eq!(world.entities_by_chunk.get(&chunk_pos).unwrap().len(), 1);
     }
 
