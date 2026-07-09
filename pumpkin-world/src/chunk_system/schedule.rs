@@ -81,6 +81,8 @@ pub struct GenerationSchedule {
 }
 
 impl GenerationSchedule {
+    const UNLOAD_GRACE: Duration = Duration::from_secs(10);
+
     pub fn create(
         io_read_thread_count: usize,
         gen_thread_count: usize,
@@ -684,6 +686,12 @@ impl GenerationSchedule {
         }
     }
 
+    fn start_unload_grace_if_needed(&mut self, had_unloads: bool) {
+        if !had_unloads && !self.unload_chunks.is_empty() {
+            self.last_unload = std::time::Instant::now();
+        }
+    }
+
     fn save_all_chunk(&mut self, save_proto_chunk: bool) {
         let mut chunks = Vec::with_capacity(self.chunk_map.len());
 
@@ -1037,8 +1045,9 @@ impl GenerationSchedule {
         );
         loop {
             if level.should_unload.swap(false, Relaxed) {
+                let had_unloads = !self.unload_chunks.is_empty();
                 self.garbage_collect_dependencies();
-                self.process_unload_queue();
+                self.start_unload_grace_if_needed(had_unloads);
             }
             if level.should_save.swap(false, Relaxed) {
                 self.save_all_chunk(false);
@@ -1052,21 +1061,25 @@ impl GenerationSchedule {
             }
 
             // 1. Get latest world state (player moves, etc)
+            let had_unloads = !self.unload_chunks.is_empty();
             self.resort_work(self.send_level.get());
+            self.start_unload_grace_if_needed(had_unloads);
 
-            // Process unload queue periodically (every 1 second) to batch writes together
+            // Process unload queue after a short grace period to batch writes together
             // and act as a brief memory cache if a player walks back into the chunk.
             if !self.unload_chunks.is_empty()
-                && self.last_unload.elapsed() >= std::time::Duration::from_secs(1)
+                && self.last_unload.elapsed() >= Self::UNLOAD_GRACE
             {
                 self.process_unload_queue();
                 self.last_unload = std::time::Instant::now();
             }
 
             // 2. Process all pending chunk results from workers
+            let had_unloads = !self.unload_chunks.is_empty();
             while let Ok((pos, data)) = self.recv_chunk.try_recv() {
                 self.receive_chunk(pos, data);
             }
+            self.start_unload_grace_if_needed(had_unloads);
 
             // 3. Re-sort if world state changed or new tasks added
             if self.queue_dirty {

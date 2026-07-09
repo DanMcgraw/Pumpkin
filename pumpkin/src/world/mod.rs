@@ -2679,14 +2679,14 @@ impl World {
 
         chunker::update_position(player).await;
 
-        client.send_packet_now(&CChunkBatchStart).await;
-        client.send_packet_now(&CChunkData(&chunk)).await;
-        client.send_packet_now(&CChunkBatchEnd::new(1u16)).await;
-
         let velocity = player.living_entity.entity.velocity.load();
 
         debug!("Sending player teleport to {}", player.gameprofile.name);
         player.request_teleport(position, yaw, pitch).await;
+
+        client.send_packet_now(&CChunkBatchStart).await;
+        client.send_packet_now(&CChunkData(&chunk)).await;
+        client.send_packet_now(&CChunkBatchEnd::new(1u16)).await;
 
         let gameprofile = &player.gameprofile;
         let bedrock_player_list = CPlayerList {
@@ -3561,7 +3561,9 @@ impl World {
             .send_world_info(player, position, yaw, pitch)
             .await;
 
-        // Ensure at least the center chunk is sent synchronously before teleport.
+        player.request_teleport(position, yaw, pitch).await;
+
+        // Ensure at least the center chunk is sent synchronously after teleport.
         if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref() {
             java_client.send_packet_now(&CChunkBatchStart).await;
             java_client.send_packet_now(&CChunkData(&chunk)).await;
@@ -3569,9 +3571,6 @@ impl World {
                 .send_packet_now(&CChunkBatchEnd::new(1u16))
                 .await;
         }
-
-        // Send teleport packet after at least the center chunk was delivered
-        player.request_teleport(position, yaw, pitch).await;
     }
 
     /// Returns true if enough players are sleeping and we should skip the night.
