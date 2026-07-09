@@ -2633,6 +2633,12 @@ impl World {
             client_suggestions::send_c_commands_packet(player, server, &command_dispatcher).await;
         };
 
+        // Start waiting for level chunks before the initial center chunk is sent.
+        debug!("Sending waiting chunks to {}", player.gameprofile.name);
+        client
+            .send_packet_now(&CGameEvent::new(GameEvent::StartWaitingChunks, 0.0))
+            .await;
+
         let (position, yaw, pitch) = if player.has_played_before.load(Ordering::Relaxed) {
             let position = player.position();
             let yaw = player.get_entity().yaw.load(); //info.spawn_angle;
@@ -3101,12 +3107,6 @@ impl World {
             .enqueue_set_held_item_packet(&CSetSelectedSlot::new(
                 player.get_inventory().get_selected_slot() as i8,
             ))
-            .await;
-
-        // Start waiting for level chunks. Sets the "Loading Terrain" screen
-        debug!("Sending waiting chunks to {}", player.gameprofile.name);
-        client
-            .send_packet_now(&CGameEvent::new(GameEvent::StartWaitingChunks, 0.0))
             .await;
 
         self.worldborder.lock().await.init_client(client).await;
