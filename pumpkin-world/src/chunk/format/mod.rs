@@ -174,10 +174,15 @@ impl ChunkData {
     }
 
     fn internal_to_bytes(&self) -> Result<Bytes, ChunkSerializingError> {
-        fn extract_light_ref(light: Option<&LightContainer>) -> Option<&[u8]> {
+        fn extract_light_data(light: Option<&LightContainer>) -> Option<Box<[u8]>> {
             match light {
-                Some(LightContainer::Full(data)) => Some(data.as_ref()),
-                _ => None,
+                Some(LightContainer::Full(data)) => Some(data.clone()),
+                Some(LightContainer::Empty(0)) | None => None,
+                Some(LightContainer::Empty(level)) => {
+                    debug_assert!(*level <= 15);
+                    let packed = (*level << 4) | *level;
+                    Some(vec![packed; LightContainer::ARRAY_SIZE].into_boxed_slice())
+                }
             }
         }
 
@@ -197,13 +202,22 @@ impl ChunkData {
 
         let min_section_y = (self.section.min_y >> 4) as i8;
 
+        let light_data = (0..self.section.count)
+            .map(|i| {
+                (
+                    extract_light_data(light_lock.block_light.get(i)),
+                    extract_light_data(light_lock.sky_light.get(i)),
+                )
+            })
+            .collect::<Vec<_>>();
+
         let sections = (0..self.section.count)
             .map(|i| ChunkSectionNbtRef {
                 y: i as i8 + min_section_y,
                 block_states: Some(block_lock[i].to_disk_nbt()),
                 biomes: Some(biome_lock[i].to_disk_nbt()),
-                block_light: extract_light_ref(light_lock.block_light.get(i)),
-                sky_light: extract_light_ref(light_lock.sky_light.get(i)),
+                block_light: light_data[i].0.as_deref(),
+                sky_light: light_data[i].1.as_deref(),
             })
             .collect::<Vec<_>>();
 

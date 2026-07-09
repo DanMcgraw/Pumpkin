@@ -28,17 +28,33 @@ pub enum RecvChunk {
 /// Checks if a chunk needs relighting based on the current lighting configuration
 /// Returns true if the chunk has uniform lighting (from full/dark mode) but the server
 /// is now running in default mode (which needs proper lighting calculation)
-fn needs_relighting(chunk: &crate::chunk::ChunkData, config: LightingEngineConfig) -> bool {
+fn needs_relighting(
+    chunk: &crate::chunk::ChunkData,
+    config: LightingEngineConfig,
+    has_skylight: bool,
+) -> bool {
     if config != LightingEngineConfig::Default {
         return false;
     }
 
-    // If the chunk says it's already lit, believe it.
-    if chunk.light_populated.load(Relaxed) {
+    let engine = chunk.light_engine.lock().expect("Mutex poisoned");
+
+    let missing_skylight = has_skylight
+        && !engine.sky_light.iter().any(|lc| match lc {
+            LightContainer::Full(data) => data.iter().any(|&b| b != 0x00),
+            LightContainer::Empty(val) => *val != 0,
+        });
+
+    // If the chunk says it's already lit, believe it unless a skylight dimension
+    // has no stored sky light at all. That can happen after older saves omitted
+    // uniform LightContainer::Empty(15) data.
+    if chunk.light_populated.load(Relaxed) && !missing_skylight {
         return false;
     }
 
-    let engine = chunk.light_engine.lock().expect("Mutex poisoned");
+    if missing_skylight {
+        return true;
+    }
 
     // Scan for any complex lighting data
     let has_complex_light = engine.sky_light.iter().any(|lc| match lc {
@@ -96,7 +112,11 @@ pub async fn io_read_work(
                     let pos = ChunkPos::new(chunk.x, chunk.z);
                     if chunk.status == ChunkStatus::Full {
                         // Relighting check
-                        let needs_relight = needs_relighting(&chunk, level.lighting_config);
+                        let needs_relight = needs_relighting(
+                            &chunk,
+                            level.lighting_config,
+                            level.world_gen.dimension.has_skylight,
+                        );
 
                         if needs_relight {
                             debug!(
