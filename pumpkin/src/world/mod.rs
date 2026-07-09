@@ -165,7 +165,7 @@ use weather::Weather;
 
 type FlowingFluidProperties = pumpkin_data::fluid::FlowingWaterLikeFluidProperties;
 
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 impl PumpkinError for GetBlockError {
     fn is_kick(&self) -> bool {
@@ -225,7 +225,9 @@ pub struct World {
     pub dragon_fight: Option<Mutex<dragon_fight::DragonFight>>,
     pub spawn_state: ArcSwap<SpawnState>,
     pub active_chunks: ArcSwap<FxHashSet<Vector2<i32>>>,
-    pub block_entities: DashMap<BlockPos, Arc<dyn BlockEntity>>,
+    /// Block entities indexed by chunk so ticking and chunk unloads do not scan
+    /// every loaded block entity in the world.
+    pub block_entities: DashMap<Vector2<i32>, FxHashMap<BlockPos, Arc<dyn BlockEntity>>>,
     /// A chunk-level spatial index of live entities. Each key is a chunk position
     /// and the value is the list of entities currently in that chunk.
     pub entities_by_chunk: DashMap<Vector2<i32>, Vec<Arc<dyn EntityBase>>>,
@@ -449,32 +451,33 @@ impl World {
     }
 
     async fn save_all_block_entities(&self) {
-        let block_entities = self
-            .block_entities
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect::<Vec<_>>();
+        let mut block_entities = Vec::new();
+        for chunk_block_entities in self.block_entities.iter() {
+            block_entities.extend(chunk_block_entities.values().cloned());
+        }
         self.save_block_entities(block_entities).await;
     }
 
     async fn save_dirty_block_entities(&self) {
-        let block_entities = self
-            .block_entities
-            .iter()
-            .filter(|entry| entry.value().is_dirty())
-            .map(|entry| entry.value().clone())
-            .collect::<Vec<_>>();
+        let mut block_entities = Vec::new();
+        for chunk_block_entities in self.block_entities.iter() {
+            block_entities.extend(
+                chunk_block_entities
+                    .values()
+                    .filter(|block_entity| block_entity.is_dirty())
+                    .cloned(),
+            );
+        }
         self.save_block_entities(block_entities).await;
     }
 
     async fn save_block_entities_in_chunks(&self, chunks: &[Vector2<i32>]) {
-        let chunks = chunks.iter().copied().collect::<FxHashSet<_>>();
-        let block_entities = self
-            .block_entities
-            .iter()
-            .filter(|entry| chunks.contains(&entry.key().chunk_position()))
-            .map(|entry| entry.value().clone())
-            .collect::<Vec<_>>();
+        let mut block_entities = Vec::new();
+        for chunk_pos in chunks {
+            if let Some(chunk_block_entities) = self.block_entities.get(chunk_pos) {
+                block_entities.extend(chunk_block_entities.values().cloned());
+            }
+        }
         self.save_block_entities(block_entities).await;
     }
 
@@ -1040,12 +1043,12 @@ impl World {
         };
 
         let active_chunks = self.active_chunks.load();
-        let block_entities: Vec<Arc<dyn BlockEntity>> = self
-            .block_entities
-            .iter()
-            .filter(|e| active_chunks.contains(&e.key().chunk_position()))
-            .map(|e| e.value().clone())
-            .collect();
+        let mut block_entities = Vec::new();
+        for chunk_pos in active_chunks.iter() {
+            if let Some(chunk_block_entities) = self.block_entities.get(chunk_pos) {
+                block_entities.extend(chunk_block_entities.values().cloned());
+            }
+        }
         let block_entity_count = block_entities.len();
 
         let world_for_be = self.clone();
@@ -4557,8 +4560,9 @@ impl World {
             self.remove_entity_from_chunk_index(entity.as_ref());
         }
 
-        self.block_entities
-            .retain(|pos, _| !chunks_set.contains(&pos.chunk_position()));
+        for chunk_pos in &chunks_set {
+            self.block_entities.remove(chunk_pos);
+        }
     }
 
     pub async fn set_block_breaking(&self, from: &Entity, location: BlockPos, progress: i32) {
@@ -5350,13 +5354,16 @@ impl World {
     }
 
     pub fn get_block_entity(&self, block_pos: &BlockPos) -> Option<Arc<dyn BlockEntity>> {
-        if let Some(entry) = self.block_entities.get(block_pos) {
-            return Some(entry.value().clone());
+        let chunk_pos = block_pos.chunk_position();
+        if let Some(chunk_block_entities) = self.block_entities.get(&chunk_pos)
+            && let Some(block_entity) = chunk_block_entities.get(block_pos)
+        {
+            return Some(block_entity.clone());
         }
 
         let pending_nbt = self
             .level
-            .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
+            .read_chunk_sync(&chunk_pos, |chunk| {
                 chunk
                     .pending_block_entities
                     .lock()
@@ -5371,14 +5378,16 @@ impl World {
         } else {
             let state = self.get_block_state(block_pos);
             let entity = block_entity_from_block_state(state, *block_pos)?;
-            self.level
-                .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
-                    chunk.mark_dirty(true);
-                });
+            self.level.read_chunk_sync(&chunk_pos, |chunk| {
+                chunk.mark_dirty(true);
+            });
             entity
         };
 
-        self.block_entities.insert(*block_pos, entity.clone());
+        self.block_entities
+            .entry(chunk_pos)
+            .or_default()
+            .insert(*block_pos, entity.clone());
         Some(entity)
     }
 
@@ -5400,7 +5409,10 @@ impl World {
             );
         }
 
-        self.block_entities.insert(block_pos, block_entity);
+        self.block_entities
+            .entry(chunk_pos)
+            .or_default()
+            .insert(block_pos, block_entity);
         self.level.read_chunk_sync(&chunk_pos, |chunk| {
             chunk.mark_dirty(true);
         });
@@ -5419,10 +5431,20 @@ impl World {
     }
 
     pub fn remove_block_entity(&self, block_pos: &BlockPos) {
-        let removed_live = self.block_entities.remove(block_pos).is_some();
+        let chunk_pos = block_pos.chunk_position();
+        let removed_live =
+            self.block_entities
+                .get_mut(&chunk_pos)
+                .is_some_and(|mut chunk_block_entities| {
+                    chunk_block_entities.remove(block_pos).is_some()
+                });
+        if removed_live {
+            self.block_entities
+                .remove_if(&chunk_pos, |_, block_entities| block_entities.is_empty());
+        }
         let removed_pending = self
             .level
-            .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
+            .read_chunk_sync(&chunk_pos, |chunk| {
                 chunk
                     .pending_block_entities
                     .lock()
@@ -5433,10 +5455,9 @@ impl World {
             .unwrap_or(false);
 
         if removed_live || removed_pending {
-            self.level
-                .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
-                    chunk.mark_dirty(true);
-                });
+            self.level.read_chunk_sync(&chunk_pos, |chunk| {
+                chunk.mark_dirty(true);
+            });
         }
     }
 
@@ -6035,6 +6056,41 @@ mod entity_chunk_index_tests {
             .store(Vector3::new(320.0, 64.0, 320.0));
 
         assert!(world.collect_entity_tick_candidates().is_empty());
+    }
+
+    #[tokio::test]
+    async fn block_entities_are_indexed_by_chunk() {
+        use crate::block::entities::bed::BedBlockEntity;
+
+        let world = create_test_world();
+        let block_pos = BlockPos::new(32, 64, 48);
+        let chunk_pos = block_pos.chunk_position();
+        let block_entity = Arc::new(BedBlockEntity::new(block_pos));
+
+        world.add_block_entity(block_entity);
+
+        let chunk_block_entities = world
+            .block_entities
+            .get(&chunk_pos)
+            .expect("block entity chunk bucket should exist");
+        assert!(chunk_block_entities.contains_key(&block_pos));
+        drop(chunk_block_entities);
+        assert!(world.get_block_entity(&block_pos).is_some());
+    }
+
+    #[tokio::test]
+    async fn remove_block_entity_prunes_empty_chunk_bucket() {
+        use crate::block::entities::bed::BedBlockEntity;
+
+        let world = create_test_world();
+        let block_pos = BlockPos::new(32, 64, 48);
+        let chunk_pos = block_pos.chunk_position();
+        let block_entity = Arc::new(BedBlockEntity::new(block_pos));
+
+        world.add_block_entity(block_entity);
+        world.remove_block_entity(&block_pos);
+
+        assert!(!world.block_entities.contains_key(&chunk_pos));
     }
 
     #[tokio::test]
