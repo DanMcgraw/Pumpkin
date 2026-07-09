@@ -281,12 +281,12 @@ impl World {
 
     #[must_use]
     pub fn load(
-        level: Arc<Level>,
+        level: &Arc<Level>,
         level_info: Arc<ArcSwap<LevelData>>,
         dimension: Dimension,
         block_registry: Arc<BlockRegistry>,
         server: Weak<Server>,
-    ) -> Self {
+    ) -> Arc<Self> {
         // TODO
         let generation_settings = GenerationSettings::from_dimension(&dimension);
 
@@ -294,30 +294,58 @@ impl World {
         let portal_poi = portal::PortalPoiStorage::new(level.level_folder.poi_folder.clone());
         let dragon_fight = (dimension.minecraft_name == Dimension::THE_END.minecraft_name)
             .then(|| Mutex::new(dragon_fight::DragonFight::new()));
-        Self {
-            uuid: Uuid::new_v4(),
-            level,
-            level_info,
-            players: ArcSwap::new(Arc::new(Vec::new())),
-            entities: ArcSwap::new(Arc::new(Vec::new())),
-            scoreboard: Mutex::new(Scoreboard::default()),
-            worldborder: Mutex::new(Worldborder::new(0.0, 0.0, 5.999_996_8E7, 0, 5, 300)),
-            level_time: Mutex::new(LevelTime::new()),
-            dimension,
-            weather: Mutex::new(Weather::new()),
-            block_registry,
-            sea_level: generation_settings.sea_level,
-            min_y: i32::from(generation_settings.shape.min_y),
-            synced_block_event_queue: Mutex::new(Vec::new()),
-            unsent_block_changes: Mutex::new(HashMap::new()),
-            portal_poi: Mutex::new(portal_poi),
-            dragon_fight,
-            spawn_state: ArcSwap::new(Arc::new(SpawnState::empty())),
-            active_chunks: ArcSwap::new(Arc::new(FxHashSet::default())),
-            server,
-            block_entities: DashMap::new(),
-            entities_by_chunk: DashMap::new(),
-        }
+
+        let runtime = tokio::runtime::Handle::try_current().ok();
+
+        Arc::new_cyclic(|weak: &Weak<Self>| {
+            let world = Self {
+                uuid: Uuid::new_v4(),
+                level: level.clone(),
+                level_info,
+                players: ArcSwap::new(Arc::new(Vec::new())),
+                entities: ArcSwap::new(Arc::new(Vec::new())),
+                scoreboard: Mutex::new(Scoreboard::default()),
+                worldborder: Mutex::new(Worldborder::new(0.0, 0.0, 5.999_996_8E7, 0, 5, 300)),
+                level_time: Mutex::new(LevelTime::new()),
+                dimension,
+                weather: Mutex::new(Weather::new()),
+                block_registry,
+                sea_level: generation_settings.sea_level,
+                min_y: i32::from(generation_settings.shape.min_y),
+                synced_block_event_queue: Mutex::new(Vec::new()),
+                unsent_block_changes: Mutex::new(HashMap::new()),
+                portal_poi: Mutex::new(portal_poi),
+                dragon_fight,
+                spawn_state: ArcSwap::new(Arc::new(SpawnState::empty())),
+                active_chunks: ArcSwap::new(Arc::new(FxHashSet::default())),
+                server,
+                block_entities: DashMap::new(),
+                entities_by_chunk: DashMap::new(),
+            };
+
+            // Install the chunk-unload callback so the chunk system can fire
+            // ChunkUnloadEvent and honour cancellation.
+            let weak = weak.clone();
+            let callback = move |pos: Vector2<i32>, chunk: Arc<ChunkData>| -> bool {
+                let Some(world) = weak.upgrade() else {
+                    return false;
+                };
+                let Some(server) = world.server.upgrade() else {
+                    return false;
+                };
+                let Some(runtime) = runtime.clone() else {
+                    return false;
+                };
+                let event =
+                    crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
+                        world, chunk, pos,
+                    );
+                runtime.block_on(async move { server.plugin_manager.fire(event).await.cancelled })
+            };
+            *level.chunk_unload_callback.write().unwrap() = Some(Box::new(callback));
+
+            world
+        })
     }
 
     pub fn update_active_chunks(self: &Arc<Self>) {
@@ -5843,13 +5871,13 @@ mod entity_chunk_index_tests {
         let level_info = Arc::new(ArcSwap::new(Arc::new(LevelData::default(
             pumpkin_util::world_seed::Seed(0),
         ))));
-        Arc::new(World::load(
-            level,
+        World::load(
+            &level,
             level_info,
             Dimension::OVERWORLD,
             Arc::new(BlockRegistry::default()),
             Weak::new(),
-        ))
+        )
     }
 
     fn create_entity(world: &Arc<World>, pos: Vector3<f64>) -> Arc<dyn EntityBase> {

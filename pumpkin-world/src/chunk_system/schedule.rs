@@ -76,6 +76,7 @@ pub struct GenerationSchedule {
     send_chunk: crossfire::compat::MTx<(ChunkPos, RecvChunk)>,
     gen_pool: Option<Arc<rayon::ThreadPool>>,
     listener: Arc<ChunkListener>,
+    level: Arc<Level>,
     lighting_config: LightingEngineConfig,
     last_unload: std::time::Instant,
 }
@@ -170,6 +171,7 @@ impl GenerationSchedule {
                     send_chunk,
                     gen_pool,
                     listener,
+                    level: level_sched.clone(),
                     chunk_map: HashMap::default(),
                     lighting_config,
                     last_unload: std::time::Instant::now(),
@@ -648,6 +650,14 @@ impl GenerationSchedule {
                 };
                 match tmp {
                     Chunk::Level(chunk) => {
+                        // Allow external listeners to cancel the unload before the chunk is dropped.
+                        let callback = self.level.chunk_unload_callback.read().unwrap();
+                        if callback.as_ref().is_some_and(|cb| cb(pos, chunk.clone())) {
+                            self.unload_chunks.insert(pos);
+                            continue;
+                        }
+                        drop(callback);
+
                         if holder.public {
                             self.public_chunk_map.remove(&pos);
                             holder.public = false;

@@ -37,13 +37,13 @@ mod tests {
         let level_info = Arc::new(arc_swap::ArcSwap::new(Arc::new(LevelData::default(Seed(
             0,
         )))));
-        Arc::new(World::load(
-            level,
+        World::load(
+            &level,
             level_info,
             pumpkin_data::dimension::Dimension::OVERWORLD,
             Arc::new(crate::block::registry::BlockRegistry::default()),
             Weak::new(),
-        ))
+        )
     }
 
     #[tokio::test]

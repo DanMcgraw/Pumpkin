@@ -8,6 +8,8 @@ use crate::item::registry::ItemRegistry;
 use crate::net::authentication::fetch_mojang_public_keys;
 use crate::net::{ClientPlatform, DisconnectReason, EncryptionError, GameProfile, PlayerConfig};
 use crate::plugin::PluginManager;
+use crate::plugin::api::events::world::world_load::WorldLoadEvent;
+use crate::plugin::api::events::world::world_unload::WorldUnloadEvent;
 use crate::plugin::player::player_login::PlayerLoginEvent;
 use crate::plugin::server::server_broadcast::ServerBroadcastEvent;
 use crate::server::tick_rate_manager::ServerTickRateManager;
@@ -318,7 +320,7 @@ impl Server {
                         .to_pretty_console()
                 );
                 let level = into_level(dim.clone(), &config, path, seed, Some(pool));
-                let world = Arc::new(World::load(level.clone(), l_info, dim, registry, weak));
+                let world = World::load(&level, l_info, dim, registry, weak);
                 let portal: Arc<dyn WorldPortalExt> = Arc::new(WorldPortal(world.clone()));
                 level.world_portal.store(Arc::new(Some(portal)));
                 world
@@ -340,6 +342,15 @@ impl Server {
         }
 
         server.worlds.store(Arc::new(worlds_vec));
+
+        // Fire WorldLoadEvent for each loaded world.
+        for world in server.worlds.load().iter() {
+            server
+                .plugin_manager
+                .fire(WorldLoadEvent::new(world.clone()))
+                .await;
+        }
+
         if let Ok(k) = keys {
             server.mojang_public_keys.store(Arc::new(k));
         }
@@ -419,8 +430,7 @@ impl Server {
                 seed,
                 None,
             );
-            let world: World = World::load(level.clone(), l_info, dimension, registry, weak);
-            let world = Arc::new(world);
+            let world: Arc<World> = World::load(&level, l_info, dimension, registry, weak);
             let portal: Arc<dyn WorldPortalExt> = Arc::new(WorldPortal(world.clone()));
             level.world_portal.store(Arc::new(Some(portal)));
             server.worlds.rcu(|worlds| {
@@ -579,7 +589,10 @@ impl Server {
 
         info!("Starting worlds");
         for world in self.worlds.load().iter() {
-            world.shutdown().await;
+            let event = self.plugin_manager.fire(WorldUnloadEvent::new(world.clone())).await;
+            if !event.cancelled {
+                world.shutdown().await;
+            }
         }
         let level_data = self.level_info.load();
         // then lets save the world info

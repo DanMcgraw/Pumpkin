@@ -161,7 +161,7 @@ Needed for accurate world state tracking in mcMMO.
 
 ### Phase 7: World & Chunk Events
 
-Needed for world-based skill tracking, cleanup, and persistence.
+Needed for world-based skill tracking, cleanup, and persistence. A detailed expansion with mcMMO/Pumpkin file references, code snippets, testing steps, and sample output is available in [`plan-api-phase7.md`](./plan-api-phase7.md).
 
 | Event | Why mcMMO needs it | Suggested Pumpkin integration |
 |-------|--------------------|-------------------------------|

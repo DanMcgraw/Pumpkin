@@ -12,6 +12,8 @@ pub mod phase4_tests;
 pub mod phase5_tests;
 #[cfg(test)]
 pub mod phase6_tests;
+#[cfg(test)]
+pub mod phase7_tests;
 pub mod player;
 pub mod server;
 pub mod world;

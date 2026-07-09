@@ -23,7 +23,7 @@ use pumpkin_data::{Block, BlockStateId, block_properties::has_random_ticks, flui
 use pumpkin_util::math::{position::BlockPos, vector2::Vector2};
 use pumpkin_util::world_seed::Seed;
 use rustc_hash::FxHashSet;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 use std::{
     path::PathBuf,
@@ -46,6 +46,14 @@ use tokio_util::task::TaskTracker;
 
 pub type SyncChunk = Arc<ChunkData>;
 pub type SyncEntityChunk = Arc<ChunkEntityData>;
+
+/// Callback invoked from the chunk system when a level chunk is about to be unloaded.
+///
+/// The callback receives the chunk position and the chunk data. If it returns
+/// `true`, the unload is cancelled and the chunk will be re-evaluated during the
+/// next unload cycle.
+pub type ChunkUnloadCallback =
+    Box<dyn Fn(Vector2<i32>, SyncChunk) -> bool + Send + Sync>;
 
 /// The `Level` module provides functionality for working with chunks within or outside a Minecraft world.
 ///
@@ -99,6 +107,7 @@ pub struct Level {
     pub level_channel: Arc<LevelChannel>,
     pub thread_tracker: Mutex<Vec<thread::JoinHandle<()>>>,
     pub chunk_listener: Arc<ChunkListener>,
+    pub chunk_unload_callback: Arc<RwLock<Option<ChunkUnloadCallback>>>,
     pub gen_pool: Option<Arc<rayon::ThreadPool>>,
 }
 
@@ -205,6 +214,7 @@ impl Level {
             level_channel: level_channel.clone(),
             thread_tracker,
             chunk_listener: listener.clone(),
+            chunk_unload_callback: Arc::new(RwLock::new(None)),
             gen_pool: gen_pool.clone(),
         });
 
