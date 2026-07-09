@@ -1,4 +1,4 @@
-use crate::block::entities::{BlockEntity, block_entity_from_nbt};
+use crate::block::entities::{BlockEntity, block_entity_from_block_state, block_entity_from_nbt};
 use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
@@ -367,6 +367,7 @@ impl World {
         for entity in self.entities.load().iter() {
             self.save_entity(entity).await;
         }
+        self.save_all_block_entities().await;
 
         // Save portal POI to disk
         let save_result = self.portal_poi.lock().await.save_all();
@@ -389,6 +390,64 @@ impl World {
         let chunk = self.level.get_entity_chunk(current_chunk).await;
         chunk.data.lock().await.push(nbt);
         chunk.mark_dirty(true);
+    }
+
+    async fn save_block_entity(&self, block_entity: &Arc<dyn BlockEntity>) {
+        let position = block_entity.get_position();
+        let chunk_pos = position.chunk_position();
+        let mut nbt = NbtCompound::new();
+        block_entity.write_internal(&mut nbt).await;
+
+        let saved = self.level.read_chunk_sync(&chunk_pos, |chunk| {
+            let mut pending = chunk.pending_block_entities.lock().unwrap();
+            let changed = pending
+                .get(&position)
+                .is_none_or(|current_nbt| current_nbt != &nbt);
+            if changed {
+                pending.insert(position, nbt.clone());
+                chunk.mark_dirty(true);
+            }
+        });
+
+        if saved.is_some() {
+            block_entity.clear_dirty();
+        }
+    }
+
+    async fn save_block_entities(&self, block_entities: Vec<Arc<dyn BlockEntity>>) {
+        for block_entity in block_entities {
+            self.save_block_entity(&block_entity).await;
+        }
+    }
+
+    async fn save_all_block_entities(&self) {
+        let block_entities = self
+            .block_entities
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        self.save_block_entities(block_entities).await;
+    }
+
+    async fn save_dirty_block_entities(&self) {
+        let block_entities = self
+            .block_entities
+            .iter()
+            .filter(|entry| entry.value().is_dirty())
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        self.save_block_entities(block_entities).await;
+    }
+
+    async fn save_block_entities_in_chunks(&self, chunks: &[Vector2<i32>]) {
+        let chunks = chunks.iter().copied().collect::<FxHashSet<_>>();
+        let block_entities = self
+            .block_entities
+            .iter()
+            .filter(|entry| chunks.contains(&entry.key().chunk_position()))
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        self.save_block_entities(block_entities).await;
     }
 
     /// Sends an entity status update to all players tracking the specified entity.
@@ -987,6 +1046,7 @@ impl World {
             entity_future,
             block_entity_future
         );
+        self.save_dirty_block_entities().await;
 
         self.level.chunk_loading.lock().unwrap().send_change();
 
@@ -1090,6 +1150,8 @@ impl World {
     }
 
     async fn tick_environment(self: &Arc<Self>) {
+        let mut notify_level = false;
+        let mut save_block_entities_before_notify = false;
         let (world_age, is_night, time_of_day) = {
             let mut level_time = self.level_time.lock().await;
             let (advance_time, advance_weather) = {
@@ -1111,11 +1173,11 @@ impl World {
                 }
                 // If autosave is configured and this tick will trigger an autosave, don't double notify
                 if self.level.autosave_ticks == 0 {
-                    self.level.level_channel.notify();
+                    notify_level = true;
                 } else {
                     let autosave = self.level.autosave_ticks as i64;
                     if autosave == 0 || level_time.world_age % autosave != 0 {
-                        self.level.level_channel.notify();
+                        notify_level = true;
                     }
                 }
             }
@@ -1123,7 +1185,8 @@ impl World {
                 let autosave = self.level.autosave_ticks as i64;
                 if autosave > 0 && level_time.world_age % autosave == 0 {
                     self.level.should_save.store(true, Relaxed);
-                    self.level.level_channel.notify();
+                    save_block_entities_before_notify = true;
+                    notify_level = true;
                 }
             }
             (
@@ -1132,6 +1195,13 @@ impl World {
                 level_time.time_of_day,
             )
         };
+
+        if save_block_entities_before_notify {
+            self.save_all_block_entities().await;
+        }
+        if notify_level {
+            self.level.level_channel.notify();
+        }
 
         let mut weather = self.weather.lock().await;
         weather.tick_weather(self);
@@ -4389,6 +4459,8 @@ impl World {
         let chunks_set: FxHashSet<_> = chunks.iter().copied().collect();
         let mut entities_to_remove = Vec::new();
 
+        self.save_block_entities_in_chunks(chunks).await;
+
         self.entities.rcu(|current_entities| {
             let mut new_entities = (**current_entities).clone();
             new_entities.retain(|entity| {
@@ -5226,17 +5298,30 @@ impl World {
             return Some(entry.value().clone());
         }
 
-        let nbt = self
+        let pending_nbt = self
             .level
             .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
                 chunk
                     .pending_block_entities
                     .lock()
                     .unwrap()
-                    .remove(block_pos)
+                    .get(block_pos)
+                    .cloned()
             })
-            .flatten()?;
-        let entity = block_entity_from_nbt(&nbt)?;
+            .flatten();
+
+        let entity = if let Some(nbt) = pending_nbt {
+            block_entity_from_nbt(&nbt)?
+        } else {
+            let state = self.get_block_state(block_pos);
+            let entity = block_entity_from_block_state(state, *block_pos)?;
+            self.level
+                .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
+                    chunk.mark_dirty(true);
+                });
+            entity
+        };
+
         self.block_entities.insert(*block_pos, entity.clone());
         Some(entity)
     }
@@ -5278,7 +5363,20 @@ impl World {
     }
 
     pub fn remove_block_entity(&self, block_pos: &BlockPos) {
-        if self.block_entities.remove(block_pos).is_some() {
+        let removed_live = self.block_entities.remove(block_pos).is_some();
+        let removed_pending = self
+            .level
+            .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
+                chunk
+                    .pending_block_entities
+                    .lock()
+                    .unwrap()
+                    .remove(block_pos)
+                    .is_some()
+            })
+            .unwrap_or(false);
+
+        if removed_live || removed_pending {
             self.level
                 .read_chunk_sync(&block_pos.chunk_position(), |chunk| {
                     chunk.mark_dirty(true);

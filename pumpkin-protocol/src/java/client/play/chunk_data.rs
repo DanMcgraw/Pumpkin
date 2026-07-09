@@ -9,6 +9,7 @@ use pumpkin_util::math::position::get_local_cord;
 use pumpkin_util::version::JavaMinecraftVersion;
 use pumpkin_world::chunk::format::LightContainer;
 use pumpkin_world::chunk::{ChunkData, palette::NetworkPalette};
+use std::borrow::Cow;
 use std::io::Write;
 
 /// Sent by the server to provide the client with the full data for a chunk.
@@ -18,6 +19,18 @@ use std::io::Write;
 /// sky and block light.
 #[java_packet(PLAY_LEVEL_CHUNK_WITH_LIGHT)]
 pub struct CChunkData<'a>(pub &'a ChunkData);
+
+fn light_data_for_packet(light: &LightContainer) -> Option<Cow<'_, [u8]>> {
+    match light {
+        LightContainer::Full(data) => Some(Cow::Borrowed(data.as_ref())),
+        LightContainer::Empty(0) => None,
+        LightContainer::Empty(level) => {
+            debug_assert!(*level <= 15);
+            let packed = (*level << 4) | *level;
+            Some(Cow::Owned(vec![packed; LightContainer::ARRAY_SIZE]))
+        }
+    }
+}
 
 impl ClientPacket for CChunkData<'_> {
     #[expect(clippy::too_many_lines)]
@@ -236,6 +249,8 @@ impl ClientPacket for CChunkData<'_> {
             let mut block_light_empty_mask = 0u64;
             let mut sky_light_mask = 0u64;
             let mut block_light_mask = 0u64;
+            let mut sky_light_arrays = Vec::new();
+            let mut block_light_arrays = Vec::new();
 
             // Bit 0 represents the section below the world (always empty)
             sky_light_empty_mask |= 1 << 0;
@@ -245,14 +260,17 @@ impl ClientPacket for CChunkData<'_> {
             for section_index in 0..num_sections {
                 let bit_index = section_index + 1; // Offset by 1 for the below-world section
 
-                if let LightContainer::Full(_) = &light_engine.sky_light[section_index] {
+                if let Some(data) = light_data_for_packet(&light_engine.sky_light[section_index]) {
                     sky_light_mask |= 1 << bit_index;
+                    sky_light_arrays.push(data);
                 } else {
                     sky_light_empty_mask |= 1 << bit_index;
                 }
 
-                if let LightContainer::Full(_) = &light_engine.block_light[section_index] {
+                if let Some(data) = light_data_for_packet(&light_engine.block_light[section_index])
+                {
                     block_light_mask |= 1 << bit_index;
+                    block_light_arrays.push(data);
                 } else {
                     block_light_empty_mask |= 1 << bit_index;
                 }
@@ -274,23 +292,38 @@ impl ClientPacket for CChunkData<'_> {
             let light_data_size: VarInt = VarInt(LightContainer::ARRAY_SIZE as i32);
 
             // Write Sky Light arrays
-            write.write_var_int(&VarInt(sky_light_mask.count_ones() as i32))?;
-            for section_index in 0..num_sections {
-                if let LightContainer::Full(data) = &light_engine.sky_light[section_index] {
-                    write.write_var_int(&light_data_size)?;
-                    write.write_slice(data.as_ref())?;
-                }
+            write.write_var_int(&VarInt(sky_light_arrays.len() as i32))?;
+            for data in sky_light_arrays {
+                write.write_var_int(&light_data_size)?;
+                write.write_slice(data.as_ref())?;
             }
 
             // Write Block Light arrays
-            write.write_var_int(&VarInt(block_light_mask.count_ones() as i32))?;
-            for section_index in 0..num_sections {
-                if let LightContainer::Full(data) = &light_engine.block_light[section_index] {
-                    write.write_var_int(&light_data_size)?;
-                    write.write_slice(data.as_ref())?;
-                }
+            write.write_var_int(&VarInt(block_light_arrays.len() as i32))?;
+            for data in block_light_arrays {
+                write.write_var_int(&light_data_size)?;
+                write.write_slice(data.as_ref())?;
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_uniform_light_is_omitted_from_packet() {
+        assert!(light_data_for_packet(&LightContainer::new_empty(0)).is_none());
+    }
+
+    #[test]
+    fn nonzero_uniform_light_is_expanded_for_packet() {
+        let light = LightContainer::new_empty(15);
+        let data = light_data_for_packet(&light).expect("nonzero uniform light should be sent");
+
+        assert_eq!(data.len(), LightContainer::ARRAY_SIZE);
+        assert!(data.iter().all(|&byte| byte == 0xFF));
     }
 }

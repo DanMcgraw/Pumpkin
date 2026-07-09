@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::{any::Any, sync::Arc};
 
-use pumpkin_data::{Block, block_properties::BLOCK_ENTITY_TYPES};
+use pumpkin_data::{Block, BlockState, block_properties::BLOCK_ENTITY_TYPES};
 use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::math::position::BlockPos;
 
@@ -227,6 +227,20 @@ pub fn block_entity_from_nbt(nbt: &NbtCompound) -> Option<Arc<dyn BlockEntity>> 
 }
 
 #[must_use]
-pub fn has_block_block_entity(block: &Block) -> bool {
-    BLOCK_ENTITY_TYPES.contains(&block.name)
+pub fn block_entity_from_block_state(
+    block_state: &BlockState,
+    position: BlockPos,
+) -> Option<Arc<dyn BlockEntity>> {
+    let entity_type = BLOCK_ENTITY_TYPES.get(block_state.block_entity_type as usize)?;
+    let mut nbt = NbtCompound::new();
+    nbt.put_string("id", format!("minecraft:{entity_type}"));
+    nbt.put_int("x", position.0.x);
+    nbt.put_int("y", position.0.y);
+    nbt.put_int("z", position.0.z);
+    block_entity_from_nbt(&nbt)
+}
+
+#[must_use]
+pub const fn has_block_block_entity(block: &Block) -> bool {
+    block.default_state.block_entity_type != u16::MAX
 }
