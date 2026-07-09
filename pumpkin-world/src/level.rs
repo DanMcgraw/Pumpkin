@@ -371,6 +371,9 @@ impl Level {
                 .or_insert(1);
         }
 
+        self.chunk_saver
+            .watch_chunks(&self.level_folder, chunks)
+            .await;
         self.entity_saver
             .watch_chunks(&self.level_folder, chunks)
             .await;
@@ -391,6 +394,9 @@ impl Level {
             }
         }
 
+        self.chunk_saver
+            .unwatch_chunks(&self.level_folder, chunks)
+            .await;
         self.entity_saver
             .unwatch_chunks(&self.level_folder, chunks)
             .await;
@@ -560,6 +566,10 @@ impl Level {
     }
 
     async fn fetch_chunk(self: &Arc<Self>, pos: Vector2<i32>) -> SyncChunk {
+        self.chunk_saver
+            .watch_chunks(&self.level_folder, &[pos])
+            .await;
+
         let recv = self.chunk_listener.add_single_chunk_listener(pos);
 
         {
@@ -577,6 +587,10 @@ impl Level {
             lock.remove_ticket(pos, 31);
             lock.send_change();
         };
+
+        self.chunk_saver
+            .unwatch_chunks(&self.level_folder, &[pos])
+            .await;
 
         chunk
     }

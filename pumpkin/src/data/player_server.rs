@@ -45,6 +45,11 @@ impl ServerPlayerData {
     ///
     /// A Result indicating success or the error that occurred.
     pub async fn handle_player_leave(&self, player: &Arc<Player>) -> Result<(), PlayerDataError> {
+        self.close_player_screen(player).await;
+        self.save_player(player.as_ref()).await
+    }
+
+    pub async fn close_player_screen(&self, player: &Arc<Player>) {
         player
             .player_screen_handler
             .lock()
@@ -52,7 +57,9 @@ impl ServerPlayerData {
             .on_closed(player.as_ref())
             .await;
         player.on_handled_screen_closed().await;
+    }
 
+    pub async fn save_player(&self, player: &Player) -> Result<(), PlayerDataError> {
         let mut nbt = NbtCompound::new();
         player.write_nbt(&mut nbt).await;
 

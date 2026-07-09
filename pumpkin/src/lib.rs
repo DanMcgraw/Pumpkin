@@ -482,10 +482,14 @@ impl PumpkinServer {
                                         client.close();
                                         client.await_tasks().await;
                                     }
+                                    server_clone
+                                        .player_data_storage
+                                        .close_player_screen(&player)
+                                        .await;
                                     player.remove().await;
                                     server_clone.remove_player(&player).await;
                                     if let Err(e) = server_clone.player_data_storage
-                                        .handle_player_leave(&player)
+                                        .save_player(player.as_ref())
                                         .await {
                                             error!("Failed to save player data on disconnect: {e}");
                                         }
@@ -567,10 +571,14 @@ impl PumpkinServer {
 
                                                     client_clone.close().await;
                                                     client_clone.await_tasks().await;
+                                                    server_clone
+                                                        .player_data_storage
+                                                        .close_player_screen(&player)
+                                                        .await;
                                                     player.remove().await;
                                                     server_clone.remove_player(&player).await;
                                                     if let Err(e) = server_clone.player_data_storage
-                                                        .handle_player_leave(&player)
+                                                        .save_player(player.as_ref())
                                                         .await {
                                                             error!("Failed to save player data on disconnect: {e}");
                                                         }
