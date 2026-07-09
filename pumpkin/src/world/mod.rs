@@ -1000,15 +1000,14 @@ impl World {
             t.elapsed()
         };
 
-        let entities_to_tick = self.entities.load();
+        let entities_to_tick = self.collect_entity_tick_candidates();
         let entity_count = entities_to_tick.len();
         let server_for_entities = server.clone();
 
         let entity_future = async move {
             let t = tokio::time::Instant::now();
             let mut tasks = tokio::task::JoinSet::new();
-            for entity in entities_to_tick.iter() {
-                let e_clone = entity.clone();
+            for e_clone in entities_to_tick {
                 let s_clone = server_for_entities.clone();
                 let p_cache = players_cache.clone();
 
@@ -3877,6 +3876,41 @@ impl World {
         result
     }
 
+    fn collect_entities_in_chunks(
+        &self,
+        chunks: &FxHashSet<Vector2<i32>>,
+    ) -> Vec<Arc<dyn EntityBase>> {
+        let mut collected = Vec::new();
+        for chunk_pos in chunks {
+            if let Some(chunk_entities) = self.entities_by_chunk.get(chunk_pos) {
+                collected.extend(chunk_entities.iter().cloned());
+            }
+        }
+        collected
+    }
+
+    fn entity_live_chunk_pos(entity: &Entity) -> Vector2<i32> {
+        let entity_pos = entity.pos.load();
+        Vector2::new(
+            get_section_cord(entity_pos.x.floor() as i32),
+            get_section_cord(entity_pos.z.floor() as i32),
+        )
+    }
+
+    fn collect_entity_tick_candidates(&self) -> Vec<Arc<dyn EntityBase>> {
+        let active_chunks = self.active_chunks.load();
+        let mut seen_entities = FxHashSet::default();
+
+        self.collect_entities_in_chunks(&active_chunks)
+            .into_iter()
+            .filter(|entity| seen_entities.insert(entity.get_entity().entity_uuid))
+            .filter(|entity| {
+                let live_chunk = Self::entity_live_chunk_pos(entity.get_entity());
+                active_chunks.contains(&live_chunk)
+            })
+            .collect()
+    }
+
     /// Returns an iterator over all entities in currently active chunks.
     ///
     /// The references are eagerly cloned into a temporary vector so that the
@@ -3884,12 +3918,7 @@ impl World {
     /// deadlocks or long-lived reader locks.
     pub fn iter_active_entities(&self) -> impl Iterator<Item = Arc<dyn EntityBase>> {
         let active_chunks = self.active_chunks.load();
-        let mut collected = Vec::new();
-        for chunk_pos in active_chunks.iter() {
-            if let Some(chunk_entities) = self.entities_by_chunk.get(chunk_pos) {
-                collected.extend(chunk_entities.iter().cloned());
-            }
-        }
+        let collected = self.collect_entities_in_chunks(&active_chunks);
         collected.into_iter()
     }
 
@@ -5983,6 +6012,29 @@ mod entity_chunk_index_tests {
             collected[0].get_entity().entity_uuid,
             active.get_entity().entity_uuid
         );
+    }
+
+    #[tokio::test]
+    async fn entity_tick_candidates_validate_live_position() {
+        let world = create_test_world();
+        let active_chunk = Vector2::new(0, 0);
+        let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
+
+        world
+            .entities_by_chunk
+            .entry(active_chunk)
+            .or_default()
+            .push(entity.clone());
+        world
+            .active_chunks
+            .store(Arc::new(FxHashSet::from_iter([active_chunk])));
+
+        entity
+            .get_entity()
+            .pos
+            .store(Vector3::new(320.0, 64.0, 320.0));
+
+        assert!(world.collect_entity_tick_candidates().is_empty());
     }
 
     #[tokio::test]

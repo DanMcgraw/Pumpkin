@@ -309,7 +309,7 @@ impl EntityBase for MinecartEntity {
                 }
 
                 target_position.y = pos.y;
-                self.vehicle.entity.pos.store(target_position);
+                self.vehicle.entity.set_pos(target_position);
 
                 let horizontal_in_direction = Vector3::new(exit1.x, 0.0, exit1.z);
                 let mut horizontal_out_direction = Vector3::new(exit0.x, 0.0, exit0.z);
