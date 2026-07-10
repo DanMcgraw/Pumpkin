@@ -152,6 +152,7 @@ pub mod bossbar;
 pub mod custom_bossbar;
 pub mod dragon_fight;
 pub mod end_podium;
+pub mod game_event;
 pub mod natural_spawner;
 pub mod scoreboard;
 pub mod weather;
@@ -231,6 +232,7 @@ pub struct World {
     /// A chunk-level spatial index of live entities. Each key is a chunk position
     /// and the value is the list of entities currently in that chunk.
     pub entities_by_chunk: DashMap<Vector2<i32>, Vec<Arc<dyn EntityBase>>>,
+    game_event_dispatcher: game_event::GameEventDispatcher,
 }
 
 impl PartialEq for World {
@@ -323,6 +325,7 @@ impl World {
                 server,
                 block_entities: DashMap::new(),
                 entities_by_chunk: DashMap::new(),
+                game_event_dispatcher: game_event::GameEventDispatcher::new(),
             };
 
             // Install the chunk-unload callback so the chunk system can fire
@@ -5123,6 +5126,37 @@ impl World {
             &CWorldEvent::new(world_event as i32, position, data, false),
         );
     }
+
+    pub fn register_game_event_listener(
+        &self,
+        listener: Arc<dyn game_event::GameEventListener>,
+    ) -> game_event::GameEventListenerId {
+        self.game_event_dispatcher.register(listener)
+    }
+
+    pub fn unregister_game_event_listener(&self, id: game_event::GameEventListenerId) -> bool {
+        self.game_event_dispatcher.unregister(id)
+    }
+
+    pub fn emit_game_event(
+        &self,
+        event: pumpkin_data::game_event::GameEvent,
+        position: Vector3<f64>,
+        context: game_event::GameEventContext,
+    ) {
+        self.game_event_dispatcher
+            .emit(event, position, &context);
+    }
+
+    pub fn emit_game_event_at_block(
+        &self,
+        event: pumpkin_data::game_event::GameEvent,
+        position: BlockPos,
+        context: game_event::GameEventContext,
+    ) {
+        self.emit_game_event(event, game_event::block_position_center(position), context);
+    }
+
     #[must_use]
     pub fn is_valid(dest: BlockPos) -> bool {
         Self::is_valid_horizontally(dest) && Self::is_valid_vertically(dest.0.y)
