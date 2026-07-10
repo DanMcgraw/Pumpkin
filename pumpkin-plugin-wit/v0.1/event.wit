@@ -99,6 +99,16 @@ interface event {
         alive: bool
     }
 
+    record player-death-event-data {
+        player: player,
+        damage-type: string,
+        killer: option<entity>,
+        drops: list<item-stack>,
+        dropped-exp: s32,
+        keep-inventory: bool,
+        keep-level: bool
+    }
+
     record player-exp-change-event-data {
         player: player,
         amount: s32
@@ -159,6 +169,12 @@ interface event {
         cancelled: bool
     }
 
+    record player-drop-item-event-data {
+        player: player,
+        item: item-stack,
+        cancelled: bool
+    }
+
     enum entity-interaction-action {
         interact,
         attack,
@@ -203,6 +219,35 @@ interface event {
         entity-id: s32,
         action: entity-interaction-action,
         cancelled: bool
+    }
+
+    record player-interact-entity-event-data {
+        player: player,
+        target: entity,
+        action: entity-interaction-action,
+        target-position: option<position>,
+        sneaking: bool,
+        cancelled: bool
+    }
+
+    record craft-item-event-data {
+        player: player,
+        result-item: item-stack,
+        window-type: option<string>,
+        cancelled: bool
+    }
+
+    record food-level-change-event-data {
+        player: player,
+        food-level: u8,
+        cancelled: bool
+    }
+
+    record furnace-extract-event-data {
+        player: player,
+        block-pos: block-pos,
+        item: item-stack,
+        experience: s32
     }
 
     record inventory-click-event-data {
@@ -453,6 +498,7 @@ interface event {
         player-teleport-event,
         player-change-world-event,
         player-respawn-event,
+        player-death-event,
         player-exp-change-event,
         player-item-held-event,
         player-changed-main-hand-event,
@@ -460,8 +506,13 @@ interface event {
         player-custom-payload-event,
         player-fish-event,
         player-egg-throw-event,
+        player-drop-item-event,
         player-interact-unknown-entity-event,
         player-interact-event,
+        player-interact-entity-event,
+        craft-item-event,
+        food-level-change-event,
+        furnace-extract-event,
         player-toggle-sneak-event,
         player-toggle-flight-event,
         player-toggle-sprint-event,
@@ -509,6 +560,7 @@ interface event {
         player-teleport-event(player-teleport-event-data),
         player-change-world-event(player-change-world-event-data),
         player-respawn-event(player-respawn-event-data),
+        player-death-event(player-death-event-data),
         player-exp-change-event(player-exp-change-event-data),
         player-item-held-event(player-item-held-event-data),
         player-changed-main-hand-event(player-changed-main-hand-event-data),
@@ -516,8 +568,13 @@ interface event {
         player-custom-payload-event(player-custom-payload-event-data),
         player-fish-event(player-fish-event-data),
         player-egg-throw-event(player-egg-throw-event-data),
+        player-drop-item-event(player-drop-item-event-data),
         player-interact-unknown-entity-event(player-interact-unknown-entity-event-data),
         player-interact-event(player-interact-event-data),
+        player-interact-entity-event(player-interact-entity-event-data),
+        craft-item-event(craft-item-event-data),
+        food-level-change-event(food-level-change-event-data),
+        furnace-extract-event(furnace-extract-event-data),
         player-toggle-sneak-event(player-toggle-sneak-event-data),
         player-toggle-flight-event(player-toggle-flight-event-data),
         player-toggle-sprint-event(player-toggle-sprint-event-data),

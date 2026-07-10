@@ -46,12 +46,14 @@ async fn register_player_event(
     event_type: EventType,
 ) {
     use crate::plugin::player::{
-        changed_main_hand::PlayerChangedMainHandEvent, egg_throw::PlayerEggThrowEvent,
-        exp_change::PlayerExpChangeEvent, fish::PlayerFishEvent, item_held::PlayerItemHeldEvent,
-        player_change_world::PlayerChangeWorldEvent, player_chat::PlayerChatEvent,
-        player_command_send::PlayerCommandSendEvent,
-        player_custom_payload::PlayerCustomPayloadEvent,
-        player_gamemode_change::PlayerGamemodeChangeEvent,
+        changed_main_hand::PlayerChangedMainHandEvent, craft_item::CraftItemEvent,
+        egg_throw::PlayerEggThrowEvent, exp_change::PlayerExpChangeEvent, fish::PlayerFishEvent,
+        food_level_change::FoodLevelChangeEvent, furnace_extract::FurnaceExtractEvent,
+        item_held::PlayerItemHeldEvent, player_change_world::PlayerChangeWorldEvent,
+        player_chat::PlayerChatEvent, player_command_send::PlayerCommandSendEvent,
+        player_custom_payload::PlayerCustomPayloadEvent, player_death::PlayerDeathEvent,
+        player_drop_item::PlayerDropItemEvent, player_gamemode_change::PlayerGamemodeChangeEvent,
+        player_interact_entity_event::PlayerInteractEntityEvent,
         player_interact_event::PlayerInteractEvent,
         player_interact_unknown_entity_event::PlayerInteractUnknownEntityEvent,
         player_join::PlayerJoinEvent, player_leave::PlayerLeaveEvent,
@@ -99,6 +101,9 @@ async fn register_player_event(
         EventType::PlayerRespawnEvent => {
             register_typed_event::<PlayerRespawnEvent>(resource, handler, priority, blocking).await;
         }
+        EventType::PlayerDeathEvent => {
+            register_typed_event::<PlayerDeathEvent>(resource, handler, priority, blocking).await;
+        }
         EventType::PlayerExpChangeEvent => {
             register_typed_event::<PlayerExpChangeEvent>(resource, handler, priority, blocking)
                 .await;
@@ -130,6 +135,10 @@ async fn register_player_event(
             register_typed_event::<PlayerEggThrowEvent>(resource, handler, priority, blocking)
                 .await;
         }
+        EventType::PlayerDropItemEvent => {
+            register_typed_event::<PlayerDropItemEvent>(resource, handler, priority, blocking)
+                .await;
+        }
         EventType::PlayerInteractUnknownEntityEvent => {
             register_typed_event::<PlayerInteractUnknownEntityEvent>(
                 resource, handler, priority, blocking,
@@ -138,6 +147,23 @@ async fn register_player_event(
         }
         EventType::PlayerInteractEvent => {
             register_typed_event::<PlayerInteractEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::PlayerInteractEntityEvent => {
+            register_typed_event::<PlayerInteractEntityEvent>(
+                resource, handler, priority, blocking,
+            )
+            .await;
+        }
+        EventType::CraftItemEvent => {
+            register_typed_event::<CraftItemEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::FoodLevelChangeEvent => {
+            register_typed_event::<FoodLevelChangeEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::FurnaceExtractEvent => {
+            register_typed_event::<FurnaceExtractEvent>(resource, handler, priority, blocking)
                 .await;
         }
         EventType::PlayerToggleSneakEvent => {
