@@ -5,6 +5,7 @@ use crate::{
     world::{
         World,
         chunker::is_within_view_distance,
+        game_event::GameEventContext,
         portal::{NetherPortal, PortalProcessor, PortalType, SourcePortalInfo},
     },
 };
@@ -20,6 +21,7 @@ use pumpkin_data::data_component_impl::EquipmentSlot;
 use pumpkin_data::dimension::Dimension;
 use pumpkin_data::entity::EntityStatus;
 use pumpkin_data::fluid::Fluid;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::tag::{self, Taggable};
@@ -3016,12 +3018,16 @@ impl Entity {
 
             // Vanilla: ridingCooldown = 60 (prevents immediate re-mount)
             passenger_entity.riding_cooldown.store(60, Relaxed);
-            // TODO: world.emitGameEvent(passenger, GameEvent.ENTITY_DISMOUNT, vehicle.pos)
 
             // Now send CSetPassengers — client movement is already blocked.
             // Vanilla sends this directly to the dismounting player's connection,
             // then broadcasts to other players separately.
             let world = self.world.load();
+            world.emit_game_event(
+                GameEvent::EntityDismount,
+                self.pos.load(),
+                GameEventContext::from_entity(passenger.as_ref()),
+            );
             let passengers_packet = CSetPassengers::new(VarInt(self.entity_id), &passenger_ids);
             if let Some(player) = passenger.get_player() {
                 player.client.enqueue_packet(&passengers_packet).await;

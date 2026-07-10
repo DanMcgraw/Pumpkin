@@ -6,9 +6,11 @@ use crate::entity::EntityBase;
 use crate::entity::player::Player;
 use crate::entity::vehicle::boat::BoatEntity;
 use crate::item::{ItemBehaviour, ItemMetadata};
+use crate::world::game_event::GameEventContext;
 use pumpkin_data::Block;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::fluid::Fluid;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item::Item;
 use pumpkin_util::math::boundingbox::{BoundingBox, EntityDimensions};
 use pumpkin_util::math::position::BlockPos;
@@ -180,13 +182,17 @@ impl ItemBehaviour for BoatItem {
 
             let boat_entity = Arc::new(BoatEntity::new(entity));
             world.spawn_entity(boat_entity).await;
+            world.emit_game_event(
+                GameEvent::EntityPlace,
+                hit_vec,
+                GameEventContext::from_entity(player),
+            );
 
             // Decrement item unless in creative mode
             let held_item = player.inventory.held_item();
             let mut stack = held_item.lock().await;
             stack.decrement_unless_creative(player.gamemode.load(), 1);
 
-            // TODO: world.emitGameEvent(user, GameEvent.ENTITY_PLACE, hitResult.getPos())
             // TODO: user.incrementStat(Stats.USED.getOrCreateStat(this))
         })
     }

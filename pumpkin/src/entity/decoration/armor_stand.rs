@@ -3,7 +3,9 @@ use std::sync::atomic::{AtomicI32, AtomicI64, AtomicU8, Ordering};
 use crate::entity::{
     Entity, EntityBase, EntityBaseFuture, NBTStorage, NbtFuture, living::LivingEntity,
 };
+use crate::world::game_event::GameEventContext;
 use crossbeam::atomic::AtomicCell;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{
     damage::DamageType,
@@ -319,8 +321,14 @@ impl EntityBase for ArmorStandEntity {
 
     fn kill<'a>(&'a self, _caller: &'a dyn EntityBase) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
-            self.get_entity().remove().await;
-            // TODO: emit GameEvent::ENTITY_DIE
+            let entity = self.get_entity();
+            let world = entity.world.load();
+            world.emit_game_event(
+                GameEvent::EntityDie,
+                entity.pos.load(),
+                GameEventContext::from_entity(self),
+            );
+            entity.remove().await;
         })
     }
 
