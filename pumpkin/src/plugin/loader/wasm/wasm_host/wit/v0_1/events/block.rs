@@ -1,4 +1,5 @@
 use pumpkin_data::BlockStateId;
+use pumpkin_util::math::vector3::Vector3;
 
 use crate::plugin::{
     block::{
@@ -6,7 +7,9 @@ use crate::plugin::{
         block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
         block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
-        block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
+        block_piston_extend::BlockPistonExtendEvent, block_piston_retract::BlockPistonRetractEvent,
+        block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent, brew::BrewEvent,
+        furnace_burn::FurnaceBurnEvent, furnace_smelt::FurnaceSmeltEvent,
         structure_grow::StructureGrowEvent,
     },
     loader::wasm::wasm_host::{
@@ -20,8 +23,10 @@ use crate::plugin::{
             pumpkin::plugin::event::{
                 BlockBreakEventData, BlockBurnEventData, BlockCanBuildEventData,
                 BlockDamageEventData, BlockDropItemEventData, BlockFormEventData,
-                BlockGrowEventData, BlockMultiPlaceEventData, BlockPlaceEventData,
-                BlockRedstoneEventData, Event, StructureGrowEventData,
+                BlockGrowEventData, BlockMultiPlaceEventData, BlockPistonExtendEventData,
+                BlockPistonRetractEventData, BlockPlaceEventData, BlockRedstoneEventData,
+                BrewEventData, Event, FurnaceBurnEventData, FurnaceSmeltEventData,
+                StructureGrowEventData,
             },
         },
     },
@@ -368,6 +373,207 @@ impl ToFromWasmEvent for StructureGrowEvent {
                     &data.placed_feature,
                 )
                 .expect("invalid placed feature name"),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockPistonExtendEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::BlockPistonExtendEvent(BlockPistonExtendEventData {
+            target_world,
+            piston_pos: to_wasm_block_position(self.piston_pos),
+            piston_block: to_wasm_block_name(self.piston_block),
+            direction_x: self.direction.x,
+            direction_y: self.direction.y,
+            direction_z: self.direction.z,
+            moved_blocks: self
+                .moved_blocks
+                .iter()
+                .copied()
+                .map(to_wasm_block_position)
+                .collect(),
+            broken_blocks: self
+                .broken_blocks
+                .iter()
+                .copied()
+                .map(to_wasm_block_position)
+                .collect(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockPistonExtendEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                piston_pos: from_wasm_block_position(data.piston_pos),
+                piston_block: from_wasm_block_name(&data.piston_block),
+                direction: Vector3::new(data.direction_x, data.direction_y, data.direction_z),
+                moved_blocks: data
+                    .moved_blocks
+                    .into_iter()
+                    .map(from_wasm_block_position)
+                    .collect(),
+                broken_blocks: data
+                    .broken_blocks
+                    .into_iter()
+                    .map(from_wasm_block_position)
+                    .collect(),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockPistonRetractEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::BlockPistonRetractEvent(BlockPistonRetractEventData {
+            target_world,
+            piston_pos: to_wasm_block_position(self.piston_pos),
+            piston_block: to_wasm_block_name(self.piston_block),
+            direction_x: self.direction.x,
+            direction_y: self.direction.y,
+            direction_z: self.direction.z,
+            moved_blocks: self
+                .moved_blocks
+                .iter()
+                .copied()
+                .map(to_wasm_block_position)
+                .collect(),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockPistonRetractEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                piston_pos: from_wasm_block_position(data.piston_pos),
+                piston_block: from_wasm_block_name(&data.piston_block),
+                direction: Vector3::new(data.direction_x, data.direction_y, data.direction_z),
+                moved_blocks: data
+                    .moved_blocks
+                    .into_iter()
+                    .map(from_wasm_block_position)
+                    .collect(),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BrewEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+        let potions = self
+            .potions
+            .iter()
+            .map(|potion| to_wasm_item_stack(state, potion))
+            .collect();
+
+        Event::BrewEvent(BrewEventData {
+            target_world,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_position),
+            ingredient: to_wasm_item_stack(state, &self.ingredient),
+            potions,
+            fuel: self.fuel,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BrewEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                block: from_wasm_block_name(&data.block),
+                block_position: from_wasm_block_position(data.block_pos),
+                ingredient: consume_item_stack(state, &data.ingredient),
+                potions: data
+                    .potions
+                    .iter()
+                    .map(|potion| consume_item_stack(state, potion))
+                    .collect(),
+                fuel: data.fuel,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for FurnaceBurnEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::FurnaceBurnEvent(FurnaceBurnEventData {
+            target_world,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_position),
+            fuel: to_wasm_item_stack(state, &self.fuel),
+            burn_time: self.burn_time,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::FurnaceBurnEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                block: from_wasm_block_name(&data.block),
+                block_position: from_wasm_block_position(data.block_pos),
+                fuel: consume_item_stack(state, &data.fuel),
+                burn_time: data.burn_time,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for FurnaceSmeltEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+
+        Event::FurnaceSmeltEvent(FurnaceSmeltEventData {
+            target_world,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_position),
+            input: to_wasm_item_stack(state, &self.input),
+            fuel: to_wasm_item_stack(state, &self.fuel),
+            output: to_wasm_item_stack(state, &self.output),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::FurnaceSmeltEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                block: from_wasm_block_name(&data.block),
+                block_position: from_wasm_block_position(data.block_pos),
+                input: consume_item_stack(state, &data.input),
+                fuel: consume_item_stack(state, &data.fuel),
+                output: consume_item_stack(state, &data.output),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

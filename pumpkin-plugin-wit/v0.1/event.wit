@@ -360,6 +360,58 @@ interface event {
         cancelled: bool
     }
 
+    record block-piston-extend-event-data {
+        target-world: %world,
+        piston-pos: block-pos,
+        piston-block: string,
+        direction-x: s32,
+        direction-y: s32,
+        direction-z: s32,
+        moved-blocks: list<block-pos>,
+        broken-blocks: list<block-pos>,
+        cancelled: bool
+    }
+
+    record block-piston-retract-event-data {
+        target-world: %world,
+        piston-pos: block-pos,
+        piston-block: string,
+        direction-x: s32,
+        direction-y: s32,
+        direction-z: s32,
+        moved-blocks: list<block-pos>,
+        cancelled: bool
+    }
+
+    record brew-event-data {
+        target-world: %world,
+        block: string,
+        block-pos: block-pos,
+        ingredient: item-stack,
+        potions: list<item-stack>,
+        fuel: s32,
+        cancelled: bool
+    }
+
+    record furnace-burn-event-data {
+        target-world: %world,
+        block: string,
+        block-pos: block-pos,
+        fuel: item-stack,
+        burn-time: u16,
+        cancelled: bool
+    }
+
+    record furnace-smelt-event-data {
+        target-world: %world,
+        block: string,
+        block-pos: block-pos,
+        input: item-stack,
+        fuel: item-stack,
+        output: item-stack,
+        cancelled: bool
+    }
+
     record bedrock-form-response-event-data {
         player: player,
         form-id: u32,
@@ -529,6 +581,11 @@ interface event {
         block-multi-place-event,
         structure-grow-event,
         block-place-event,
+        block-piston-extend-event,
+        block-piston-retract-event,
+        brew-event,
+        furnace-burn-event,
+        furnace-smelt-event,
         bedrock-form-response-event,
         custom-click-action-event,
         server-command-event,
@@ -591,6 +648,11 @@ interface event {
         block-multi-place-event(block-multi-place-event-data),
         structure-grow-event(structure-grow-event-data),
         block-place-event(block-place-event-data),
+        block-piston-extend-event(block-piston-extend-event-data),
+        block-piston-retract-event(block-piston-retract-event-data),
+        brew-event(brew-event-data),
+        furnace-burn-event(furnace-burn-event-data),
+        furnace-smelt-event(furnace-smelt-event-data),
         bedrock-form-response-event(bedrock-form-response-event-data),
         custom-click-action-event(custom-click-action-event-data),
         server-command-event(server-command-event-data),

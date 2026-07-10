@@ -230,7 +230,9 @@ async fn register_block_event(
         block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
         block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
-        block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
+        block_piston_extend::BlockPistonExtendEvent, block_piston_retract::BlockPistonRetractEvent,
+        block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent, brew::BrewEvent,
+        furnace_burn::FurnaceBurnEvent, furnace_smelt::FurnaceSmeltEvent,
         structure_grow::StructureGrowEvent,
     };
 
@@ -268,6 +270,23 @@ async fn register_block_event(
         }
         EventType::BlockPlaceEvent => {
             register_typed_event::<BlockPlaceEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::BlockPistonExtendEvent => {
+            register_typed_event::<BlockPistonExtendEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::BlockPistonRetractEvent => {
+            register_typed_event::<BlockPistonRetractEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::BrewEvent => {
+            register_typed_event::<BrewEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::FurnaceBurnEvent => {
+            register_typed_event::<FurnaceBurnEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::FurnaceSmeltEvent => {
+            register_typed_event::<FurnaceSmeltEvent>(resource, handler, priority, blocking).await;
         }
         _ => {
             tracing::error!("non-block event should not be routed to register_block_event");
@@ -452,7 +471,12 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             | EventType::BlockFormEvent
             | EventType::BlockMultiPlaceEvent
             | EventType::StructureGrowEvent
-            | EventType::BlockPlaceEvent) => {
+            | EventType::BlockPlaceEvent
+            | EventType::BlockPistonExtendEvent
+            | EventType::BlockPistonRetractEvent
+            | EventType::BrewEvent
+            | EventType::FurnaceBurnEvent
+            | EventType::FurnaceSmeltEvent) => {
                 register_block_event(resource, &handler, priority, blocking, event_type).await;
             }
             event_type @ (EventType::EntitySpawnEvent
