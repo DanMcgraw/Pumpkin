@@ -589,7 +589,10 @@ impl Server {
 
         info!("Starting worlds");
         for world in self.worlds.load().iter() {
-            let event = self.plugin_manager.fire(WorldUnloadEvent::new(world.clone())).await;
+            let event = self
+                .plugin_manager
+                .fire(WorldUnloadEvent::new(world.clone()))
+                .await;
             if !event.cancelled {
                 world.shutdown().await;
             }

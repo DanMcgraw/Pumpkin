@@ -16,9 +16,7 @@ mod tests {
         block::registry::BlockRegistry,
         plugin::{
             Cancellable,
-            api::events::world::{
-                ChunkUnloadEvent, WorldLoadEvent, WorldUnloadEvent,
-            },
+            api::events::world::{ChunkUnloadEvent, WorldLoadEvent, WorldUnloadEvent},
         },
         world::{LevelData, World},
     };

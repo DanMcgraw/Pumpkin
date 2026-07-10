@@ -341,10 +341,9 @@ impl World {
                 let Some(runtime) = runtime.clone() else {
                     return false;
                 };
-                let event =
-                    crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
-                        world, chunk, pos,
-                    );
+                let event = crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
+                    world, chunk, pos,
+                );
                 runtime.block_on(async move { server.plugin_manager.fire(event).await.cancelled })
             };
             *level.chunk_unload_callback.write().unwrap() = Some(Box::new(callback));
@@ -5144,8 +5143,7 @@ impl World {
         position: Vector3<f64>,
         context: game_event::GameEventContext,
     ) {
-        self.game_event_dispatcher
-            .emit(event, position, &context);
+        self.game_event_dispatcher.emit(event, position, &context);
     }
 
     pub fn emit_game_event_at_block(

@@ -52,8 +52,7 @@ pub type SyncEntityChunk = Arc<ChunkEntityData>;
 /// The callback receives the chunk position and the chunk data. If it returns
 /// `true`, the unload is cancelled and the chunk will be re-evaluated during the
 /// next unload cycle.
-pub type ChunkUnloadCallback =
-    Box<dyn Fn(Vector2<i32>, SyncChunk) -> bool + Send + Sync>;
+pub type ChunkUnloadCallback = Box<dyn Fn(Vector2<i32>, SyncChunk) -> bool + Send + Sync>;
 
 /// The `Level` module provides functionality for working with chunks within or outside a Minecraft world.
 ///
