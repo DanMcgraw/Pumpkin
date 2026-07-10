@@ -9,8 +9,10 @@ use crate::block::{
 use crate::entity::Entity;
 use crate::entity::item::ItemEntity;
 use crate::world::World;
+use crate::world::game_event::GameEventContext;
 use pumpkin_data::data_component_impl::JukeboxPlayableImpl;
 use pumpkin_data::entity::EntityType;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::jukebox_song::JukeboxSong;
 use pumpkin_data::world::WorldEvent;
 use pumpkin_data::{
@@ -74,14 +76,27 @@ impl JukeboxBlock {
     }
 
     /// Stops the music and updates block state
-    async fn stop_playing(block: &Block, position: &BlockPos, world: &Arc<World>) {
+    async fn stop_playing(
+        block: &Block,
+        position: &BlockPos,
+        world: &Arc<World>,
+        context: GameEventContext,
+    ) {
         Self::set_record_state(false, block, position, world).await;
         world.sync_world_event(WorldEvent::SoundStopJukeboxSong, *position, 0);
+        world.emit_game_event_at_block(GameEvent::JukeboxStopPlay, *position, context.clone());
+        world.emit_game_event_at_block(GameEvent::BlockChange, *position, context);
     }
 
     /// Starts playing music
-    fn start_playing(position: &BlockPos, world: &Arc<World>, song_id: u32) {
+    fn start_playing(
+        position: &BlockPos,
+        world: &Arc<World>,
+        song_id: u32,
+        context: GameEventContext,
+    ) {
         world.sync_world_event(WorldEvent::SoundPlayJukeboxSong, *position, song_id as i32);
+        world.emit_game_event_at_block(GameEvent::JukeboxPlay, *position, context);
     }
 }
 
@@ -105,7 +120,13 @@ impl BlockBehaviour for JukeboxBlock {
                 // Drop the record
                 Self::drop_record(args.position, args.world).await;
                 // Stop the music and update block state
-                Self::stop_playing(args.block, args.position, args.world).await;
+                Self::stop_playing(
+                    args.block,
+                    args.position,
+                    args.world,
+                    GameEventContext::from_entity(args.player.as_ref()),
+                )
+                .await;
                 return BlockActionResult::Success;
             }
 
@@ -165,8 +186,11 @@ impl BlockBehaviour for JukeboxBlock {
             // Update block state to has_record = true
             Self::set_record_state(true, args.block, args.position, world).await;
 
+            let context = GameEventContext::from_entity(args.player.as_ref());
+            world.emit_game_event_at_block(GameEvent::BlockChange, *args.position, context.clone());
+
             // Start playing the music (client-side audio)
-            Self::start_playing(args.position, world, jukebox_song.get_id());
+            Self::start_playing(args.position, world, jukebox_song.get_id(), context);
 
             args.player
                 .increment_stat(
@@ -175,8 +199,6 @@ impl BlockBehaviour for JukeboxBlock {
                     1,
                 )
                 .await;
-
-            // TODO: world.emitGameEvent(GameEvent.BLOCK_CHANGE, pos, ...)
 
             BlockActionResult::Success
         })
@@ -190,6 +212,11 @@ impl BlockBehaviour for JukeboxBlock {
             // Stop the music
             args.world
                 .sync_world_event(WorldEvent::SoundStopJukeboxSong, *args.position, 0);
+            args.world.emit_game_event_at_block(
+                GameEvent::JukeboxStopPlay,
+                *args.position,
+                GameEventContext::from_entity(args.player.as_ref()),
+            );
         })
     }
 

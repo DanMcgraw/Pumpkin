@@ -17,6 +17,8 @@ use crate::block::viewer::{
     ViewerCountListener, ViewerCountTracker, ViewerCountTrackerExt, ViewerFuture,
 };
 use crate::world::World;
+use crate::world::game_event::GameEventContext;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_world::inventory::InventoryFuture;
 use pumpkin_world::inventory::{
     split_stack, {Clearable, Inventory},
@@ -111,7 +113,11 @@ impl ViewerCountListener for ShulkerBoxBlockEntity {
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
             Self::play_sound(world, position, Sound::BlockShulkerBoxOpen);
-            // TODO: this.world.emitGameEvent(player, GameEvent.CONTAINER_OPEN, this.pos);
+            world.emit_game_event_at_block(
+                GameEvent::ContainerOpen,
+                *position,
+                GameEventContext::default(),
+            );
         })
     }
 
@@ -122,7 +128,11 @@ impl ViewerCountListener for ShulkerBoxBlockEntity {
     ) -> ViewerFuture<'a, ()> {
         Box::pin(async move {
             Self::play_sound(world, position, Sound::BlockShulkerBoxClose);
-            // TODO: this.world.emitGameEvent(player, GameEvent.CONTAINER_CLOSE, this.pos);
+            world.emit_game_event_at_block(
+                GameEvent::ContainerClose,
+                *position,
+                GameEventContext::default(),
+            );
         })
     }
 
