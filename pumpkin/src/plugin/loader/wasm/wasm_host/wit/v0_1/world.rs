@@ -38,6 +38,32 @@ pub(crate) const fn to_wasm_block_direction(dir: InternalBlockDirection) -> WitB
     }
 }
 
+pub(crate) const fn from_wasm_block_direction(dir: WitBlockDirection) -> InternalBlockDirection {
+    match dir {
+        WitBlockDirection::Down => InternalBlockDirection::Down,
+        WitBlockDirection::Up => InternalBlockDirection::Up,
+        WitBlockDirection::North => InternalBlockDirection::North,
+        WitBlockDirection::South => InternalBlockDirection::South,
+        WitBlockDirection::West => InternalBlockDirection::West,
+        WitBlockDirection::East => InternalBlockDirection::East,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_block_directions_round_trip() {
+        for direction in InternalBlockDirection::all() {
+            assert_eq!(
+                from_wasm_block_direction(to_wasm_block_direction(direction)),
+                direction
+            );
+        }
+    }
+}
+
 pub(crate) const fn to_wit_noteblock_instrument(
     instr: InternalNoteblockInstrument,
 ) -> WitNoteblockInstrument {

@@ -59,6 +59,7 @@ fn event_route(event_type: &EventType) -> EventRoute {
         EventType::SpawnChangeEvent => EventRoute::World,
         EventType::BlockRedstoneEvent
         | EventType::BlockBreakEvent
+        | EventType::BlockBrokenEvent
         | EventType::BlockDamageEvent
         | EventType::BlockDropItemEvent
         | EventType::BlockBurnEvent
@@ -289,7 +290,7 @@ async fn register_block_event(
     event_type: EventType,
 ) {
     use crate::plugin::block::{
-        block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
+        block_break::BlockBreakEvent, block_broken::BlockBrokenEvent, block_burn::BlockBurnEvent,
         block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
         block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
@@ -305,6 +306,9 @@ async fn register_block_event(
         }
         EventType::BlockBreakEvent => {
             register_typed_event::<BlockBreakEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::BlockBrokenEvent => {
+            register_typed_event::<BlockBrokenEvent>(resource, handler, priority, blocking).await;
         }
         EventType::BlockDamageEvent => {
             register_typed_event::<BlockDamageEvent>(resource, handler, priority, blocking).await;

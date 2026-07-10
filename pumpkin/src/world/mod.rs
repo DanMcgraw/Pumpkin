@@ -41,7 +41,10 @@ use crate::{
     error::PumpkinError,
     net::{ClientPlatform, java::JavaClient},
     plugin::{
-        block::{block_break::BlockBreakEvent, block_drop_item::BlockDropItemEvent},
+        block::{
+            block_break::BlockBreakEvent, block_broken::BlockBrokenEvent,
+            block_drop_item::BlockDropItemEvent,
+        },
         entity::{
             chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
             entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
@@ -4909,6 +4912,19 @@ impl World {
         cause: Option<Arc<Player>>,
         flags: BlockFlags,
     ) -> Option<BlockStateId> {
+        self.break_block_with_face(position, cause, None, flags)
+            .await
+    }
+
+    /// Breaks a block while retaining the outward-facing side selected by the player.
+    #[allow(clippy::too_many_lines)]
+    pub async fn break_block_with_face(
+        self: &Arc<Self>,
+        position: &BlockPos,
+        cause: Option<Arc<Player>>,
+        face: Option<BlockDirection>,
+        flags: BlockFlags,
+    ) -> Option<BlockStateId> {
         let (broken_block, broken_block_state) = self.get_block_and_state_id(position);
         if is_air(broken_block_state) {
             return None;
@@ -4917,6 +4933,7 @@ impl World {
             cause.clone(),
             broken_block,
             *position,
+            face,
             0,
             !flags.contains(BlockFlags::SKIP_DROPS),
         );
@@ -4956,6 +4973,12 @@ impl World {
             };
 
             let broken_state_id = self.set_block_state(position, new_state_id, flags).await;
+
+            // Another mutation may have won between the initial read and replacement. In that
+            // case this operation did not replace the block whose pre-event was fired.
+            if broken_state_id != broken_block_state {
+                return None;
+            }
 
             // Close container screens for any players viewing this block
             self.close_container_screens_at(position).await;
@@ -5043,6 +5066,22 @@ impl World {
                     block::drop_experience(self, broken_block, position).await;
                 }
             }
+
+            self.server
+                .upgrade()
+                .unwrap()
+                .plugin_manager
+                .fire(BlockBrokenEvent {
+                    world: self.clone(),
+                    player: cause,
+                    block: broken_block,
+                    block_state_id: broken_block_state,
+                    replacement_state_id: new_state_id,
+                    block_position: *position,
+                    face,
+                    dropped_items: !flags.contains(BlockFlags::SKIP_DROPS),
+                })
+                .await;
             return Some(new_state_id);
         }
         None

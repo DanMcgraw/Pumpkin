@@ -1,9 +1,12 @@
 use pumpkin_data::BlockStateId;
 use pumpkin_util::math::vector3::Vector3;
 
+use crate::plugin::loader::wasm::wasm_host::wit::v0_1::world::{
+    from_wasm_block_direction, to_wasm_block_direction,
+};
 use crate::plugin::{
     block::{
-        block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
+        block_break::BlockBreakEvent, block_broken::BlockBrokenEvent, block_burn::BlockBurnEvent,
         block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
         block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
@@ -21,12 +24,12 @@ use crate::plugin::{
                 to_wasm_block_position, to_wasm_item_stack,
             },
             pumpkin::plugin::event::{
-                BlockBreakEventData, BlockBurnEventData, BlockCanBuildEventData,
-                BlockDamageEventData, BlockDropItemEventData, BlockFormEventData,
-                BlockGrowEventData, BlockMultiPlaceEventData, BlockPistonExtendEventData,
-                BlockPistonRetractEventData, BlockPlaceEventData, BlockRedstoneEventData,
-                BrewEventData, Event, FurnaceBurnEventData, FurnaceSmeltEventData,
-                StructureGrowEventData,
+                BlockBreakEventData, BlockBrokenEventData, BlockBurnEventData,
+                BlockCanBuildEventData, BlockDamageEventData, BlockDropItemEventData,
+                BlockFormEventData, BlockGrowEventData, BlockMultiPlaceEventData,
+                BlockPistonExtendEventData, BlockPistonRetractEventData, BlockPlaceEventData,
+                BlockRedstoneEventData, BrewEventData, Event, FurnaceBurnEventData,
+                FurnaceSmeltEventData, StructureGrowEventData,
             },
         },
     },
@@ -75,6 +78,7 @@ impl ToFromWasmEvent for BlockBreakEvent {
             player,
             block: to_wasm_block_name(self.block),
             block_pos: to_wasm_block_position(self.block_position),
+            face: self.face.map(to_wasm_block_direction),
             exp: self.exp,
             should_drop: self.drop,
             cancelled: self.cancelled,
@@ -87,6 +91,7 @@ impl ToFromWasmEvent for BlockBreakEvent {
                 player: data.player.map(|player| consume_player(state, &player)),
                 block: from_wasm_block_name(&data.block),
                 block_position: from_wasm_block_position(data.block_pos),
+                face: data.face.map(from_wasm_block_direction),
                 exp: data.exp,
                 drop: data.should_drop,
                 cancelled: data.cancelled,
@@ -119,6 +124,46 @@ impl ToFromWasmEvent for BlockDamageEvent {
                 block_position: from_wasm_block_position(data.block_pos),
                 insta_break: data.insta_break,
                 cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockBrokenEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let target_world = state
+            .add_world(self.world.clone())
+            .expect("failed to add world resource");
+        let player = self.player.as_ref().map(|player| {
+            state
+                .add_player(player.clone())
+                .expect("failed to add player resource")
+        });
+
+        Event::BlockBrokenEvent(BlockBrokenEventData {
+            target_world,
+            player,
+            block: to_wasm_block_name(self.block),
+            block_state_id: self.block_state_id.as_u16(),
+            replacement_state_id: self.replacement_state_id.as_u16(),
+            block_pos: to_wasm_block_position(self.block_position),
+            face: self.face.map(to_wasm_block_direction),
+            dropped_items: self.dropped_items,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockBrokenEvent(data) => Self {
+                world: consume_world(state, &data.target_world),
+                player: data.player.map(|player| consume_player(state, &player)),
+                block: from_wasm_block_name(&data.block),
+                block_state_id: BlockStateId::new_or_air(data.block_state_id),
+                replacement_state_id: BlockStateId::new_or_air(data.replacement_state_id),
+                block_position: from_wasm_block_position(data.block_pos),
+                face: data.face.map(from_wasm_block_direction),
+                dropped_items: data.dropped_items,
             },
             _ => panic!("unexpected event type"),
         }

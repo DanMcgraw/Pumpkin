@@ -3,7 +3,7 @@ interface event {
     use item-stack.{item-stack};
     use player.{player};
     use text.{text-component};
-    use %world.{%world, entity};
+    use %world.{%world, block-direction, entity};
     use java-packets.{serverbound-packet as java-serverbound-packet, clientbound-packet as java-clientbound-packet};
     use bedrock-packets.{serverbound-packet as bedrock-serverbound-packet, clientbound-packet as bedrock-clientbound-packet};
     use uuid.{uuid};
@@ -287,9 +287,21 @@ interface event {
         player: option<player>,
         block: string,
         block-pos: block-pos,
+        face: option<block-direction>,
         exp: u32,
         should-drop: bool,
         cancelled: bool
+    }
+
+    record block-broken-event-data {
+        target-world: %world,
+        player: option<player>,
+        block: string,
+        block-state-id: u16,
+        replacement-state-id: u16,
+        block-pos: block-pos,
+        face: option<block-direction>,
+        dropped-items: bool,
     }
 
     record block-damage-event-data {
@@ -680,6 +692,7 @@ interface event {
         inventory-move-item-event,
         block-redstone-event,
         block-break-event,
+        block-broken-event,
         block-damage-event,
         block-drop-item-event,
         block-burn-event,
@@ -761,6 +774,7 @@ interface event {
         inventory-move-item-event(inventory-move-item-event-data),
         block-redstone-event(block-redstone-event-data),
         block-break-event(block-break-event-data),
+        block-broken-event(block-broken-event-data),
         block-damage-event(block-damage-event-data),
         block-drop-item-event(block-drop-item-event-data),
         block-burn-event(block-burn-event-data),

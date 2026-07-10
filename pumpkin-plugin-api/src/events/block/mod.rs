@@ -1,4 +1,5 @@
 pub mod block_break;
+pub mod block_broken;
 pub mod block_burn;
 pub mod block_can_build;
 pub mod block_damage;
@@ -16,6 +17,7 @@ pub mod furnace_smelt;
 pub mod structure_grow;
 
 pub use block_break::*;
+pub use block_broken::*;
 pub use block_burn::*;
 pub use block_can_build::*;
 pub use block_damage::*;

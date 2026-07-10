@@ -44,7 +44,10 @@ use pumpkin_world::world::BlockFlags;
 
 use crate::{
     block::{BlockHitResult, registry::BlockActionResult},
-    entity::{EntityBase, player::Player},
+    entity::{
+        EntityBase,
+        player::{MiningTarget, Player},
+    },
     net::{DisconnectReason, bedrock::BedrockClient},
     plugin::player::{
         item_held::PlayerItemHeldEvent, player_chat::PlayerChatEvent,
@@ -954,11 +957,22 @@ impl BedrockClient {
         }
         player.update_last_action_time();
 
+        let packet_face = BlockDirection::try_from(packet.face.0).ok();
+        let starts_new_target = matches!(&packet.action, PlayerAction::StartBreak);
+        let resets_target = matches!(
+            &packet.action,
+            PlayerAction::StartBreak | PlayerAction::CreativePlayerDestroyBlock
+        );
+
         match packet.action {
             PlayerAction::StartBreak
             | PlayerAction::CreativePlayerDestroyBlock
             | PlayerAction::ContinueDestroyBlock => {
                 let location = packet.block_pos;
+                if resets_target {
+                    player.mining.store(false, Ordering::Relaxed);
+                    *player.mining_target.lock().await = None;
+                }
                 if !player.can_interact_with_block_at(&location, 1.0) {
                     return;
                 }
@@ -969,9 +983,10 @@ impl BedrockClient {
 
                 if player.gamemode.load() == GameMode::Creative {
                     let new_state = world
-                        .break_block(
+                        .break_block_with_face(
                             &location,
                             Some(player.clone()),
+                            packet_face,
                             BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::SKIP_DROPS,
                         )
                         .await;
@@ -986,9 +1001,10 @@ impl BedrockClient {
                     if speed >= 1.0 {
                         let broken_state = world.get_block_state(&location);
                         let new_state = world
-                            .break_block(
+                            .break_block_with_face(
                                 &location,
                                 Some(player.clone()),
+                                packet_face,
                                 BlockFlags::NOTIFY_NEIGHBORS,
                             )
                             .await;
@@ -1001,7 +1017,17 @@ impl BedrockClient {
                         }
                     } else {
                         player.mining.store(true, Ordering::Relaxed);
-                        *player.mining_pos.lock().await = location;
+                        let mut target = player.mining_target.lock().await;
+                        if starts_new_target
+                            || target
+                                .as_ref()
+                                .is_none_or(|target| target.position != location)
+                        {
+                            *target = Some(MiningTarget {
+                                position: location,
+                                face: packet_face,
+                            });
+                        }
                         let progress = (speed * 10.0) as i32;
                         world.set_block_breaking(entity, location, progress).await;
                         player
@@ -1012,6 +1038,15 @@ impl BedrockClient {
             }
             PlayerAction::PredictDestroyBlock | PlayerAction::StopBreak => {
                 let location = packet.block_pos;
+                player.mining.store(false, Ordering::Relaxed);
+                let face = player
+                    .mining_target
+                    .lock()
+                    .await
+                    .take()
+                    .filter(|target| target.position == location)
+                    .and_then(|target| target.face)
+                    .or(packet_face);
                 if !player.can_interact_with_block_at(&location, 1.0) {
                     return;
                 }
@@ -1019,7 +1054,6 @@ impl BedrockClient {
                 let entity = &player.get_entity();
                 let world = entity.world.load_full();
 
-                player.mining.store(false, Ordering::Relaxed);
                 world.set_block_breaking(entity, location, -1).await;
 
                 let (block, state) = world.get_block_and_state(&location);
@@ -1027,9 +1061,10 @@ impl BedrockClient {
                     let block_drop = player.can_harvest(state, block).await;
 
                     let new_state = world
-                        .break_block(
+                        .break_block_with_face(
                             &location,
                             Some(player.clone()),
+                            face,
                             if block_drop {
                                 BlockFlags::NOTIFY_NEIGHBORS
                             } else {
@@ -1056,6 +1091,7 @@ impl BedrockClient {
                 let world = entity.world.load();
 
                 player.mining.store(false, Ordering::Relaxed);
+                *player.mining_target.lock().await = None;
                 world.set_block_breaking(entity, location, -1).await;
             }
             PlayerAction::DropItem => {

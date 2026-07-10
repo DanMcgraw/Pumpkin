@@ -16,7 +16,7 @@ use crate::block::{self};
 use crate::entity::EntityBase;
 use crate::entity::equipment_break_status;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
-use crate::entity::player::{ChatMode, ChatSession, Player};
+use crate::entity::player::{ChatMode, ChatSession, MiningTarget, Player};
 use crate::error::PumpkinError;
 use crate::log_at_level;
 use crate::net::PlayerConfig;
@@ -1847,6 +1847,9 @@ impl JavaClient {
         match Status::try_from(player_action.status.0) {
             Ok(status) => match status {
                 Status::StartedDigging => {
+                    let face = BlockDirection::try_from(i32::from(player_action.face)).ok();
+                    player.mining.store(false, Ordering::Relaxed);
+                    *player.mining_target.lock().await = None;
                     if !player.can_interact_with_block_at(&player_action.position, 1.0) {
                         warn!(
                             "Player {0} tried to interact with block out of reach at {1}",
@@ -1917,9 +1920,10 @@ impl JavaClient {
                     if player.gamemode.load() == GameMode::Creative {
                         // Block break & play sound
                         let new_state = world
-                            .break_block(
+                            .break_block_with_face(
                                 &position,
                                 Some(player.clone()),
+                                face,
                                 BlockFlags::NOTIFY_NEIGHBORS | BlockFlags::SKIP_DROPS,
                             )
                             .await;
@@ -1942,9 +1946,10 @@ impl JavaClient {
                         if insta_break {
                             let broken_state = world.get_block_state(&position);
                             let new_state = world
-                                .break_block(
+                                .break_block_with_face(
                                     &position,
                                     Some(player.clone()),
+                                    face,
                                     BlockFlags::NOTIFY_NEIGHBORS,
                                 )
                                 .await;
@@ -1969,7 +1974,8 @@ impl JavaClient {
                             self.sync_block_state_to_client(&world, position).await;
                         } else {
                             player.mining.store(true, Ordering::Relaxed);
-                            *player.mining_pos.lock().await = position;
+                            *player.mining_target.lock().await =
+                                Some(MiningTarget { position, face });
                             let progress = (speed * 10.0) as i32;
                             world.set_block_breaking(entity, position, progress).await;
                             player
@@ -1980,6 +1986,8 @@ impl JavaClient {
                     self.update_sequence(player, player_action.sequence.0);
                 }
                 Status::CancelledDigging => {
+                    player.mining.store(false, Ordering::Relaxed);
+                    *player.mining_target.lock().await = None;
                     if !player.can_interact_with_block_at(&player_action.position, 1.0) {
                         warn!(
                             "Player {0} tried to interact with block out of reach at {1}",
@@ -1988,7 +1996,6 @@ impl JavaClient {
                         self.update_sequence(player, player_action.sequence.0);
                         return;
                     }
-                    player.mining.store(false, Ordering::Relaxed);
                     let entity = &player.get_entity();
                     entity
                         .world
@@ -2000,6 +2007,8 @@ impl JavaClient {
                 Status::FinishedDigging => {
                     // TODO: do validation
                     let location = player_action.position;
+                    player.mining.store(false, Ordering::Relaxed);
+                    let mining_target = player.mining_target.lock().await.take();
                     if !player.can_interact_with_block_at(&location, 1.0) {
                         warn!(
                             "Player {0} tried to interact with block out of reach at {1}",
@@ -2013,7 +2022,9 @@ impl JavaClient {
                     let entity = &player.get_entity();
                     let world = entity.world.load_full();
 
-                    player.mining.store(false, Ordering::Relaxed);
+                    let face = mining_target
+                        .filter(|target| target.position == location)
+                        .and_then(|target| target.face);
                     world.set_block_breaking(entity, location, -1).await;
 
                     let (block, state) = world.get_block_and_state(&location);
@@ -2021,9 +2032,10 @@ impl JavaClient {
                         && player.can_harvest(state, block).await;
 
                     let new_state = world
-                        .break_block(
+                        .break_block_with_face(
                             &location,
                             Some(player.clone()),
+                            face,
                             if block_drop {
                                 BlockFlags::NOTIFY_NEIGHBORS
                             } else {

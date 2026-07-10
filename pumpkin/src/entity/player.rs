@@ -45,7 +45,9 @@ use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::statistic::StatisticCategory;
 use pumpkin_data::tag::Taggable;
-use pumpkin_data::{Block, BlockState, Enchantment, screen::WindowType, tag, translation};
+use pumpkin_data::{
+    Block, BlockDirection, BlockState, Enchantment, screen::WindowType, tag, translation,
+};
 use pumpkin_inventory::player::{
     player_inventory::PlayerInventory, player_screen_handler::PlayerScreenHandler,
 };
@@ -125,6 +127,13 @@ use pumpkin_data::potion::Effect;
 use pumpkin_world::chunk_system::ChunkLoading;
 const MAX_CACHED_SIGNATURES: u8 = 128; // Vanilla: 128
 const MAX_PREVIOUS_MESSAGES: u8 = 20; // Vanilla: 20
+
+/// The block a player is actively mining and the outward face selected at start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MiningTarget {
+    pub position: BlockPos,
+    pub face: Option<BlockDirection>,
+}
 
 pub const DATA_VERSION: i32 = 4903; // 26.2
 
@@ -462,7 +471,7 @@ pub struct Player {
     pub mining: AtomicBool,
     pub start_mining_time: AtomicI32,
     pub tick_counter: AtomicI32,
-    pub mining_pos: Mutex<BlockPos>,
+    pub mining_target: Mutex<Option<MiningTarget>>,
     pub last_input: AtomicI8,
     /// A counter for teleport IDs used to track pending teleports.
     pub teleport_id_count: AtomicI32,
@@ -665,7 +674,7 @@ impl Player {
             experience_pick_up_delay: Mutex::new(0),
             teleport_id_count: AtomicI32::new(0),
             mining: AtomicBool::new(false),
-            mining_pos: Mutex::new(BlockPos::ZERO),
+            mining_target: Mutex::new(None),
             abilities: Mutex::new(abilities),
             stats: Mutex::new(statistics::Statistics::default()),
             gamemode: AtomicCell::new(gamemode),
@@ -2012,25 +2021,31 @@ impl Player {
         }
 
         if self.mining.load(Ordering::Relaxed) {
-            let pos = self.mining_pos.lock().await;
-            let world = self.world();
-            let state = world.get_block_state(&pos);
-            // Is the block broken?
-            if state.is_air() {
-                world
-                    .set_block_breaking(&self.living_entity.entity, *pos, -1)
+            let target = *self.mining_target.lock().await;
+            if let Some(target) = target {
+                let pos = target.position;
+                let world = self.world();
+                let state = world.get_block_state(&pos);
+                // Is the block broken?
+                if state.is_air() {
+                    world
+                        .set_block_breaking(&self.living_entity.entity, pos, -1)
+                        .await;
+                    self.current_block_destroy_stage
+                        .store(-1, Ordering::Relaxed);
+                    self.mining.store(false, Ordering::Relaxed);
+                    *self.mining_target.lock().await = None;
+                } else {
+                    self.continue_mining(
+                        pos,
+                        &world,
+                        state,
+                        self.start_mining_time.load(Ordering::Relaxed),
+                    )
                     .await;
-                self.current_block_destroy_stage
-                    .store(-1, Ordering::Relaxed);
-                self.mining.store(false, Ordering::Relaxed);
+                }
             } else {
-                self.continue_mining(
-                    *pos,
-                    &world,
-                    state,
-                    self.start_mining_time.load(Ordering::Relaxed),
-                )
-                .await;
+                self.mining.store(false, Ordering::Relaxed);
             }
         }
         self.last_attacked_ticks.fetch_add(1, Ordering::Relaxed);
@@ -2503,6 +2518,8 @@ impl Player {
         yaw: Option<f32>,
         pitch: Option<f32>,
     ) {
+        self.mining.store(false, Ordering::Relaxed);
+        *self.mining_target.lock().await = None;
         let current_world = self.living_entity.entity.world.load_full();
         let yaw = yaw.unwrap_or(new_world.level_info.load().spawn_yaw);
         let pitch = pitch.unwrap_or(new_world.level_info.load().spawn_pitch);
@@ -2609,6 +2626,8 @@ impl Player {
     /// Rarly used, for example when waking up the player from a bed or their first time spawn. Otherwise, the `teleport` method should be used.
     /// The player should respond with the `SConfirmTeleport` packet.
     pub async fn request_teleport(self: &Arc<Self>, position: Vector3<f64>, yaw: f32, pitch: f32) {
+        self.mining.store(false, Ordering::Relaxed);
+        *self.mining_target.lock().await = None;
         // This is the ultra special magic code used to create the teleport id
         // This returns the old value
         // This operation wraps around on overflow.
