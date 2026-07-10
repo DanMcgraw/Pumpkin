@@ -2,11 +2,16 @@ use crate::plugin::{
     Cancellable,
     entity::{
         chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
-        entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
-        entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
-        entity_death::EntityDeathEvent, entity_explode::EntityExplodeEvent,
+        entity_block_form::EntityBlockFormEvent, entity_breed::EntityBreedEvent,
+        entity_change_block::EntityChangeBlockEvent,
+        entity_combust_by_entity::EntityCombustByEntityEvent, entity_damage::EntityDamageEvent,
+        entity_damage_by_entity::EntityDamageByEntityEvent, entity_death::EntityDeathEvent,
+        entity_explode::EntityExplodeEvent, entity_pickup_item::EntityPickupItemEvent,
         entity_remove::EntityRemoveEvent, entity_shoot_bow::EntityShootBowEvent,
-        entity_spawn::EntitySpawnEvent, explosion_prime::ExplosionPrimeEvent,
+        entity_spawn::EntitySpawnEvent, entity_tame::EntityTameEvent,
+        entity_target::EntityTargetEvent,
+        entity_target_living_entity::EntityTargetLivingEntityEvent,
+        entity_transform::EntityTransformEvent, explosion_prime::ExplosionPrimeEvent,
         potion_splash::PotionSplashEvent, projectile_hit::ProjectileHitEvent,
         projectile_launch::ProjectileLaunchEvent,
     },
@@ -16,21 +21,29 @@ use crate::plugin::{
             events::{
                 ToFromWasmEvent, consume_entity, consume_item_stack, consume_player, consume_world,
                 from_wasm_block_name, from_wasm_block_position, from_wasm_damage_type,
-                from_wasm_position, to_wasm_block_name, to_wasm_block_position,
-                to_wasm_damage_type, to_wasm_item_stack, to_wasm_position,
+                from_wasm_entity_type, from_wasm_position, to_wasm_block_name,
+                to_wasm_block_position, to_wasm_damage_type, to_wasm_entity_type,
+                to_wasm_item_stack, to_wasm_position,
             },
             pumpkin::plugin::event::{
                 ChunkEntityLoadEventData, ChunkEntityUnloadEventData, EntityBlockFormEventData,
-                EntityChangeBlockEventData, EntityDamageByEntityEventData, EntityDamageEventData,
-                EntityDeathEventData, EntityExplodeEventData, EntityRemoveEventData,
-                EntityShootBowEventData, EntitySpawnEventData, Event, ExplosionPrimeEventData,
-                PotionSplashEventData, ProjectileHitEventData, ProjectileLaunchEventData,
+                EntityBreedEventData, EntityChangeBlockEventData, EntityCombustByEntityEventData,
+                EntityDamageByEntityEventData, EntityDamageEventData, EntityDeathEventData,
+                EntityExplodeEventData, EntityPickupItemEventData, EntityRemoveEventData,
+                EntityShootBowEventData, EntitySpawnEventData, EntityTameEventData,
+                EntityTargetEventData, EntityTargetLivingEntityEventData, EntityTransformEventData,
+                Event, ExplosionPrimeEventData, PotionSplashEventData, ProjectileHitEventData,
+                ProjectileLaunchEventData,
             },
         },
     },
 };
 use pumpkin_data::BlockStateId;
 use pumpkin_util::math::vector2::Vector2;
+
+fn wasm_reason_to_static(reason: Option<String>) -> Option<&'static str> {
+    reason.map(|reason| Box::leak(reason.into_boxed_str()) as &'static str)
+}
 
 impl ToFromWasmEvent for EntitySpawnEvent {
     fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
@@ -563,6 +576,237 @@ impl ToFromWasmEvent for ExplosionPrimeEvent {
                 location: from_wasm_position(data.location),
                 radius: data.radius,
                 fire: data.fire,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityBreedEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let mother = state
+            .add_entity(self.mother.clone())
+            .expect("failed to add entity resource");
+        let father = state
+            .add_entity(self.father.clone())
+            .expect("failed to add entity resource");
+        let breeder = self.breeder.as_ref().map(|breeder| {
+            state
+                .add_player(breeder.clone())
+                .expect("failed to add player resource")
+        });
+
+        Event::EntityBreedEvent(EntityBreedEventData {
+            mother,
+            father,
+            breeder,
+            baby_type: to_wasm_entity_type(self.baby_type),
+            position: to_wasm_position(self.position),
+            experience: self.experience,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityBreedEvent(data) => Self {
+                mother: consume_entity(state, &data.mother),
+                father: consume_entity(state, &data.father),
+                breeder: data
+                    .breeder
+                    .as_ref()
+                    .map(|breeder| consume_player(state, breeder)),
+                baby_type: from_wasm_entity_type(&data.baby_type),
+                position: from_wasm_position(data.position),
+                experience: data.experience,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityTameEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let owner = state
+            .add_player(self.owner.clone())
+            .expect("failed to add player resource");
+
+        Event::EntityTameEvent(EntityTameEventData {
+            entity,
+            owner,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityTameEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                owner: consume_player(state, &data.owner),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityTargetEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let target = self.target.as_ref().map(|target| {
+            state
+                .add_entity(target.clone())
+                .expect("failed to add entity resource")
+        });
+
+        Event::EntityTargetEvent(EntityTargetEventData {
+            entity,
+            target,
+            reason: self.reason.map(str::to_owned),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityTargetEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                target: data
+                    .target
+                    .as_ref()
+                    .map(|target| consume_entity(state, target)),
+                reason: wasm_reason_to_static(data.reason),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityTargetLivingEntityEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let target = state
+            .add_entity(self.target.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityTargetLivingEntityEvent(EntityTargetLivingEntityEventData {
+            entity,
+            target,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityTargetLivingEntityEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                target: consume_entity(state, &data.target),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityTransformEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityTransformEvent(EntityTransformEventData {
+            entity,
+            transform_to: to_wasm_entity_type(self.transform_to),
+            reason: self.reason.map(str::to_owned),
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityTransformEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                transform_to: from_wasm_entity_type(&data.transform_to),
+                reason: wasm_reason_to_static(data.reason),
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityPickupItemEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let item_entity_provider = self.item_entity.clone();
+        let item_entity = state
+            .add_entity(item_entity_provider)
+            .expect("failed to add entity resource");
+
+        Event::EntityPickupItemEvent(EntityPickupItemEventData {
+            entity,
+            item_entity,
+            item: to_wasm_item_stack(state, &self.item),
+            amount: self.amount,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityPickupItemEvent(data) => {
+                let item_entity = consume_entity(state, &data.item_entity)
+                    .get_item_entity()
+                    .expect("entity-pickup-item item entity was not an item entity");
+
+                Self {
+                    entity: consume_entity(state, &data.entity),
+                    item_entity,
+                    item: consume_item_stack(state, &data.item),
+                    amount: data.amount,
+                    cancelled: data.cancelled,
+                }
+            }
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityCombustByEntityEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let combuster = state
+            .add_entity(self.combuster.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityCombustByEntityEvent(EntityCombustByEntityEventData {
+            entity,
+            combuster,
+            duration: self.duration,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityCombustByEntityEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                combuster: consume_entity(state, &data.combuster),
+                duration: data.duration,
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

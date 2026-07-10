@@ -588,6 +588,57 @@ interface event {
         cancelled: bool
     }
 
+    record entity-breed-event-data {
+        mother: entity,
+        father: entity,
+        breeder: option<player>,
+        baby-type: string,
+        position: position,
+        experience: s32,
+        cancelled: bool
+    }
+
+    record entity-tame-event-data {
+        entity: entity,
+        owner: player,
+        cancelled: bool
+    }
+
+    record entity-target-event-data {
+        entity: entity,
+        target: option<entity>,
+        reason: option<string>,
+        cancelled: bool
+    }
+
+    record entity-target-living-entity-event-data {
+        entity: entity,
+        target: entity,
+        cancelled: bool
+    }
+
+    record entity-transform-event-data {
+        entity: entity,
+        transform-to: string,
+        reason: option<string>,
+        cancelled: bool
+    }
+
+    record entity-pickup-item-event-data {
+        entity: entity,
+        item-entity: entity,
+        item: item-stack,
+        amount: u8,
+        cancelled: bool
+    }
+
+    record entity-combust-by-entity-event-data {
+        entity: entity,
+        combuster: entity,
+        duration: f32,
+        cancelled: bool
+    }
+
     enum event-type {
         player-join-event,
         player-leave-event,
@@ -659,6 +710,13 @@ interface event {
         entity-shoot-bow-event,
         entity-explode-event,
         explosion-prime-event,
+        entity-breed-event,
+        entity-tame-event,
+        entity-target-event,
+        entity-target-living-entity-event,
+        entity-transform-event,
+        entity-pickup-item-event,
+        entity-combust-by-entity-event,
     }
 
     variant event {
@@ -732,5 +790,12 @@ interface event {
         entity-shoot-bow-event(entity-shoot-bow-event-data),
         entity-explode-event(entity-explode-event-data),
         explosion-prime-event(explosion-prime-event-data),
+        entity-breed-event(entity-breed-event-data),
+        entity-tame-event(entity-tame-event-data),
+        entity-target-event(entity-target-event-data),
+        entity-target-living-entity-event(entity-target-living-entity-event-data),
+        entity-transform-event(entity-transform-event-data),
+        entity-pickup-item-event(entity-pickup-item-event-data),
+        entity-combust-by-entity-event(entity-combust-by-entity-event-data),
     }
 }

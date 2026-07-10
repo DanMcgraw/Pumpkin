@@ -302,11 +302,16 @@ async fn register_entity_event(
 ) {
     use crate::plugin::entity::{
         chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
-        entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
-        entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
-        entity_death::EntityDeathEvent, entity_explode::EntityExplodeEvent,
+        entity_block_form::EntityBlockFormEvent, entity_breed::EntityBreedEvent,
+        entity_change_block::EntityChangeBlockEvent,
+        entity_combust_by_entity::EntityCombustByEntityEvent, entity_damage::EntityDamageEvent,
+        entity_damage_by_entity::EntityDamageByEntityEvent, entity_death::EntityDeathEvent,
+        entity_explode::EntityExplodeEvent, entity_pickup_item::EntityPickupItemEvent,
         entity_remove::EntityRemoveEvent, entity_shoot_bow::EntityShootBowEvent,
-        entity_spawn::EntitySpawnEvent, explosion_prime::ExplosionPrimeEvent,
+        entity_spawn::EntitySpawnEvent, entity_tame::EntityTameEvent,
+        entity_target::EntityTargetEvent,
+        entity_target_living_entity::EntityTargetLivingEntityEvent,
+        entity_transform::EntityTransformEvent, explosion_prime::ExplosionPrimeEvent,
         potion_splash::PotionSplashEvent, projectile_hit::ProjectileHitEvent,
         projectile_launch::ProjectileLaunchEvent,
     };
@@ -366,6 +371,35 @@ async fn register_entity_event(
         EventType::ExplosionPrimeEvent => {
             register_typed_event::<ExplosionPrimeEvent>(resource, handler, priority, blocking)
                 .await;
+        }
+        EventType::EntityBreedEvent => {
+            register_typed_event::<EntityBreedEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::EntityTameEvent => {
+            register_typed_event::<EntityTameEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::EntityTargetEvent => {
+            register_typed_event::<EntityTargetEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::EntityTargetLivingEntityEvent => {
+            register_typed_event::<EntityTargetLivingEntityEvent>(
+                resource, handler, priority, blocking,
+            )
+            .await;
+        }
+        EventType::EntityTransformEvent => {
+            register_typed_event::<EntityTransformEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::EntityPickupItemEvent => {
+            register_typed_event::<EntityPickupItemEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        EventType::EntityCombustByEntityEvent => {
+            register_typed_event::<EntityCombustByEntityEvent>(
+                resource, handler, priority, blocking,
+            )
+            .await;
         }
         _ => {
             tracing::error!("non-entity event should not be routed to register_entity_event");
@@ -517,7 +551,14 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             | EventType::PotionSplashEvent
             | EventType::EntityShootBowEvent
             | EventType::EntityExplodeEvent
-            | EventType::ExplosionPrimeEvent) => {
+            | EventType::ExplosionPrimeEvent
+            | EventType::EntityBreedEvent
+            | EventType::EntityTameEvent
+            | EventType::EntityTargetEvent
+            | EventType::EntityTargetLivingEntityEvent
+            | EventType::EntityTransformEvent
+            | EventType::EntityPickupItemEvent
+            | EventType::EntityCombustByEntityEvent) => {
                 register_entity_event(resource, &handler, priority, blocking, event_type).await;
             }
             event_type => {
