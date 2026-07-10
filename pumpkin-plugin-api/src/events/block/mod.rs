@@ -1,6 +1,8 @@
 pub mod block_break;
 pub mod block_burn;
 pub mod block_can_build;
+pub mod block_damage;
+pub mod block_drop_item;
 pub mod block_form;
 pub mod block_grow;
 pub mod block_multi_place;
@@ -11,6 +13,8 @@ pub mod structure_grow;
 pub use block_break::*;
 pub use block_burn::*;
 pub use block_can_build::*;
+pub use block_damage::*;
+pub use block_drop_item::*;
 pub use block_form::*;
 pub use block_grow::*;
 pub use block_multi_place::*;

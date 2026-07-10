@@ -201,7 +201,8 @@ async fn register_block_event(
 ) {
     use crate::plugin::block::{
         block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
-        block_can_build::BlockCanBuildEvent, block_form::BlockFormEvent,
+        block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
+        block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
         block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
         structure_grow::StructureGrowEvent,
@@ -213,6 +214,12 @@ async fn register_block_event(
         }
         EventType::BlockBreakEvent => {
             register_typed_event::<BlockBreakEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::BlockDamageEvent => {
+            register_typed_event::<BlockDamageEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::BlockDropItemEvent => {
+            register_typed_event::<BlockDropItemEvent>(resource, handler, priority, blocking).await;
         }
         EventType::BlockBurnEvent => {
             register_typed_event::<BlockBurnEvent>(resource, handler, priority, blocking).await;
@@ -397,6 +404,8 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             }
             event_type @ (EventType::BlockRedstoneEvent
             | EventType::BlockBreakEvent
+            | EventType::BlockDamageEvent
+            | EventType::BlockDropItemEvent
             | EventType::BlockBurnEvent
             | EventType::BlockCanBuildEvent
             | EventType::BlockGrowEvent

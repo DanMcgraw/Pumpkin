@@ -3,7 +3,8 @@ use pumpkin_data::BlockStateId;
 use crate::plugin::{
     block::{
         block_break::BlockBreakEvent, block_burn::BlockBurnEvent,
-        block_can_build::BlockCanBuildEvent, block_form::BlockFormEvent,
+        block_can_build::BlockCanBuildEvent, block_damage::BlockDamageEvent,
+        block_drop_item::BlockDropItemEvent, block_form::BlockFormEvent,
         block_grow::BlockGrowEvent, block_multi_place::BlockMultiPlaceEvent,
         block_place::BlockPlaceEvent, block_redstone::BlockRedstoneEvent,
         structure_grow::StructureGrowEvent,
@@ -12,13 +13,15 @@ use crate::plugin::{
         state::PluginHostState,
         wit::v0_1::{
             events::{
-                ToFromWasmEvent, consume_player, consume_world, from_wasm_block_name,
-                from_wasm_block_position, to_wasm_block_name, to_wasm_block_position,
+                ToFromWasmEvent, consume_item_stack, consume_player, consume_world,
+                from_wasm_block_name, from_wasm_block_position, to_wasm_block_name,
+                to_wasm_block_position, to_wasm_item_stack,
             },
             pumpkin::plugin::event::{
                 BlockBreakEventData, BlockBurnEventData, BlockCanBuildEventData,
-                BlockFormEventData, BlockGrowEventData, BlockMultiPlaceEventData,
-                BlockPlaceEventData, BlockRedstoneEventData, Event, StructureGrowEventData,
+                BlockDamageEventData, BlockDropItemEventData, BlockFormEventData,
+                BlockGrowEventData, BlockMultiPlaceEventData, BlockPlaceEventData,
+                BlockRedstoneEventData, Event, StructureGrowEventData,
             },
         },
     },
@@ -81,6 +84,73 @@ impl ToFromWasmEvent for BlockBreakEvent {
                 block_position: from_wasm_block_position(data.block_pos),
                 exp: data.exp,
                 drop: data.should_drop,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockDamageEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let player = state
+            .add_player(self.player.clone())
+            .expect("failed to add player resource");
+
+        Event::BlockDamageEvent(BlockDamageEventData {
+            player,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_position),
+            insta_break: self.insta_break,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockDamageEvent(data) => Self {
+                player: consume_player(state, &data.player),
+                block: from_wasm_block_name(&data.block),
+                block_position: from_wasm_block_position(data.block_pos),
+                insta_break: data.insta_break,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for BlockDropItemEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let player = state
+            .add_player(self.player.clone())
+            .expect("failed to add player resource");
+        let items = self
+            .items
+            .iter()
+            .map(|item| to_wasm_item_stack(state, item))
+            .collect();
+
+        Event::BlockDropItemEvent(BlockDropItemEventData {
+            player,
+            block: to_wasm_block_name(self.block),
+            block_pos: to_wasm_block_position(self.block_position),
+            items,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::BlockDropItemEvent(data) => Self {
+                player: consume_player(state, &data.player),
+                block: from_wasm_block_name(&data.block),
+                block_position: from_wasm_block_position(data.block_pos),
+                items: data
+                    .items
+                    .iter()
+                    .map(|item| consume_item_stack(state, item))
+                    .collect(),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

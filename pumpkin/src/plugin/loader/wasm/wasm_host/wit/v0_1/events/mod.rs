@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use pumpkin_data::{Block, entity::EntityType};
+use pumpkin_data::{Block, entity::EntityType, item_stack::ItemStack};
 use pumpkin_inventory::screen_handler::ClickType;
 use pumpkin_protocol::java::server::play::ActionType;
 use pumpkin_util::{
     GameMode, Hand,
     math::{position::BlockPos, vector3::Vector3},
 };
+use tokio::sync::Mutex;
 use wasmtime::component::Resource;
 
 use crate::{
@@ -16,8 +17,8 @@ use crate::{
         loader::wasm::wasm_host::{
             PluginInstance, WasmPlugin,
             state::{
-                EntityResource, PlayerResource, PluginHostState, TextComponentResource,
-                WorldResource,
+                EntityResource, ItemStackResource, PlayerResource, PluginHostState,
+                TextComponentResource, WorldResource,
             },
             wit::{self, v0_1::pumpkin},
         },
@@ -218,6 +219,30 @@ pub(super) fn consume_entity(
         .delete::<EntityResource>(Resource::new_own(entity.rep()))
         .expect("invalid entity resource handle")
         .provider
+}
+
+pub(super) fn to_wasm_item_stack(
+    state: &mut PluginHostState,
+    stack: &ItemStack,
+) -> Resource<pumpkin::plugin::item_stack::ItemStack> {
+    state
+        .add_item_stack(Arc::new(Mutex::new(stack.clone())))
+        .expect("failed to add item stack resource")
+}
+
+pub(super) fn consume_item_stack(
+    state: &mut PluginHostState,
+    stack: &Resource<pumpkin::plugin::item_stack::ItemStack>,
+) -> ItemStack {
+    let stack = state
+        .resource_table
+        .delete::<ItemStackResource>(Resource::new_own(stack.rep()))
+        .expect("invalid item stack resource handle")
+        .provider;
+    stack
+        .try_lock()
+        .expect("item stack resource is still locked")
+        .clone()
 }
 
 impl<E: Payload + ToFromWasmEvent> EventHandler<E> for WasmPluginEventHandler {

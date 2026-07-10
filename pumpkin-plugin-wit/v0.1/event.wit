@@ -240,6 +240,22 @@ interface event {
         cancelled: bool
     }
 
+    record block-damage-event-data {
+        player: player,
+        block: string,
+        block-pos: block-pos,
+        insta-break: bool,
+        cancelled: bool
+    }
+
+    record block-drop-item-event-data {
+        player: player,
+        block: string,
+        block-pos: block-pos,
+        items: list<item-stack>,
+        cancelled: bool
+    }
+
     record block-burn-event-data {
         igniting-block: string,
         block: string,
@@ -427,6 +443,8 @@ interface event {
         inventory-close-event,
         block-redstone-event,
         block-break-event,
+        block-damage-event,
+        block-drop-item-event,
         block-burn-event,
         block-can-build-event,
         block-grow-event,
@@ -478,6 +496,8 @@ interface event {
         inventory-close-event(inventory-close-event-data),
         block-redstone-event(block-redstone-event-data),
         block-break-event(block-break-event-data),
+        block-damage-event(block-damage-event-data),
+        block-drop-item-event(block-drop-item-event-data),
         block-burn-event(block-burn-event-data),
         block-can-build-event(block-can-build-event-data),
         block-grow-event(block-grow-event-data),
