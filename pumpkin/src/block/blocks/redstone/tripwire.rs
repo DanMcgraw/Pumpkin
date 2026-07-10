@@ -10,6 +10,7 @@ use pumpkin_util::math::{boundingbox::BoundingBox, position::BlockPos};
 use pumpkin_world::{tick::TickPriority, world::BlockFlags};
 
 use crate::block::BlockFuture;
+use crate::world::game_event::GameEventContext;
 use crate::{
     block::{
         BlockBehaviour, BrokenArgs, GetStateForNeighborUpdateArgs, OnEntityCollisionArgs,
@@ -17,6 +18,7 @@ use crate::{
     },
     world::World,
 };
+use pumpkin_data::game_event::GameEvent;
 
 use super::tripwire_hook::TripwireHookBlock;
 
@@ -103,7 +105,11 @@ impl BlockBehaviour for TripwireBlock {
                         BlockFlags::empty(),
                     )
                     .await;
-                // TODO world.emitGameEvent(player, GameEvent.SHEAR, pos);
+                args.world.emit_game_event_at_block(
+                    GameEvent::Shear,
+                    *args.position,
+                    GameEventContext::from_entity(args.player.as_ref()),
+                );
                 // TODO: Deduct 1 durability from held shears (skip in Creative mode).
             }
         })

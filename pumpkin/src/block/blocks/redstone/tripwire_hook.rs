@@ -13,6 +13,7 @@ use pumpkin_world::{
 };
 use rand::{RngExt, rng};
 
+use crate::world::game_event::GameEventContext;
 use crate::{
     block::{
         BlockBehaviour, BlockFuture, CanPlaceAtArgs, EmitsRedstonePowerArgs, GetRedstonePowerArgs,
@@ -21,6 +22,7 @@ use crate::{
     },
     world::World,
 };
+use pumpkin_data::game_event::GameEvent;
 
 type TripwireProperties = pumpkin_data::block_properties::TripwireLikeProperties;
 type TripwireHookProperties = pumpkin_data::block_properties::TripwireHookLikeProperties;
@@ -327,17 +329,33 @@ impl TripwireHookBlock {
         let pos = block_pos.to_f64();
         if on && !off {
             world.play_sound_raw(Sound::BlockTripwireClickOn as u16, cat, &pos, 0.4, 0.6);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_ACTIVATE, pos);
+            world.emit_game_event_at_block(
+                GameEvent::BlockActivate,
+                *block_pos,
+                GameEventContext::default(),
+            );
         } else if !on && off {
             world.play_sound_raw(Sound::BlockTripwireClickOff as u16, cat, &pos, 0.4, 0.5);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_DEACTIVATE, pos);
+            world.emit_game_event_at_block(
+                GameEvent::BlockDeactivate,
+                *block_pos,
+                GameEventContext::default(),
+            );
         } else if attached && !detached {
             world.play_sound_raw(Sound::BlockTripwireAttach as u16, cat, &pos, 0.4, 0.7);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_ATTACH, pos);
+            world.emit_game_event_at_block(
+                GameEvent::BlockAttach,
+                *block_pos,
+                GameEventContext::default(),
+            );
         } else if !attached && detached {
             let pitch = 1.2 / rng().random::<f32>().mul_add(0.2, 0.9);
             world.play_sound_raw(Sound::BlockTripwireDetach as u16, cat, &pos, 0.4, pitch);
-            // TODO world.emitGameEvent((Entity)null, GameEvent.BLOCK_DETACH, pos);
+            world.emit_game_event_at_block(
+                GameEvent::BlockDetach,
+                *block_pos,
+                GameEventContext::default(),
+            );
         }
     }
 

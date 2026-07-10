@@ -8,10 +8,12 @@ use crate::block::{
     OnNeighborUpdateArgs, OnPlaceArgs, PlacedArgs,
 };
 use crate::world::World;
+use crate::world::game_event::GameEventContext;
 use pumpkin_data::BlockStateId;
 use pumpkin_data::block_properties::BlockProperties;
 use pumpkin_data::block_properties::HorizontalFacing;
 use pumpkin_data::block_properties::{AttachFace, BellAttachment, BellLikeProperties};
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::sound::Sound;
 use pumpkin_data::sound::SoundCategory;
 use pumpkin_data::tag::Taggable;
@@ -40,8 +42,11 @@ fn ring_bell(position: BlockPos, world: &Arc<World>, hit_direction: Option<Horiz
         1.0,
         2.0,
     );
-
-    //TODO Emit game event: BLOCK_CHANGE -> Send block update Packet
+    world.emit_game_event_at_block(
+        GameEvent::BlockChange,
+        position,
+        GameEventContext::default(),
+    );
 }
 
 fn is_point_on_bell(
