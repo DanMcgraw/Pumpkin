@@ -3,18 +3,22 @@ use crate::plugin::{
     entity::{
         chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
         entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
-        entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
+        entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
+        entity_death::EntityDeathEvent, entity_remove::EntityRemoveEvent,
+        entity_spawn::EntitySpawnEvent,
     },
     loader::wasm::wasm_host::{
         state::PluginHostState,
         wit::v0_1::{
             events::{
-                ToFromWasmEvent, consume_entity, consume_world, from_wasm_block_position,
-                to_wasm_block_position,
+                ToFromWasmEvent, consume_entity, consume_item_stack, consume_world,
+                from_wasm_block_position, from_wasm_damage_type, to_wasm_block_position,
+                to_wasm_damage_type, to_wasm_item_stack,
             },
             pumpkin::plugin::event::{
                 ChunkEntityLoadEventData, ChunkEntityUnloadEventData, EntityBlockFormEventData,
-                EntityChangeBlockEventData, EntityRemoveEventData, EntitySpawnEventData, Event,
+                EntityChangeBlockEventData, EntityDamageByEntityEventData, EntityDamageEventData,
+                EntityDeathEventData, EntityRemoveEventData, EntitySpawnEventData, Event,
             },
         },
     },
@@ -191,6 +195,125 @@ impl ToFromWasmEvent for EntityChangeBlockEvent {
                 old_state_id: BlockStateId::new_or_air(data.old_state_id),
                 new_state_id: BlockStateId::new_or_air(data.new_state_id),
                 cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityDamageEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+
+        Event::EntityDamageEvent(EntityDamageEventData {
+            entity,
+            damage_type: to_wasm_damage_type(self.damage_type),
+            damage: self.damage,
+            final_damage: self.final_damage,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityDamageEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                damage_type: from_wasm_damage_type(&data.damage_type),
+                damage: data.damage,
+                final_damage: data.final_damage,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityDamageByEntityEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let damager = state
+            .add_entity(self.damager.clone())
+            .expect("failed to add entity resource");
+        let attacker = self.attacker.as_ref().map(|attacker| {
+            state
+                .add_entity(attacker.clone())
+                .expect("failed to add entity resource")
+        });
+
+        Event::EntityDamageByEntityEvent(EntityDamageByEntityEventData {
+            entity,
+            damager,
+            attacker,
+            damage_type: to_wasm_damage_type(self.damage_type),
+            damage: self.damage,
+            final_damage: self.final_damage,
+            cancelled: self.cancelled,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityDamageByEntityEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                damager: consume_entity(state, &data.damager),
+                attacker: data
+                    .attacker
+                    .as_ref()
+                    .map(|attacker| consume_entity(state, attacker)),
+                damage_type: from_wasm_damage_type(&data.damage_type),
+                damage: data.damage,
+                final_damage: data.final_damage,
+                cancelled: data.cancelled,
+            },
+            _ => panic!("unexpected event type"),
+        }
+    }
+}
+
+impl ToFromWasmEvent for EntityDeathEvent {
+    fn to_wasm_event(&self, state: &mut PluginHostState) -> Event {
+        let entity = state
+            .add_entity(self.entity.clone())
+            .expect("failed to add entity resource");
+        let killer = self.killer.as_ref().map(|killer| {
+            state
+                .add_entity(killer.clone())
+                .expect("failed to add entity resource")
+        });
+        let drops = self
+            .drops
+            .iter()
+            .map(|drop| to_wasm_item_stack(state, drop))
+            .collect();
+
+        Event::EntityDeathEvent(EntityDeathEventData {
+            entity,
+            damage_type: to_wasm_damage_type(self.damage_type),
+            killer,
+            drops,
+            dropped_exp: self.dropped_exp,
+        })
+    }
+
+    fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
+        match event {
+            Event::EntityDeathEvent(data) => Self {
+                entity: consume_entity(state, &data.entity),
+                damage_type: from_wasm_damage_type(&data.damage_type),
+                killer: data
+                    .killer
+                    .as_ref()
+                    .map(|killer| consume_entity(state, killer)),
+                drops: data
+                    .drops
+                    .iter()
+                    .map(|drop| consume_item_stack(state, drop))
+                    .collect(),
+                dropped_exp: data.dropped_exp,
             },
             _ => panic!("unexpected event type"),
         }

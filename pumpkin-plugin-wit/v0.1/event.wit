@@ -416,6 +416,32 @@ interface event {
         cancelled: bool
     }
 
+    record entity-damage-event-data {
+        entity: entity,
+        damage-type: string,
+        damage: f32,
+        final-damage: f32,
+        cancelled: bool
+    }
+
+    record entity-damage-by-entity-event-data {
+        entity: entity,
+        damager: entity,
+        attacker: option<entity>,
+        damage-type: string,
+        damage: f32,
+        final-damage: f32,
+        cancelled: bool
+    }
+
+    record entity-death-event-data {
+        entity: entity,
+        damage-type: string,
+        killer: option<entity>,
+        drops: list<item-stack>,
+        dropped-exp: s32
+    }
+
     enum event-type {
         player-join-event,
         player-leave-event,
@@ -467,6 +493,9 @@ interface event {
         chunk-entity-unload-event,
         entity-block-form-event,
         entity-change-block-event,
+        entity-damage-event,
+        entity-damage-by-entity-event,
+        entity-death-event,
     }
 
     variant event {
@@ -520,5 +549,8 @@ interface event {
         chunk-entity-unload-event(chunk-entity-unload-event-data),
         entity-block-form-event(entity-block-form-event-data),
         entity-change-block-event(entity-change-block-event-data),
+        entity-damage-event(entity-damage-event-data),
+        entity-damage-by-entity-event(entity-damage-by-entity-event-data),
+        entity-death-event(entity-death-event-data),
     }
 }

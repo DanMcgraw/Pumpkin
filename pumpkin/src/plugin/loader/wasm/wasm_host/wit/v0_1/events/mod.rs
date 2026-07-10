@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use pumpkin_data::{Block, entity::EntityType, item_stack::ItemStack};
+use pumpkin_data::{Block, damage::DamageType, entity::EntityType, item_stack::ItemStack};
 use pumpkin_inventory::screen_handler::ClickType;
 use pumpkin_protocol::java::server::play::ActionType;
 use pumpkin_util::{
@@ -93,6 +93,77 @@ pub(super) fn to_wasm_entity_type(entity_type: &'static EntityType) -> String {
 
 pub(super) fn from_wasm_entity_type(entity_type: &str) -> &'static EntityType {
     EntityType::from_name(entity_type).expect("invalid entity type")
+}
+
+const DAMAGE_TYPE_NAMES: [&str; 51] = [
+    "arrow",
+    "bad_respawn_point",
+    "cactus",
+    "campfire",
+    "cramming",
+    "dragon_breath",
+    "drown",
+    "dry_out",
+    "ender_pearl",
+    "explosion",
+    "fall",
+    "falling_anvil",
+    "falling_block",
+    "falling_stalactite",
+    "fireball",
+    "fireworks",
+    "fly_into_wall",
+    "freeze",
+    "generic",
+    "generic_kill",
+    "hot_floor",
+    "in_fire",
+    "in_wall",
+    "indirect_magic",
+    "lava",
+    "lightning_bolt",
+    "mace_smash",
+    "magic",
+    "mob_attack",
+    "mob_attack_no_aggro",
+    "mob_projectile",
+    "on_fire",
+    "out_of_world",
+    "outside_border",
+    "player_attack",
+    "player_explosion",
+    "sonic_boom",
+    "spear",
+    "spit",
+    "stalagmite",
+    "starve",
+    "sting",
+    "sulfur_cube_hot",
+    "sweet_berry_bush",
+    "thorns",
+    "thrown",
+    "trident",
+    "unattributed_fireball",
+    "wind_charge",
+    "wither",
+    "wither_skull",
+];
+
+pub(super) fn to_wasm_damage_type(damage_type: DamageType) -> String {
+    let name = DAMAGE_TYPE_NAMES
+        .get(usize::from(damage_type.id))
+        .copied()
+        .unwrap_or("generic");
+    format!("minecraft:{name}")
+}
+
+pub(super) fn from_wasm_damage_type(damage_type: &str) -> DamageType {
+    DamageType::from_name(
+        damage_type
+            .strip_prefix("minecraft:")
+            .unwrap_or(damage_type),
+    )
+    .expect("invalid damage type")
 }
 
 pub(super) const fn to_wasm_hand(hand: Hand) -> pumpkin::plugin::common::Hand {

@@ -258,7 +258,9 @@ async fn register_entity_event(
     use crate::plugin::entity::{
         chunk_entity_load::ChunkEntityLoadEvent, chunk_entity_unload::ChunkEntityUnloadEvent,
         entity_block_form::EntityBlockFormEvent, entity_change_block::EntityChangeBlockEvent,
-        entity_remove::EntityRemoveEvent, entity_spawn::EntitySpawnEvent,
+        entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
+        entity_death::EntityDeathEvent, entity_remove::EntityRemoveEvent,
+        entity_spawn::EntitySpawnEvent,
     };
 
     match event_type {
@@ -283,6 +285,18 @@ async fn register_entity_event(
         EventType::EntityChangeBlockEvent => {
             register_typed_event::<EntityChangeBlockEvent>(resource, handler, priority, blocking)
                 .await;
+        }
+        EventType::EntityDamageEvent => {
+            register_typed_event::<EntityDamageEvent>(resource, handler, priority, blocking).await;
+        }
+        EventType::EntityDamageByEntityEvent => {
+            register_typed_event::<EntityDamageByEntityEvent>(
+                resource, handler, priority, blocking,
+            )
+            .await;
+        }
+        EventType::EntityDeathEvent => {
+            register_typed_event::<EntityDeathEvent>(resource, handler, priority, blocking).await;
         }
         _ => {
             tracing::error!("non-entity event should not be routed to register_entity_event");
@@ -420,7 +434,10 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             | EventType::ChunkEntityLoadEvent
             | EventType::ChunkEntityUnloadEvent
             | EventType::EntityBlockFormEvent
-            | EventType::EntityChangeBlockEvent) => {
+            | EventType::EntityChangeBlockEvent
+            | EventType::EntityDamageEvent
+            | EventType::EntityDamageByEntityEvent
+            | EventType::EntityDeathEvent) => {
                 register_entity_event(resource, &handler, priority, blocking, event_type).await;
             }
             event_type => {
