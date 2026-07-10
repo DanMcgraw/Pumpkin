@@ -539,6 +539,55 @@ interface event {
         dropped-exp: s32
     }
 
+    record projectile-launch-event-data {
+        projectile: entity,
+        shooter: option<entity>,
+        cancelled: bool
+    }
+
+    record projectile-hit-event-data {
+        projectile: entity,
+        hit-entity: option<entity>,
+        hit-block: option<string>,
+        hit-block-pos: option<block-pos>,
+        cancelled: bool
+    }
+
+    record potion-splash-event-data {
+        entity: entity,
+        hit-pos: position,
+        hit-block: option<block-pos>,
+        hit-entity: option<entity>,
+        affected-entities: list<entity>,
+        potion: item-stack,
+        cancelled: bool
+    }
+
+    record entity-shoot-bow-event-data {
+        player: player,
+        projectile: entity,
+        bow: item-stack,
+        consumable: option<item-stack>,
+        force: f32,
+        cancelled: bool
+    }
+
+    record entity-explode-event-data {
+        entity: option<entity>,
+        location: position,
+        affected-blocks: list<block-pos>,
+        yield-value: f32,
+        cancelled: bool
+    }
+
+    record explosion-prime-event-data {
+        entity: option<entity>,
+        location: position,
+        radius: f32,
+        fire: bool,
+        cancelled: bool
+    }
+
     enum event-type {
         player-join-event,
         player-leave-event,
@@ -604,6 +653,12 @@ interface event {
         entity-damage-event,
         entity-damage-by-entity-event,
         entity-death-event,
+        projectile-launch-event,
+        projectile-hit-event,
+        potion-splash-event,
+        entity-shoot-bow-event,
+        entity-explode-event,
+        explosion-prime-event,
     }
 
     variant event {
@@ -671,5 +726,11 @@ interface event {
         entity-damage-event(entity-damage-event-data),
         entity-damage-by-entity-event(entity-damage-by-entity-event-data),
         entity-death-event(entity-death-event-data),
+        projectile-launch-event(projectile-launch-event-data),
+        projectile-hit-event(projectile-hit-event-data),
+        potion-splash-event(potion-splash-event-data),
+        entity-shoot-bow-event(entity-shoot-bow-event-data),
+        entity-explode-event(entity-explode-event-data),
+        explosion-prime-event(explosion-prime-event-data),
     }
 }
