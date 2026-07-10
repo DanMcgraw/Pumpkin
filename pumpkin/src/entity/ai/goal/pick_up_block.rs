@@ -4,7 +4,9 @@ use super::{Goal, GoalFuture, to_goal_ticks};
 use crate::entity::mob::Mob;
 use crate::entity::mob::enderman::EndermanEntity;
 use crate::plugin::api::events::entity::entity_change_block::EntityChangeBlockEvent;
+use crate::world::game_event::GameEventContext;
 use pumpkin_data::BlockStateId;
+use pumpkin_data::game_event::GameEvent;
 use pumpkin_data::tag::{self, Taggable};
 use pumpkin_util::math::{position::BlockPos, vector3::Vector3};
 use pumpkin_world::world::BlockFlags;
@@ -88,6 +90,7 @@ impl Goal for PickUpBlockGoal {
             let Some(entity) = world.get_entity_by_id(entity.entity_id) else {
                 return;
             };
+            let game_event_context = GameEventContext::from_entity(entity.as_ref());
             let server = world.server.upgrade().expect("server is gone");
             let event =
                 EntityChangeBlockEvent::new(entity, target_pos, old_state_id, BlockStateId::AIR);
@@ -96,10 +99,10 @@ impl Goal for PickUpBlockGoal {
                 return;
             }
 
-            // TODO: Emit game event (BLOCK_DESTROY)
             world
                 .set_block_state(&target_pos, BlockStateId::AIR, BlockFlags::NOTIFY_ALL)
                 .await;
+            world.emit_game_event_at_block(GameEvent::BlockDestroy, target_pos, game_event_context);
             self.enderman.set_carried_block(Some(default_state_id));
         })
     }
