@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.PumpkinWrapper" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:colorAccent">#2F7D46</item>
+        <item name="android:navigationBarColor">#111614</item>
+        <item name="android:statusBarColor">#111614</item>
+    </style>
+</resources>
