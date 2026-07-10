@@ -293,6 +293,26 @@ async fn register_block_event(
         }
     }
 }
+
+async fn register_inventory_event(
+    resource: &ContextResource,
+    handler: &Arc<WasmPluginEventHandler>,
+    priority: crate::plugin::EventPriority,
+    blocking: bool,
+    event_type: EventType,
+) {
+    use crate::plugin::inventory::inventory_move_item::InventoryMoveItemEvent;
+
+    match event_type {
+        EventType::InventoryMoveItemEvent => {
+            register_typed_event::<InventoryMoveItemEvent>(resource, handler, priority, blocking)
+                .await;
+        }
+        _ => {
+            tracing::error!("non-inventory event should not be routed to register_inventory_event");
+        }
+    }
+}
 async fn register_entity_event(
     resource: &ContextResource,
     handler: &Arc<WasmPluginEventHandler>,
@@ -560,6 +580,9 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             | EventType::EntityPickupItemEvent
             | EventType::EntityCombustByEntityEvent) => {
                 register_entity_event(resource, &handler, priority, blocking, event_type).await;
+            }
+            event_type @ EventType::InventoryMoveItemEvent => {
+                register_inventory_event(resource, &handler, priority, blocking, event_type).await;
             }
             event_type => {
                 register_player_event(resource, &handler, priority, blocking, event_type).await;

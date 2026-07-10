@@ -16,12 +16,14 @@ use crate::{Context, Result, Server, wit::pumpkin::plugin::event::EventType};
 
 pub mod block;
 pub mod entity;
+pub mod inventory;
 pub mod packet;
 pub mod player;
 pub mod server;
 
 pub use block::*;
 pub use entity::*;
+pub use inventory::*;
 pub use packet::*;
 pub use player::*;
 pub use server::*;

@@ -267,6 +267,13 @@ interface event {
         window-type: option<string>
     }
 
+    record inventory-move-item-event-data {
+        item: item-stack,
+        source-pos: option<block-pos>,
+        destination-pos: option<block-pos>,
+        cancelled: bool
+    }
+
     record block-redstone-event-data {
         target-world: %world,
         state-id: u16,
@@ -670,6 +677,7 @@ interface event {
         player-toggle-sprint-event,
         inventory-click-event,
         inventory-close-event,
+        inventory-move-item-event,
         block-redstone-event,
         block-break-event,
         block-damage-event,
@@ -750,6 +758,7 @@ interface event {
         player-toggle-sprint-event(player-toggle-sprint-event-data),
         inventory-click-event(inventory-click-event-data),
         inventory-close-event(inventory-close-event-data),
+        inventory-move-item-event(inventory-move-item-event-data),
         block-redstone-event(block-redstone-event-data),
         block-break-event(block-break-event-data),
         block-damage-event(block-damage-event-data),
