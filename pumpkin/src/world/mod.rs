@@ -233,6 +233,8 @@ pub struct World {
     /// and the value is the list of entities currently in that chunk.
     pub entities_by_chunk: DashMap<Vector2<i32>, Vec<Arc<dyn EntityBase>>>,
     game_event_dispatcher: game_event::GameEventDispatcher,
+    /// Handle to the async runtime for firing sync-to-async plugin events.
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 impl PartialEq for World {
@@ -300,6 +302,7 @@ impl World {
             .then(|| Mutex::new(dragon_fight::DragonFight::new()));
 
         let runtime = tokio::runtime::Handle::try_current().ok();
+        let runtime_for_callback = runtime.clone();
 
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let world = Self {
@@ -326,6 +329,7 @@ impl World {
                 block_entities: DashMap::new(),
                 entities_by_chunk: DashMap::new(),
                 game_event_dispatcher: game_event::GameEventDispatcher::new(),
+                runtime,
             };
 
             // Install the chunk-unload callback so the chunk system can fire
@@ -338,7 +342,7 @@ impl World {
                 let Some(server) = world.server.upgrade() else {
                     return false;
                 };
-                let Some(runtime) = runtime.clone() else {
+                let Some(runtime) = runtime_for_callback.clone() else {
                     return false;
                 };
                 let event = crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
@@ -5965,6 +5969,30 @@ impl WorldPortalExt for WorldPortal {
         chunk_z: i32,
     ) {
         natural_spawner::spawn_mobs_for_chunk_generation(&self.0, cache, biome, chunk_x, chunk_z);
+    }
+
+    fn should_generate_feature(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        feature: pumpkin_data::placed_feature::PlacedFeature,
+        origin: &BlockPos,
+    ) -> bool {
+        let Some(server) = self.0.server.upgrade() else {
+            return true;
+        };
+        let Some(runtime) = self.0.runtime.clone() else {
+            return true;
+        };
+
+        let event = crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
+            self.0.clone(),
+            Vector2::new(chunk_x, chunk_z),
+            feature,
+            *origin,
+        );
+
+        runtime.block_on(async move { !server.plugin_manager.fire(event).await.cancelled })
     }
 }
 

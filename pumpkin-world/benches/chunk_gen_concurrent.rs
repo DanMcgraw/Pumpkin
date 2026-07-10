@@ -52,6 +52,16 @@ impl WorldPortalExt for BlockRegistry {
         _chunk_z: i32,
     ) {
     }
+
+    fn should_generate_feature(
+        &self,
+        _chunk_x: i32,
+        _chunk_z: i32,
+        _feature: pumpkin_data::placed_feature::PlacedFeature,
+        _origin: &pumpkin_util::math::position::BlockPos,
+    ) -> bool {
+        true
+    }
 }
 
 /// Benchmarks the full pipeline for a `GRID_SIZE^2` chunks grid running in parallel

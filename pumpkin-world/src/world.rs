@@ -80,6 +80,14 @@ pub trait WorldPortalExt: Send + Sync {
         chunk_x: i32,
         chunk_z: i32,
     );
+
+    fn should_generate_feature(
+        &self,
+        chunk_x: i32,
+        chunk_z: i32,
+        feature: pumpkin_data::placed_feature::PlacedFeature,
+        origin: &BlockPos,
+    ) -> bool;
 }
 
 pub trait BlockAccessor: Send + Sync {

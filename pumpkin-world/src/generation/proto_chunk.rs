@@ -1068,6 +1068,15 @@ impl ProtoChunk {
 
             for (p, feature_enum) in features_to_run.into_iter().enumerate() {
                 if let Some(feature) = PLACED_FEATURES.get(&feature_enum) {
+                    if !block_registry.should_generate_feature(
+                        center_x,
+                        center_z,
+                        feature_enum,
+                        &origin_pos,
+                    ) {
+                        continue;
+                    }
+
                     let decorator_seed = get_decorator_seed(population_seed, p as u64, step as u64);
                     let mut random =
                         RandomGenerator::Xoroshiro(Xoroshiro::from_seed(decorator_seed));
