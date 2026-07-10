@@ -15,6 +15,8 @@ pub use crate::wit::pumpkin::plugin::event::{
 use crate::{Context, Result, Server, wit::pumpkin::plugin::event::EventType};
 
 pub mod block;
+#[cfg(test)]
+mod coverage_tests;
 pub mod entity;
 pub mod inventory;
 pub mod packet;

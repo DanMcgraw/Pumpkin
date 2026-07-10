@@ -37,6 +37,69 @@ async fn register_typed_event<E: crate::plugin::Payload + ToFromWasmEvent + 'sta
     register_host_event!(resource, handler, priority, blocking, E);
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventRoute {
+    Server,
+    World,
+    Block,
+    Entity,
+    Inventory,
+    Player,
+}
+
+#[expect(clippy::too_many_lines)]
+fn event_route(event_type: &EventType) -> EventRoute {
+    match event_type {
+        EventType::PacketReceivedEvent
+        | EventType::PacketSentEvent
+        | EventType::ServerCommandEvent
+        | EventType::ServerBroadcastEvent
+        | EventType::ServerTickEndEvent
+        | EventType::ServerTickStartEvent => EventRoute::Server,
+        EventType::SpawnChangeEvent => EventRoute::World,
+        EventType::BlockRedstoneEvent
+        | EventType::BlockBreakEvent
+        | EventType::BlockDamageEvent
+        | EventType::BlockDropItemEvent
+        | EventType::BlockBurnEvent
+        | EventType::BlockCanBuildEvent
+        | EventType::BlockGrowEvent
+        | EventType::BlockFormEvent
+        | EventType::BlockMultiPlaceEvent
+        | EventType::StructureGrowEvent
+        | EventType::BlockPlaceEvent
+        | EventType::BlockPistonExtendEvent
+        | EventType::BlockPistonRetractEvent
+        | EventType::BrewEvent
+        | EventType::FurnaceBurnEvent
+        | EventType::FurnaceSmeltEvent => EventRoute::Block,
+        EventType::EntitySpawnEvent
+        | EventType::EntityRemoveEvent
+        | EventType::ChunkEntityLoadEvent
+        | EventType::ChunkEntityUnloadEvent
+        | EventType::EntityBlockFormEvent
+        | EventType::EntityChangeBlockEvent
+        | EventType::EntityDamageEvent
+        | EventType::EntityDamageByEntityEvent
+        | EventType::EntityDeathEvent
+        | EventType::ProjectileLaunchEvent
+        | EventType::ProjectileHitEvent
+        | EventType::PotionSplashEvent
+        | EventType::EntityShootBowEvent
+        | EventType::EntityExplodeEvent
+        | EventType::ExplosionPrimeEvent
+        | EventType::EntityBreedEvent
+        | EventType::EntityTameEvent
+        | EventType::EntityTargetEvent
+        | EventType::EntityTargetLivingEntityEvent
+        | EventType::EntityTransformEvent
+        | EventType::EntityPickupItemEvent
+        | EventType::EntityCombustByEntityEvent => EventRoute::Entity,
+        EventType::InventoryMoveItemEvent => EventRoute::Inventory,
+        _ => EventRoute::Player,
+    }
+}
+
 #[expect(clippy::too_many_lines)]
 async fn register_player_event(
     resource: &ContextResource,
@@ -469,6 +532,75 @@ async fn register_server_event(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{EventRoute, event_route};
+    use crate::plugin::loader::wasm::wasm_host::wit::v0_1::pumpkin::plugin::event::EventType;
+
+    #[test]
+    fn newly_exposed_block_events_route_to_block_registration() {
+        for event_type in [
+            EventType::BlockDamageEvent,
+            EventType::BlockDropItemEvent,
+            EventType::BlockPistonExtendEvent,
+            EventType::BlockPistonRetractEvent,
+            EventType::BrewEvent,
+            EventType::FurnaceBurnEvent,
+            EventType::FurnaceSmeltEvent,
+        ] {
+            assert_eq!(event_route(&event_type), EventRoute::Block);
+        }
+    }
+
+    #[test]
+    fn newly_exposed_entity_events_route_to_entity_registration() {
+        for event_type in [
+            EventType::EntityDamageEvent,
+            EventType::EntityDamageByEntityEvent,
+            EventType::EntityDeathEvent,
+            EventType::ProjectileLaunchEvent,
+            EventType::ProjectileHitEvent,
+            EventType::PotionSplashEvent,
+            EventType::EntityShootBowEvent,
+            EventType::EntityExplodeEvent,
+            EventType::ExplosionPrimeEvent,
+            EventType::EntityBreedEvent,
+            EventType::EntityTameEvent,
+            EventType::EntityTargetEvent,
+            EventType::EntityTargetLivingEntityEvent,
+            EventType::EntityTransformEvent,
+            EventType::EntityPickupItemEvent,
+            EventType::EntityCombustByEntityEvent,
+        ] {
+            assert_eq!(event_route(&event_type), EventRoute::Entity);
+        }
+    }
+
+    #[test]
+    fn newly_exposed_inventory_events_route_to_inventory_registration() {
+        assert_eq!(
+            event_route(&EventType::InventoryMoveItemEvent),
+            EventRoute::Inventory
+        );
+    }
+
+    #[test]
+    fn newly_exposed_player_events_route_to_player_registration() {
+        for event_type in [
+            EventType::PlayerDeathEvent,
+            EventType::PlayerDropItemEvent,
+            EventType::PlayerInteractEntityEvent,
+            EventType::CraftItemEvent,
+            EventType::FoodLevelChangeEvent,
+            EventType::FurnaceExtractEvent,
+            EventType::InventoryClickEvent,
+            EventType::InventoryCloseEvent,
+        ] {
+            assert_eq!(event_route(&event_type), EventRoute::Player);
+        }
+    }
+}
+
 impl DowncastResourceExt<ContextResource> for Resource<Context> {
     fn downcast_ref<'a>(&'a self, state: &'a mut PluginHostState) -> &'a ContextResource {
         state
@@ -527,64 +659,23 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
         let resource = self.get_context(&context)?;
         let handler = Arc::new(WasmPluginEventHandler { handler_id, plugin });
 
-        match event_type {
-            event_type @ (EventType::PacketReceivedEvent
-            | EventType::PacketSentEvent
-            | EventType::ServerCommandEvent
-            | EventType::ServerBroadcastEvent
-            | EventType::ServerTickEndEvent
-            | EventType::ServerTickStartEvent) => {
+        match event_route(&event_type) {
+            EventRoute::Server => {
                 register_server_event(resource, &handler, priority, blocking, event_type).await;
             }
-            event_type @ EventType::SpawnChangeEvent => {
+            EventRoute::World => {
                 register_world_event(resource, &handler, priority, blocking, event_type).await;
             }
-            event_type @ (EventType::BlockRedstoneEvent
-            | EventType::BlockBreakEvent
-            | EventType::BlockDamageEvent
-            | EventType::BlockDropItemEvent
-            | EventType::BlockBurnEvent
-            | EventType::BlockCanBuildEvent
-            | EventType::BlockGrowEvent
-            | EventType::BlockFormEvent
-            | EventType::BlockMultiPlaceEvent
-            | EventType::StructureGrowEvent
-            | EventType::BlockPlaceEvent
-            | EventType::BlockPistonExtendEvent
-            | EventType::BlockPistonRetractEvent
-            | EventType::BrewEvent
-            | EventType::FurnaceBurnEvent
-            | EventType::FurnaceSmeltEvent) => {
+            EventRoute::Block => {
                 register_block_event(resource, &handler, priority, blocking, event_type).await;
             }
-            event_type @ (EventType::EntitySpawnEvent
-            | EventType::EntityRemoveEvent
-            | EventType::ChunkEntityLoadEvent
-            | EventType::ChunkEntityUnloadEvent
-            | EventType::EntityBlockFormEvent
-            | EventType::EntityChangeBlockEvent
-            | EventType::EntityDamageEvent
-            | EventType::EntityDamageByEntityEvent
-            | EventType::EntityDeathEvent
-            | EventType::ProjectileLaunchEvent
-            | EventType::ProjectileHitEvent
-            | EventType::PotionSplashEvent
-            | EventType::EntityShootBowEvent
-            | EventType::EntityExplodeEvent
-            | EventType::ExplosionPrimeEvent
-            | EventType::EntityBreedEvent
-            | EventType::EntityTameEvent
-            | EventType::EntityTargetEvent
-            | EventType::EntityTargetLivingEntityEvent
-            | EventType::EntityTransformEvent
-            | EventType::EntityPickupItemEvent
-            | EventType::EntityCombustByEntityEvent) => {
+            EventRoute::Entity => {
                 register_entity_event(resource, &handler, priority, blocking, event_type).await;
             }
-            event_type @ EventType::InventoryMoveItemEvent => {
+            EventRoute::Inventory => {
                 register_inventory_event(resource, &handler, priority, blocking, event_type).await;
             }
-            event_type => {
+            EventRoute::Player => {
                 register_player_event(resource, &handler, priority, blocking, event_type).await;
             }
         }
