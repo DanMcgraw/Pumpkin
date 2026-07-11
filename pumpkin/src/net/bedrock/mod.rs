@@ -63,6 +63,7 @@ use pumpkin_protocol::{
             resource_pack_response::SResourcePackResponse,
             set_local_player_as_initialized::SSetLocalPlayerAsInitialized,
             set_player_inventory_options::SSetPlayerInventoryOptions,
+            sub_chunk_request::SSubChunkRequest,
             text::SText,
         },
     },
@@ -1142,6 +1143,10 @@ impl BedrockClient {
             }
             SRequestChunkRadius::PACKET_ID => {
                 self.handle_request_chunk_radius(player, SRequestChunkRadius::read(reader)?)
+                    .await;
+            }
+            SSubChunkRequest::PACKET_ID => {
+                self.handle_sub_chunk_request(player, SSubChunkRequest::read(reader)?)
                     .await;
             }
             SInventoryTransaction::PACKET_ID => {

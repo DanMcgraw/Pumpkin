@@ -7,7 +7,41 @@ use crate::{
     codec::{var_int::VarInt, var_uint::VarUInt},
     serial::PacketWrite,
 };
+
 const VERSION: u8 = 9;
+
+/// Serialize a single Bedrock sub-chunk (version 9) for use in either a full
+/// `LevelChunk` packet or a `SubChunk` response.
+pub fn serialize_bedrock_block_subchunk(
+    y: i8,
+    palette: &pumpkin_world::chunk::palette::BlockPalette,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    // Version 9: [version:byte][num_storages:byte][sub_chunk_index:byte]
+    out.write_all(&[VERSION, 1, y as u8]).unwrap();
+
+    let network_repr = palette.convert_be_network();
+    (network_repr.bits_per_entry << 1 | 1).write(&mut out).unwrap();
+
+    for data in network_repr.packed_data {
+        data.write(&mut out).unwrap();
+    }
+
+    match network_repr.palette {
+        NetworkPalette::Single(id) => {
+            VarInt(i32::from(id)).write(&mut out).unwrap();
+        }
+        NetworkPalette::Indirect(palette) => {
+            VarInt(palette.len() as i32).write(&mut out).unwrap();
+            for id in palette {
+                VarInt(i32::from(id)).write(&mut out).unwrap();
+            }
+        }
+        NetworkPalette::Direct => (),
+    }
+
+    out
+}
 
 #[packet(58)]
 pub struct CLevelChunk<'a> {
@@ -26,29 +60,23 @@ impl PacketWrite for CLevelChunk<'_> {
         VarInt(self.chunk.z).write(writer)?;
 
         VarInt(self.dimension).write(writer)?;
-        let sub_chunk_count = self.chunk.section.count as u32;
-        debug_assert_eq!(sub_chunk_count, 24);
-        VarUInt(sub_chunk_count).write(writer)?;
+        // Use the SubChunk Request System: the client will request individual
+        // sub-chunks via SubChunkRequestPacket after receiving the skeleton.
+        VarUInt(u32::MAX).write(writer)?;
         self.cache_enabled.write(writer)?;
 
         let mut chunk_data = Vec::new();
         let data_write = &mut chunk_data;
 
-        let block_sections = self
+        let biome_sections = self
             .chunk
             .section
-            .block_sections
+            .biome_sections
             .read()
-            .map_err(|_| Error::other("block_sections read lock poisoned"))?;
-        let min_y_section = (self.chunk.section.min_y >> 4) as i8;
+            .map_err(|_| Error::other("biome_sections read lock poisoned"))?;
 
-        for (i, block_palette) in block_sections.iter().enumerate() {
-            // Version 9: [version:byte][num_storages:byte][sub_chunk_index:byte]
-            let y = (i as i8) + min_y_section;
-            let num_storages = 1;
-            data_write.write_all(&[VERSION, num_storages, y as u8])?;
-
-            let network_repr = block_palette.convert_be_network();
+        for biome_palette in biome_sections.iter() {
+            let network_repr = biome_palette.convert_be_network();
 
             (network_repr.bits_per_entry << 1 | 1).write(data_write)?;
 
@@ -58,7 +86,6 @@ impl PacketWrite for CLevelChunk<'_> {
 
             match network_repr.palette {
                 NetworkPalette::Single(id) => {
-                    VarInt(1).write(data_write)?;
                     VarInt(i32::from(id)).write(data_write)?;
                 }
                 NetworkPalette::Indirect(palette) => {
@@ -71,43 +98,7 @@ impl PacketWrite for CLevelChunk<'_> {
             }
         }
 
-        let biome_sections = self
-            .chunk
-            .section
-            .biome_sections
-            .read()
-            .map_err(|_| Error::other("biome_sections read lock poisoned"))?;
-
-        for (i, biome_palette) in biome_sections.iter().enumerate() {
-            let num_storages = 1;
-            let y = (i as i8) + min_y_section;
-            data_write.write_all(&[VERSION, num_storages, y as u8])?;
-
-            for _ in 0..num_storages {
-                let network_repr = biome_palette.convert_be_network();
-
-                (network_repr.bits_per_entry << 1 | 1).write(data_write)?;
-
-                for data in network_repr.packed_data {
-                    data.write(data_write)?;
-                }
-
-                match network_repr.palette {
-                    NetworkPalette::Single(id) => {
-                        VarInt(1).write(data_write)?;
-                        VarInt(i32::from(id)).write(data_write)?;
-                    }
-                    NetworkPalette::Indirect(palette) => {
-                        VarInt(palette.len() as i32).write(data_write)?;
-                        for id in palette {
-                            VarInt(i32::from(id)).write(data_write)?;
-                        }
-                    }
-                    NetworkPalette::Direct => (),
-                }
-            }
-        }
-
+        // Border block array count (0).
         data_write.write_all(&[0])?;
 
         VarUInt(chunk_data.len() as u32).write(writer)?;

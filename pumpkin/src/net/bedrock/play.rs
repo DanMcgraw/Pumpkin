@@ -16,7 +16,14 @@ use pumpkin_protocol::{
     bedrock::{
         client::{
             chunk_radius_update::CChunkRadiusUpdate, container_open::CContainerOpen,
+            level_chunk::serialize_bedrock_block_subchunk,
+            network_chunk_publisher_update::CNetworkChunkPublisherUpdate,
             player_hotbar::CPlayerHotbar,
+            sub_chunk::{
+                CSubChunkPacket, SubChunkEntry, SubChunkOffset, HEIGHTMAP_DATA_HAS_DATA,
+                HEIGHTMAP_DATA_NONE, HEIGHTMAP_DATA_TOO_HIGH, HEIGHTMAP_DATA_TOO_LOW,
+                SUB_CHUNK_RESULT_INDEX_OUT_OF_BOUNDS, SUB_CHUNK_RESULT_SUCCESS,
+            },
         },
         server::{
             animate::{AnimateAction, SAnimate},
@@ -31,14 +38,20 @@ use pumpkin_protocol::{
             player_auth_input::{InputData, SPlayerAuthInput},
             request_chunk_radius::SRequestChunkRadius,
             set_local_player_as_initialized::SSetLocalPlayerAsInitialized,
+            sub_chunk_request::{SSubChunkRequest, SubChunkOffset as RequestSubChunkOffset},
             text::SText,
         },
     },
     codec::{var_int::VarInt, var_long::VarLong, var_uint::VarUInt, var_ulong::VarULong},
     java::client::play::{Animation, CEntityAnimation, CSetSelectedSlot, CSystemChatMessage},
 };
-use pumpkin_util::{GameMode, math::position::BlockPos, text::TextComponent};
+use pumpkin_util::{
+    GameMode,
+    math::{position::BlockPos, vector2::Vector2, vector3::Vector3},
+    text::TextComponent,
+};
 
+use pumpkin_world::chunk::palette::BlockPalette;
 use pumpkin_world::inventory::Inventory;
 use pumpkin_world::world::BlockFlags;
 
@@ -58,6 +71,7 @@ use crate::{
     world::chunker::{self},
 };
 use pumpkin_data::BlockDirection;
+use pumpkin_data::block_properties::is_air;
 use tracing::{debug, info};
 
 fn descriptor_to_stack(desc: &NetworkItemDescriptor, is_creative: bool) -> ItemStack {
@@ -163,6 +177,14 @@ impl BedrockClient {
         })
         .await;
 
+        // Tell the client where it should request chunks from.
+        let position = player.position();
+        self.enqueue_packet(&CNetworkChunkPublisherUpdate::new(
+            BlockPos::new(position.x as i32, position.y as i32, position.z as i32),
+            (view_distance as u32) * 16,
+        ))
+        .await;
+
         let old_view_distance = {
             let current_config = player.config.load();
             let old_vd = current_config.view_distance;
@@ -180,6 +202,169 @@ impl BedrockClient {
             player.gameprofile.name, old_view_distance, view_distance
         );
         chunker::update_position(player).await;
+    }
+
+    pub async fn handle_sub_chunk_request(
+        &self,
+        player: &Arc<Player>,
+        packet: SSubChunkRequest,
+    ) {
+        let dimension = packet.dimension.0;
+        let center = packet.position;
+        let mut entries = Vec::with_capacity(packet.offsets.len());
+
+        for offset in packet.offsets {
+            let absolute = Vector3::new(
+                center.x + i32::from(offset.dx),
+                center.y + i32::from(offset.dy),
+                center.z + i32::from(offset.dz),
+            );
+            let chunk_pos = Vector2::new(absolute.x, absolute.z);
+            let subchunk_y = absolute.y;
+
+            let chunk = player
+                .world()
+                .level
+                .get_or_fetch_chunk(chunk_pos, std::clone::Clone::clone)
+                .await;
+            let min_section = chunk.section.min_y >> 4;
+            let section_index = subchunk_y - min_section;
+
+            if section_index < 0 || section_index as usize >= chunk.section.count {
+                entries.push(SubChunkEntry {
+                    offset: SubChunkOffset {
+                        dx: offset.dx,
+                        dy: offset.dy,
+                        dz: offset.dz,
+                    },
+                    result: SUB_CHUNK_RESULT_INDEX_OUT_OF_BOUNDS,
+                    payload: Vec::new(),
+                    heightmap_type: HEIGHTMAP_DATA_NONE,
+                    heightmap: Vec::new(),
+                    render_heightmap_type: HEIGHTMAP_DATA_NONE,
+                    render_heightmap: Vec::new(),
+                    blob_id: 0,
+                });
+                continue;
+            }
+
+            let block_sections = chunk
+                .section
+                .block_sections
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let palette = &block_sections[section_index as usize];
+            let payload = serialize_bedrock_block_subchunk(subchunk_y as i8, palette);
+
+            let (heightmap_type, heightmap, render_type, render_heightmap) =
+                Self::compute_subchunk_heightmap(&block_sections, chunk.section.min_y, subchunk_y);
+
+            entries.push(SubChunkEntry {
+                offset: SubChunkOffset {
+                    dx: offset.dx,
+                    dy: offset.dy,
+                    dz: offset.dz,
+                },
+                result: SUB_CHUNK_RESULT_SUCCESS,
+                payload,
+                heightmap_type,
+                heightmap,
+                render_heightmap_type: render_type,
+                render_heightmap,
+                blob_id: 0,
+            });
+        }
+
+        self.send_game_packet(&CSubChunkPacket {
+            cache_enabled: false,
+            dimension: VarInt(dimension),
+            center,
+            entries,
+        })
+        .await;
+    }
+
+    fn compute_subchunk_heightmap(
+        block_sections: &[BlockPalette],
+        min_y: i32,
+        subchunk_y: i32,
+    ) -> (u8, Vec<i8>, u8, Vec<i8>) {
+        let section_count = block_sections.len();
+        let min_section = min_y >> 4;
+        let mut top_y = [[-1i32; 16]; 16];
+
+        for si in (0..section_count).rev() {
+            let section_base_y = (min_section + si as i32) * 16;
+            let section = &block_sections[si];
+            for x in 0..16 {
+                for z in 0..16 {
+                    if top_y[x][z] != -1 {
+                        continue;
+                    }
+                    for y in (0..16).rev() {
+                        if !is_air(section.get(x, y, z)) {
+                            top_y[x][z] = section_base_y + y as i32;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let subchunk_min_y = subchunk_y * 16;
+        let mut types = [0u8; 256];
+        let mut values = [0i8; 256];
+
+        for z in 0..16 {
+            for x in 0..16 {
+                let idx = z * 16 + x;
+                let h = top_y[x][z];
+                if h < 0 || h < subchunk_min_y {
+                    // Heightmap is below this subchunk.
+                    types[idx] = HEIGHTMAP_DATA_TOO_LOW;
+                } else if h >= subchunk_min_y + 16 {
+                    // Heightmap is above this subchunk.
+                    types[idx] = HEIGHTMAP_DATA_TOO_HIGH;
+                } else {
+                    types[idx] = HEIGHTMAP_DATA_HAS_DATA;
+                    values[idx] = (h - subchunk_min_y) as i8;
+                }
+            }
+        }
+
+        if types.iter().all(|&t| t == HEIGHTMAP_DATA_TOO_LOW) {
+            return (
+                HEIGHTMAP_DATA_TOO_LOW,
+                Vec::new(),
+                HEIGHTMAP_DATA_TOO_LOW,
+                Vec::new(),
+            );
+        }
+        if types.iter().all(|&t| t == HEIGHTMAP_DATA_TOO_HIGH) {
+            return (
+                HEIGHTMAP_DATA_TOO_HIGH,
+                Vec::new(),
+                HEIGHTMAP_DATA_TOO_HIGH,
+                Vec::new(),
+            );
+        }
+
+        let mut heightmap = vec![0i8; 256];
+        for i in 0..256 {
+            heightmap[i] = match types[i] {
+                HEIGHTMAP_DATA_HAS_DATA => values[i],
+                HEIGHTMAP_DATA_TOO_LOW => -1,
+                _ => 16,
+            };
+        }
+
+        let render_heightmap = heightmap.clone();
+        (
+            HEIGHTMAP_DATA_HAS_DATA,
+            heightmap,
+            HEIGHTMAP_DATA_HAS_DATA,
+            render_heightmap,
+        )
     }
 
     pub fn handle_set_local_player_as_initialized(

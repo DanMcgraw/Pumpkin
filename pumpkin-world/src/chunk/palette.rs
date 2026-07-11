@@ -515,20 +515,20 @@ impl BiomePalette {
                     .collect();
 
                 let biomes_per_word = 32 / bits_per_entry;
-                // Biome palettes are 4×4×4, unlike block palettes which are
-                // 16×16×16. The client uses this volume to determine how many
-                // packed words to consume from a LevelChunk packet.
-                let volume = Self::VOLUME;
+                // Bedrock biome storage is per-block inside each sub-chunk, so
+                // the volume is 16×16×16. The Java biome palette is only 4×4×4,
+                // so we upsample by dividing the block coordinates by 4.
+                let volume: usize = 4096;
                 let expected_word_count = volume.div_ceil(biomes_per_word as usize);
                 let mut packed_data = Vec::with_capacity(expected_word_count);
 
                 let mut current_word: u32 = 0;
                 let mut current_index_in_word = 0;
 
-                for x in 0..Self::SIZE {
-                    for y in 0..Self::SIZE {
-                        for z in 0..Self::SIZE {
-                            let key = self.get(x, z, y);
+                for x in 0..16 {
+                    for z in 0..16 {
+                        for y in 0..16 {
+                            let key = self.get(x / 4, y / 4, z / 4);
                             let key_index = key_to_index_map.get(&key).unwrap();
                             debug_assert!((1 << bits_per_entry) > *key_index);
 
@@ -673,12 +673,11 @@ impl BlockPalette {
                 let mut current_word: u32 = 0;
                 let mut current_index_in_word = 0;
 
+                // Bedrock sub-chunk block order is XZY (y varies fastest).
                 for x in 0..16 {
-                    for y in 0..16 {
-                        for z in 0..16 {
-                            // Java has it in y, z, x order, so we need to convert it back to x, y, z
-                            // Please test your code on bedrock before merging
-                            let key = data.get(x, z, y);
+                    for z in 0..16 {
+                        for y in 0..16 {
+                            let key = data.get(x, y, z);
                             let key_index = key_to_index_map.get(&key).unwrap();
                             debug_assert!((1 << bits_per_entry) > *key_index);
 
