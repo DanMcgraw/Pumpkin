@@ -304,7 +304,7 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
                 },
                 Vec::new(),
             );
-            client.send_game_packet(&packet).await;
+            client.enqueue_entity_packet(&packet).await;
         })
     }
 

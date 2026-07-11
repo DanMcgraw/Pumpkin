@@ -647,7 +647,7 @@ impl EntityBase for ItemEntity {
                 metadata: entity.bedrock_metadata(),
                 from_fishing: false,
             };
-            client.send_game_packet(&packet).await;
+            client.enqueue_entity_packet(&packet).await;
         })
     }
 }

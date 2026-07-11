@@ -97,11 +97,14 @@ use pumpkin_world::level::SyncChunk;
 
 const BEDROCK_MAX_UNACKED_FRAMES: usize = 64;
 const BEDROCK_CHUNK_PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+const BEDROCK_ENTITY_PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
 
 pub struct OutgoingPacket {
     data: Bytes,
     packet_id: Option<u16>,
     is_chunk: bool,
+    is_gameplay_update: bool,
+    chunk_position: Option<(i32, i32)>,
     completion: Option<oneshot::Sender<()>>,
 }
 
@@ -111,6 +114,8 @@ impl OutgoingPacket {
             data,
             packet_id: None,
             is_chunk: false,
+            is_gameplay_update: false,
+            chunk_position: None,
             completion: None,
         }
     }
@@ -120,15 +125,30 @@ impl OutgoingPacket {
             data: payload,
             packet_id: Some(packet_id),
             is_chunk: false,
+            is_gameplay_update: true,
+            chunk_position: None,
             completion: None,
         }
     }
 
-    pub const fn chunk(data: Bytes) -> Self {
+    pub const fn chunk(data: Bytes, x: i32, z: i32) -> Self {
         Self {
             data,
             packet_id: None,
             is_chunk: true,
+            is_gameplay_update: false,
+            chunk_position: Some((x, z)),
+            completion: None,
+        }
+    }
+
+    pub const fn entity_spawn(data: Bytes) -> Self {
+        Self {
+            data,
+            packet_id: None,
+            is_chunk: false,
+            is_gameplay_update: true,
+            chunk_position: None,
             completion: None,
         }
     }
@@ -138,6 +158,8 @@ impl OutgoingPacket {
             data,
             packet_id: None,
             is_chunk: false,
+            is_gameplay_update: false,
+            chunk_position: None,
             completion: Some(completion),
         }
     }
@@ -330,8 +352,9 @@ impl BedrockClient {
                     packet.data
                 };
                 let is_chunk = packet.is_chunk;
+                let is_gameplay_update = packet.is_gameplay_update;
 
-                if is_chunk && !client.wait_for_reliable_window().await {
+                if (is_chunk || is_gameplay_update) && !client.wait_for_reliable_window().await {
                     break;
                 }
 
@@ -343,6 +366,9 @@ impl BedrockClient {
                         packet_data.len(),
                         packet_data.len().div_ceil(SPLIT_FRAME_MAX_CONTENT)
                     );
+                    if let Some((x, z)) = packet.chunk_position {
+                        debug!("Bedrock LevelChunk coordinates: ({}, {})", x, z);
+                    }
                 }
 
                 // Encrypt the packet payload if encryption is enabled.
@@ -372,6 +398,8 @@ impl BedrockClient {
                         sequence_start, sequence_end
                     );
                     tokio::time::sleep(BEDROCK_CHUNK_PACING_DELAY).await;
+                } else if is_gameplay_update {
+                    tokio::time::sleep(BEDROCK_ENTITY_PACING_DELAY).await;
                 }
 
                 if let Some(completion) = packet.completion {
@@ -440,23 +468,29 @@ impl BedrockClient {
         let mut serialize_tasks = Vec::with_capacity(valid_chunks.len());
         for chunk in valid_chunks {
             serialize_tasks.push(tokio::task::spawn_blocking(move || {
+                let position = (chunk.x, chunk.z);
                 let mut packet_payload = Vec::new();
                 let packet = CLevelChunk {
                     dimension: 0,
                     cache_enabled: false,
                     chunk: &chunk,
                 };
-                packet
-                    .write_packet(&mut packet_payload)
-                    .map(|()| packet_payload)
+                (
+                    position,
+                    packet
+                        .write_packet(&mut packet_payload)
+                        .map(|()| packet_payload),
+                )
             }));
         }
 
         let mut encoded_payloads = Vec::with_capacity(serialize_tasks.len());
         for task in serialize_tasks {
             match task.await {
-                Ok(Ok(payload)) => encoded_payloads.push(payload),
-                Ok(Err(e)) => error!("Failed to serialize Bedrock chunk: {:?}", e),
+                Ok((position, Ok(payload))) => encoded_payloads.push((position, payload)),
+                Ok((position, Err(e))) => {
+                    error!("Failed to serialize Bedrock chunk {:?}: {:?}", position, e)
+                }
                 Err(e) => error!("Join error in Bedrock chunk serialization: {:?}", e),
             }
         }
@@ -464,7 +498,7 @@ impl BedrockClient {
         let mut packets_to_enqueue = Vec::with_capacity(encoded_payloads.len());
         {
             let encoder = self.network_writer.read().await;
-            for payload in encoded_payloads {
+            for (position, payload) in encoded_payloads {
                 let mut packet_buf = Vec::new();
                 match encoder.write_game_packet(
                     CLevelChunk::PACKET_ID as u16,
@@ -473,13 +507,14 @@ impl BedrockClient {
                     &payload,
                     &mut packet_buf,
                 ) {
-                    Ok(()) => packets_to_enqueue.push(packet_buf),
+                    Ok(()) => packets_to_enqueue.push((position, packet_buf)),
                     Err(err) => error!("Failed to write game packet wrapper: {err}"),
                 }
             }
         }
-        for packet_buf in packets_to_enqueue {
-            self.enqueue_chunk_packet_data(packet_buf.into()).await;
+        for ((x, z), packet_buf) in packets_to_enqueue {
+            self.enqueue_chunk_packet_data(packet_buf.into(), x, z)
+                .await;
         }
     }
 
@@ -501,6 +536,33 @@ impl BedrockClient {
                 }
             }
             Err(err) => error!("Failed to write game packet: {err}"),
+        }
+    }
+
+    pub async fn enqueue_entity_packet<P: BClientPacket>(&self, packet: &P) {
+        let mut packet_buf = Vec::new();
+        match self.write_game_packet(packet, &mut packet_buf).await {
+            Ok(()) => {
+                let payload = Bytes::from(packet_buf);
+                let player = self.player.lock().await.clone();
+                let cancelled = if let Some(player) = player.as_ref() {
+                    player
+                        .fire_packet_sent_no_obj(P::PACKET_ID, payload.clone())
+                        .await
+                } else {
+                    false
+                };
+                if !cancelled
+                    && let Err(err) = self
+                        .outgoing_packet_queue_send
+                        .send(OutgoingPacket::entity_spawn(payload))
+                        .await
+                    && !self.is_closed()
+                {
+                    error!("Failed to queue Bedrock entity spawn packet: {err}");
+                }
+            }
+            Err(err) => error!("Failed to write Bedrock entity spawn packet: {err}"),
         }
     }
 
@@ -544,10 +606,10 @@ impl BedrockClient {
         }
     }
 
-    async fn enqueue_chunk_packet_data(&self, packet_data: Bytes) {
+    async fn enqueue_chunk_packet_data(&self, packet_data: Bytes, x: i32, z: i32) {
         if let Err(err) = self
             .outgoing_packet_queue_send
-            .send(OutgoingPacket::chunk(packet_data))
+            .send(OutgoingPacket::chunk(packet_data, x, z))
             .await
         {
             if !self.is_closed() {
