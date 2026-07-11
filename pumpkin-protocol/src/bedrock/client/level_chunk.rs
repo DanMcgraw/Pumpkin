@@ -58,6 +58,7 @@ impl PacketWrite for CLevelChunk<'_> {
 
             match network_repr.palette {
                 NetworkPalette::Single(id) => {
+                    VarInt(1).write(data_write)?;
                     VarInt(i32::from(id)).write(data_write)?;
                 }
                 NetworkPalette::Indirect(palette) => {
@@ -93,6 +94,7 @@ impl PacketWrite for CLevelChunk<'_> {
 
                 match network_repr.palette {
                     NetworkPalette::Single(id) => {
+                        VarInt(1).write(data_write)?;
                         VarInt(i32::from(id)).write(data_write)?;
                     }
                     NetworkPalette::Indirect(palette) => {

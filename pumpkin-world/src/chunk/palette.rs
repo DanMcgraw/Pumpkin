@@ -515,17 +515,20 @@ impl BiomePalette {
                     .collect();
 
                 let biomes_per_word = 32 / bits_per_entry;
-                let volume: usize = 4096;
+                // Biome palettes are 4×4×4, unlike block palettes which are
+                // 16×16×16. The client uses this volume to determine how many
+                // packed words to consume from a LevelChunk packet.
+                let volume = Self::VOLUME;
                 let expected_word_count = volume.div_ceil(biomes_per_word as usize);
                 let mut packed_data = Vec::with_capacity(expected_word_count);
 
                 let mut current_word: u32 = 0;
                 let mut current_index_in_word = 0;
 
-                for x in 0..16 {
-                    for y in 0..16 {
-                        for z in 0..16 {
-                            let key = self.get(x / 4, z / 4, y / 4);
+                for x in 0..Self::SIZE {
+                    for y in 0..Self::SIZE {
+                        for z in 0..Self::SIZE {
+                            let key = self.get(x, z, y);
                             let key_index = key_to_index_map.get(&key).unwrap();
                             debug_assert!((1 << bits_per_entry) > *key_index);
 

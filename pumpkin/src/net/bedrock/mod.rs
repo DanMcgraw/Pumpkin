@@ -458,20 +458,22 @@ impl BedrockClient {
         }
     }
 
-    pub fn try_enqueue_packet<P: BClientPacket>(&self, packet: &P) {
-        let mut packet_buf = Vec::new();
+    pub fn try_enqueue_packet<P: BClientPacket>(self: &Arc<Self>, packet: &P) {
         let mut packet_payload = Vec::new();
         if let Err(err) = packet.write_packet(&mut packet_payload) {
             error!("Failed to write packet for try_enqueue_packet: {err}");
             return;
         }
 
-        {
-            let Ok(network_writer) = self.network_writer.try_read() else {
-                debug!("Failed to lock network writer for try_enqueue_packet");
-                return;
-            };
-
+        // This method is called from synchronous entity/world update paths.  A
+        // failed `try_read` used to drop the packet outright while the outgoing
+        // task briefly held the encoder's write lock to encrypt another packet.
+        // Dropping packets during Bedrock's join sequence leaves the client in an
+        // invalid state, so serialize first and queue the remaining async work.
+        let client = self.clone();
+        self.rt_handle.spawn(async move {
+            let mut packet_buf = Vec::new();
+            let network_writer = client.network_writer.read().await;
             if let Err(err) = network_writer.write_game_packet(
                 P::PACKET_ID as u16,
                 SubClient::Main,
@@ -482,9 +484,10 @@ impl BedrockClient {
                 error!("Failed to write game packet for try_enqueue_packet: {err}");
                 return;
             }
-        }
+            drop(network_writer);
 
-        self.try_enqueue_packet_data(packet_buf.into());
+            client.enqueue_packet_data(packet_buf.into()).await;
+        });
     }
 
     /// Queues a clientbound packet to be sent to the connected client. Queued chunks are sent
