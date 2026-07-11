@@ -6,7 +6,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -95,9 +95,13 @@ use pumpkin_protocol::bedrock::server::login::ClientData;
 use pumpkin_util::version::BedrockMinecraftVersion;
 use pumpkin_world::level::SyncChunk;
 
+const BEDROCK_MAX_UNACKED_FRAMES: usize = 64;
+const BEDROCK_CHUNK_PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
+
 pub struct OutgoingPacket {
     data: Bytes,
     packet_id: Option<u16>,
+    is_chunk: bool,
     completion: Option<oneshot::Sender<()>>,
 }
 
@@ -106,6 +110,7 @@ impl OutgoingPacket {
         Self {
             data,
             packet_id: None,
+            is_chunk: false,
             completion: None,
         }
     }
@@ -114,6 +119,16 @@ impl OutgoingPacket {
         Self {
             data: payload,
             packet_id: Some(packet_id),
+            is_chunk: false,
+            completion: None,
+        }
+    }
+
+    pub const fn chunk(data: Bytes) -> Self {
+        Self {
+            data,
+            packet_id: None,
+            is_chunk: true,
             completion: None,
         }
     }
@@ -122,6 +137,7 @@ impl OutgoingPacket {
         Self {
             data,
             packet_id: None,
+            is_chunk: false,
             completion: Some(completion),
         }
     }
@@ -158,6 +174,7 @@ pub struct BedrockClient {
     output_split_number: AtomicU16,
     output_sequenced_index: AtomicU32,
     output_ordered_index: AtomicU32,
+    queued_chunk_packets: AtomicUsize,
     /// The next form ID to use for custom forms.
     pub next_form_id: AtomicU32,
     pub inventory_opened: AtomicBool,
@@ -169,6 +186,7 @@ pub struct BedrockClient {
     //input_sequence_number: AtomicU32,
     received_sequences: Mutex<HashSet<u32>>,
     pending_acks: Mutex<Vec<u32>>,
+    ack_notify: tokio::sync::Notify,
     #[allow(clippy::type_complexity)]
     unacked_outgoing_frames: Mutex<HashMap<u32, (u8, Vec<u8>, std::time::Instant)>>,
     expected_order_index: Mutex<HashMap<u8, u32>>,
@@ -211,6 +229,7 @@ impl BedrockClient {
             output_split_number: AtomicU16::new(0),
             output_sequenced_index: AtomicU32::new(0),
             output_ordered_index: AtomicU32::new(0),
+            queued_chunk_packets: AtomicUsize::new(0),
             next_form_id: AtomicU32::new(0),
             inventory_opened: AtomicBool::new(false),
             compounds: Arc::new(Mutex::new(HashMap::new())),
@@ -218,6 +237,7 @@ impl BedrockClient {
             last_seen: Arc::new(AtomicCell::new(std::time::Instant::now())),
             received_sequences: Mutex::new(HashSet::new()),
             pending_acks: Mutex::new(Vec::new()),
+            ack_notify: tokio::sync::Notify::new(),
             unacked_outgoing_frames: Mutex::new(HashMap::new()),
             expected_order_index: Mutex::new(HashMap::new()),
             highest_sequence_index: Mutex::new(HashMap::new()),
@@ -279,33 +299,7 @@ impl BedrockClient {
                             let _ = client.send_acknowledgement(&ack, RAKNET_ACK).await;
                         }
 
-                        // Check retransmission
-                        let now = std::time::Instant::now();
-                        let mut resend = Vec::new();
-                        {
-                            let mut unacked = client.unacked_outgoing_frames.lock().await;
-                            for (seq, (id, data, timestamp)) in unacked.iter_mut() {
-                                if now.duration_since(*timestamp) > std::time::Duration::from_secs(1) {
-                                    resend.push((*seq, *id, data.clone()));
-                                    // Update timestamp
-                                    *timestamp = now;
-                                    // Limit resends per tick to avoid starvation
-                                    if resend.len() >= 50 {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        if !resend.is_empty() {
-                            let encoder = client.network_writer.read().await;
-                            for (seq, id, data) in resend {
-                                debug!("Resending reliable sequence {} (ID: {})", seq, id);
-                                if let Err(err) = encoder.write_packet(&data, client.address, &client.socket).await {
-                                    warn!("Failed to resend packet for sequence {}: {}", seq, err);
-                                }
-                            }
-                        }
+                        client.resend_expired_frames(50).await;
                         continue;
                     }
                     res = packet_receiver.recv() => match res {
@@ -335,6 +329,21 @@ impl BedrockClient {
                 } else {
                     packet.data
                 };
+                let is_chunk = packet.is_chunk;
+
+                if is_chunk && !client.wait_for_reliable_window().await {
+                    break;
+                }
+
+                let chunk_sequence_start =
+                    is_chunk.then(|| client.output_sequence_number.load(Ordering::Relaxed));
+                if is_chunk {
+                    debug!(
+                        "Sending Bedrock LevelChunk: {} bytes, estimated {} fragments",
+                        packet_data.len(),
+                        packet_data.len().div_ceil(SPLIT_FRAME_MAX_CONTENT)
+                    );
+                }
 
                 // Encrypt the packet payload if encryption is enabled.
                 if packet_data.len() > 1 && packet_data[0] == 0xfe {
@@ -352,6 +361,18 @@ impl BedrockClient {
                 client
                     .send_framed_packet_data(packet_data.to_vec(), RakReliability::ReliableOrdered)
                     .await;
+
+                if let Some(sequence_start) = chunk_sequence_start {
+                    let sequence_end = client
+                        .output_sequence_number
+                        .load(Ordering::Relaxed)
+                        .saturating_sub(1);
+                    debug!(
+                        "Sent Bedrock LevelChunk in reliable sequences {}..={}",
+                        sequence_start, sequence_end
+                    );
+                    tokio::time::sleep(BEDROCK_CHUNK_PACING_DELAY).await;
+                }
 
                 if let Some(completion) = packet.completion {
                     let _ = completion.send(());
@@ -458,7 +479,7 @@ impl BedrockClient {
             }
         }
         for packet_buf in packets_to_enqueue {
-            self.enqueue_packet_data(packet_buf.into()).await;
+            self.enqueue_chunk_packet_data(packet_buf.into()).await;
         }
     }
 
@@ -521,6 +542,24 @@ impl BedrockClient {
                 error!("Failed to add packet to the outgoing packet queue for client: {err}");
             }
         }
+    }
+
+    async fn enqueue_chunk_packet_data(&self, packet_data: Bytes) {
+        if let Err(err) = self
+            .outgoing_packet_queue_send
+            .send(OutgoingPacket::chunk(packet_data))
+            .await
+        {
+            if !self.is_closed() {
+                error!("Failed to add chunk packet to the outgoing packet queue: {err}");
+            }
+        } else {
+            self.queued_chunk_packets.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn queued_chunk_packets(&self) -> usize {
+        self.queued_chunk_packets.load(Ordering::Relaxed)
     }
 
     pub fn try_enqueue_packet_data(&self, packet_data: Bytes) {
@@ -812,11 +851,97 @@ impl BedrockClient {
         Ok(())
     }
 
+    async fn wait_for_reliable_window(&self) -> bool {
+        let mut reported_pause = false;
+        loop {
+            if self.is_closed() {
+                return false;
+            }
+            if self.last_seen.load().elapsed() > std::time::Duration::from_secs(10) {
+                debug!("Bedrock client {} timed out", self.address);
+                self.close().await;
+                return false;
+            }
+
+            let unacked_count = self.unacked_outgoing_frames.lock().await.len();
+            if unacked_count < BEDROCK_MAX_UNACKED_FRAMES {
+                if reported_pause {
+                    debug!(
+                        "Bedrock reliable window resumed with {} unacknowledged frames",
+                        unacked_count
+                    );
+                }
+                return true;
+            }
+
+            if !reported_pause {
+                debug!(
+                    "Bedrock reliable window paused at {} unacknowledged frames",
+                    unacked_count
+                );
+                reported_pause = true;
+            }
+
+            tokio::select! {
+                () = self.await_close_interrupt() => return false,
+                () = self.ack_notify.notified() => {},
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    let ack = {
+                        let mut pending = self.pending_acks.lock().await;
+                        if pending.is_empty() {
+                            None
+                        } else {
+                            let ack = Acknowledge::new(pending.clone());
+                            pending.clear();
+                            Some(ack)
+                        }
+                    };
+                    if let Some(ack) = ack {
+                        let _ = self.send_acknowledgement(&ack, RAKNET_ACK).await;
+                    }
+                    self.resend_expired_frames(16).await;
+                }
+            }
+        }
+    }
+
+    async fn resend_expired_frames(&self, limit: usize) {
+        let now = std::time::Instant::now();
+        let mut resend = Vec::new();
+        {
+            let mut unacked = self.unacked_outgoing_frames.lock().await;
+            for (seq, (id, data, timestamp)) in unacked.iter_mut() {
+                if now.duration_since(*timestamp) > std::time::Duration::from_secs(1) {
+                    resend.push((*seq, *id, data.clone()));
+                    *timestamp = now;
+                    if resend.len() >= limit {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !resend.is_empty() {
+            let encoder = self.network_writer.read().await;
+            for (seq, id, data) in resend {
+                debug!("Resending reliable sequence {} (ID: {})", seq, id);
+                if let Err(err) = encoder
+                    .write_packet(&data, self.address, &self.socket)
+                    .await
+                {
+                    warn!("Failed to resend packet for sequence {}: {}", seq, err);
+                }
+            }
+        }
+    }
+
     async fn handle_ack(&self, ack: &Acknowledge) {
         let mut unacked = self.unacked_outgoing_frames.lock().await;
         for seq in &ack.sequences {
             unacked.remove(seq);
         }
+        drop(unacked);
+        self.ack_notify.notify_waiters();
     }
 
     async fn handle_nack(&self, nack: &Acknowledge) {

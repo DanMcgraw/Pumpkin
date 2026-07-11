@@ -378,7 +378,11 @@ impl ChunkManager {
     }
 
     pub fn next_chunk(&mut self) -> Box<[SyncChunk]> {
-        let take = self.chunk_queue.len().min(self.chunks_per_tick.max(1));
+        self.next_chunks(self.chunks_per_tick)
+    }
+
+    pub fn next_chunks(&mut self, max_chunks: usize) -> Box<[SyncChunk]> {
+        let take = self.chunk_queue.len().min(max_chunks.max(1));
         let mut chunks = Vec::with_capacity(take);
         while chunks.len() < take
             && let Some(node) = self.chunk_queue.pop()
@@ -1980,33 +1984,43 @@ impl Player {
                 *xp -= 1;
             }
         }
-        let (chunk_of_chunks, total_sent_chunks) = {
+        let chunk_of_chunks = {
             let mut chunk_manager = self.chunk_manager.lock().await;
             chunk_manager.pull_new_chunks();
-            let chunks = if let ClientPlatform::Java(_) = self.client.as_ref() {
+            if let ClientPlatform::Java(_) = self.client.as_ref() {
                 // Java clients can only send a limited amount of chunks per tick.
                 // If we have sent too many chunks without receiving an ack, we stop sending chunks.
                 chunk_manager
                     .can_send_chunk()
                     .then(|| chunk_manager.next_chunk())
             } else {
-                Some(chunk_manager.next_chunk())
-            };
-            (chunks, chunk_manager.sent_chunks_count())
+                // Bedrock LevelChunks fragment into many UDP datagrams. Admit
+                // one chunk per tick; the Bedrock writer applies the ACK-based
+                // reliable-frame window before putting it on the wire.
+                Some(chunk_manager.next_chunks(1))
+            }
         };
         if let Some(chunk_of_chunks) = chunk_of_chunks {
-            let client = self.client.clone();
-            tokio::spawn(async move {
-                client.send_chunks(&chunk_of_chunks).await;
-            });
-            if let ClientPlatform::Bedrock(bedrock_client) = self.client.as_ref()
-                && !self.bedrock_spawned.load(Ordering::Relaxed)
-                && total_sent_chunks > 4
-            {
-                bedrock_client
-                    .enqueue_packet(&CPlayStatus::PlayerSpawn)
-                    .await;
-                self.bedrock_spawned.store(true, Ordering::Relaxed);
+            match self.client.as_ref() {
+                ClientPlatform::Java(_) => {
+                    let client = self.client.clone();
+                    tokio::spawn(async move {
+                        client.send_chunks(&chunk_of_chunks).await;
+                    });
+                }
+                ClientPlatform::Bedrock(bedrock_client) => {
+                    // Await serialization/enqueue so PlayerSpawn cannot overtake
+                    // the fifth initial LevelChunk in the outgoing queue.
+                    bedrock_client.send_chunks(&chunk_of_chunks).await;
+                    if !self.bedrock_spawned.load(Ordering::Relaxed)
+                        && bedrock_client.queued_chunk_packets() >= 5
+                    {
+                        bedrock_client
+                            .enqueue_packet(&CPlayStatus::PlayerSpawn)
+                            .await;
+                        self.bedrock_spawned.store(true, Ordering::Relaxed);
+                    }
+                }
             }
         }
         self.tick_counter.fetch_add(1, Ordering::Relaxed);
