@@ -345,13 +345,31 @@ impl World {
                 let Some(server) = world.server.upgrade() else {
                     return false;
                 };
+
+                if !server.plugin_manager.has_handlers::<crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent>() {
+                    return false;
+                }
+
                 let Some(runtime) = runtime_for_callback.clone() else {
                     return false;
                 };
-                let event = crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
-                    world, chunk, pos,
-                );
-                runtime.block_on(async move { server.plugin_manager.fire(event).await.cancelled })
+
+                use futures::FutureExt;
+
+                let make_fut = || {
+                    let event = crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
+                        world.clone(), chunk.clone(), pos,
+                    );
+                    let manager = server.plugin_manager.clone();
+                    async move { manager.fire(event).await.cancelled }
+                };
+
+                if let Some(res) = make_fut().now_or_never() {
+                    res
+                } else {
+                    warn!("Chunk unload event fell back to block_on!");
+                    runtime.block_on(make_fut())
+                }
             };
             *level.chunk_unload_callback.write().unwrap() = Some(Box::new(callback));
 
@@ -6020,18 +6038,34 @@ impl WorldPortalExt for WorldPortal {
         let Some(server) = self.0.server.upgrade() else {
             return true;
         };
+
+        if !server.plugin_manager.has_handlers::<crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent>() {
+            return true;
+        }
+
         let Some(runtime) = self.0.runtime.clone() else {
             return true;
         };
 
-        let event = crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
-            self.0.clone(),
-            Vector2::new(chunk_x, chunk_z),
-            feature,
-            *origin,
-        );
+        use futures::FutureExt;
 
-        runtime.block_on(async move { !server.plugin_manager.fire(event).await.cancelled })
+        let make_fut = || {
+            let event = crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
+                self.0.clone(),
+                Vector2::new(chunk_x, chunk_z),
+                feature,
+                *origin,
+            );
+            let manager = server.plugin_manager.clone();
+            async move { !manager.fire(event).await.cancelled }
+        };
+
+        if let Some(res) = make_fut().now_or_never() {
+            res
+        } else {
+            warn!("Feature generate event fell back to block_on! feature: {:?}", feature);
+            runtime.block_on(make_fut())
+        }
     }
 }
 

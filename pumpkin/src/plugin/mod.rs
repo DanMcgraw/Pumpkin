@@ -1023,6 +1023,16 @@ impl PluginManager {
             .push(Box::new(typed_handler));
     }
 
+    /// Synchronously checks if any handlers are registered for a given event type.
+    #[must_use]
+    pub fn has_handlers<E: Payload + Send + Sync + 'static>(&self) -> bool {
+        if let Ok(handlers) = self.handlers.try_read() {
+            handlers.contains_key(E::get_name_static())
+        } else {
+            true
+        }
+    }
+
     /// Fire an event to all registered handlers
     pub async fn fire<E: Payload + Send + Sync + 'static>(&self, mut event: E) -> E {
         if let Some(server) = self.server.read().await.as_ref() {
