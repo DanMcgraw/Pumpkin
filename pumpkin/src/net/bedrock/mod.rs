@@ -63,7 +63,6 @@ use pumpkin_protocol::{
             resource_pack_response::SResourcePackResponse,
             set_local_player_as_initialized::SSetLocalPlayerAsInitialized,
             set_player_inventory_options::SSetPlayerInventoryOptions,
-            sub_chunk_request::SSubChunkRequest,
             text::SText,
         },
     },
@@ -85,11 +84,6 @@ pub mod connection;
 pub mod login;
 pub mod open_connection;
 pub mod unconnected;
-
-/// Temporary diagnostic switch for the Bedrock join crash. While disabled,
-/// radius negotiation still runs, but no LevelChunk/SubChunk data or
-/// PlayerSpawn status is sent.
-pub const CHUNK_DATA_ENABLED: bool = false;
 use crate::{
     entity::player::Player,
     net::{DisconnectReason, GameProfile, PacketHandlerResult, PlayerConfig},
@@ -102,14 +96,24 @@ use pumpkin_util::version::BedrockMinecraftVersion;
 use pumpkin_world::level::SyncChunk;
 
 pub struct OutgoingPacket {
-    pub data: Bytes,
-    pub completion: Option<oneshot::Sender<()>>,
+    data: Bytes,
+    packet_id: Option<u16>,
+    completion: Option<oneshot::Sender<()>>,
 }
 
 impl OutgoingPacket {
     pub const fn normal(data: Bytes) -> Self {
         Self {
             data,
+            packet_id: None,
+            completion: None,
+        }
+    }
+
+    pub const fn game(packet_id: u16, payload: Bytes) -> Self {
+        Self {
+            data: payload,
+            packet_id: Some(packet_id),
             completion: None,
         }
     }
@@ -117,6 +121,7 @@ impl OutgoingPacket {
     pub const fn priority(data: Bytes, completion: oneshot::Sender<()>) -> Self {
         Self {
             data,
+            packet_id: None,
             completion: Some(completion),
         }
     }
@@ -251,7 +256,7 @@ impl BedrockClient {
             let mut interval = tokio::time::interval(std::time::Duration::from_millis(100));
 
             while !client.close_token.is_cancelled() {
-                let mut packet = tokio::select! {
+                let packet = tokio::select! {
                     biased;
                     () = client.close_token.cancelled() => break,
                     res = priority_packet_receiver.recv() => match res {
@@ -309,21 +314,43 @@ impl BedrockClient {
                     },
                 };
 
+                // Synchronous world/entity paths submit the raw game-packet
+                // payload because they cannot wait for the encoder lock. Wrap
+                // it here so encoding and encryption stay ordered with every
+                // other queued packet.
+                let mut packet_data = if let Some(packet_id) = packet.packet_id {
+                    let mut encoded = Vec::new();
+                    let encoder = client.network_writer.read().await;
+                    if let Err(err) = encoder.write_game_packet(
+                        packet_id,
+                        SubClient::Main,
+                        SubClient::Main,
+                        &packet.data,
+                        &mut encoded,
+                    ) {
+                        error!("Failed to write queued game packet {packet_id}: {err}");
+                        continue;
+                    }
+                    Bytes::from(encoded)
+                } else {
+                    packet.data
+                };
+
                 // Encrypt the packet payload if encryption is enabled.
-                if packet.data.len() > 1 && packet.data[0] == 0xfe {
+                if packet_data.len() > 1 && packet_data[0] == 0xfe {
                     let mut encoder = client.network_writer.write().await;
                     if let Some(encryptor) = encoder.encryptor_mut() {
-                        let mut data_to_encrypt = packet.data[1..].to_vec();
+                        let mut data_to_encrypt = packet_data[1..].to_vec();
                         encryptor.encrypt(&mut data_to_encrypt);
                         let mut encrypted_payload = Vec::with_capacity(1 + data_to_encrypt.len());
                         encrypted_payload.push(0xfe);
                         encrypted_payload.extend_from_slice(&data_to_encrypt);
-                        packet.data = encrypted_payload.into();
+                        packet_data = encrypted_payload.into();
                     }
                 }
 
                 client
-                    .send_framed_packet_data(packet.data.to_vec(), RakReliability::ReliableOrdered)
+                    .send_framed_packet_data(packet_data.to_vec(), RakReliability::ReliableOrdered)
                     .await;
 
                 if let Some(completion) = packet.completion {
@@ -364,10 +391,6 @@ impl BedrockClient {
     }
 
     pub async fn send_chunks(&self, chunks: &[SyncChunk]) {
-        if !CHUNK_DATA_ENABLED {
-            return;
-        }
-
         let player = self.player.lock().await.clone();
         let Some(player) = player.as_ref() else {
             debug!(
@@ -468,36 +491,17 @@ impl BedrockClient {
         }
     }
 
-    pub fn try_enqueue_packet<P: BClientPacket>(self: &Arc<Self>, packet: &P) {
+    pub fn try_enqueue_packet<P: BClientPacket>(&self, packet: &P) {
         let mut packet_payload = Vec::new();
         if let Err(err) = packet.write_packet(&mut packet_payload) {
             error!("Failed to write packet for try_enqueue_packet: {err}");
             return;
         }
 
-        // This method is called from synchronous entity/world update paths.  A
-        // failed `try_read` used to drop the packet outright while the outgoing
-        // task briefly held the encoder's write lock to encrypt another packet.
-        // Dropping packets during Bedrock's join sequence leaves the client in an
-        // invalid state, so serialize first and queue the remaining async work.
-        let client = self.clone();
-        self.rt_handle.spawn(async move {
-            let mut packet_buf = Vec::new();
-            let network_writer = client.network_writer.read().await;
-            if let Err(err) = network_writer.write_game_packet(
-                P::PACKET_ID as u16,
-                SubClient::Main,
-                SubClient::Main,
-                &packet_payload,
-                &mut packet_buf,
-            ) {
-                error!("Failed to write game packet for try_enqueue_packet: {err}");
-                return;
-            }
-            drop(network_writer);
-
-            client.enqueue_packet_data(packet_buf.into()).await;
-        });
+        self.try_enqueue_outgoing_packet(OutgoingPacket::game(
+            P::PACKET_ID as u16,
+            packet_payload.into(),
+        ));
     }
 
     /// Queues a clientbound packet to be sent to the connected client. Queued chunks are sent
@@ -520,10 +524,11 @@ impl BedrockClient {
     }
 
     pub fn try_enqueue_packet_data(&self, packet_data: Bytes) {
-        if let Err(err) = self
-            .outgoing_packet_queue_send
-            .try_send(OutgoingPacket::normal(packet_data))
-        {
+        self.try_enqueue_outgoing_packet(OutgoingPacket::normal(packet_data));
+    }
+
+    fn try_enqueue_outgoing_packet(&self, packet: OutgoingPacket) {
+        if let Err(err) = self.outgoing_packet_queue_send.try_send(packet) {
             match err {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
                     debug!(
@@ -1152,10 +1157,6 @@ impl BedrockClient {
             }
             SRequestChunkRadius::PACKET_ID => {
                 self.handle_request_chunk_radius(player, SRequestChunkRadius::read(reader)?)
-                    .await;
-            }
-            SSubChunkRequest::PACKET_ID => {
-                self.handle_sub_chunk_request(player, SSubChunkRequest::read(reader)?)
                     .await;
             }
             SInventoryTransaction::PACKET_ID => {

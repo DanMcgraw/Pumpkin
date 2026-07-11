@@ -378,16 +378,7 @@ impl ChunkManager {
     }
 
     pub fn next_chunk(&mut self) -> Box<[SyncChunk]> {
-        self.next_chunks(self.chunks_per_tick)
-    }
-
-    /// Takes at most `max_chunks` chunks from the pending chunk queue.
-    ///
-    /// Bedrock does not use Java's chunk-batch acknowledgement flow, so it
-    /// needs a separate, conservative send rate to avoid flooding RakNet with
-    /// fragmented LevelChunk packets during login.
-    pub fn next_chunks(&mut self, max_chunks: usize) -> Box<[SyncChunk]> {
-        let take = self.chunk_queue.len().min(max_chunks.max(1));
+        let take = self.chunk_queue.len().min(self.chunks_per_tick.max(1));
         let mut chunks = Vec::with_capacity(take);
         while chunks.len() < take
             && let Some(node) = self.chunk_queue.pop()
@@ -1999,38 +1990,23 @@ impl Player {
                     .can_send_chunk()
                     .then(|| chunk_manager.next_chunk())
             } else {
-                // A LevelChunk often spans many RakNet datagrams. Sending the
-                // Java default of 16 chunks per tick overwhelms Bedrock clients
-                // and produces large NACK ranges before the world can load.
-                Some(chunk_manager.next_chunks(1))
+                Some(chunk_manager.next_chunk())
             };
             (chunks, chunk_manager.sent_chunks_count())
         };
         if let Some(chunk_of_chunks) = chunk_of_chunks {
-            match self.client.as_ref() {
-                ClientPlatform::Java(_) => {
-                    let client = self.client.clone();
-                    tokio::spawn(async move {
-                        client.send_chunks(&chunk_of_chunks).await;
-                    });
-                }
-                ClientPlatform::Bedrock(bedrock_client) => {
-                    // Keep the initial LevelChunks and PlayerSpawn in queue
-                    // order. Detached serialization tasks could otherwise let
-                    // PlayerSpawn overtake the chunks that make the spawn area
-                    // usable, leaving the Bedrock loading screen stuck.
-                    bedrock_client.send_chunks(&chunk_of_chunks).await;
-
-                    if crate::net::bedrock::CHUNK_DATA_ENABLED
-                        && !self.bedrock_spawned.load(Ordering::Relaxed)
-                        && total_sent_chunks > 4
-                    {
-                        bedrock_client
-                            .enqueue_packet(&CPlayStatus::PlayerSpawn)
-                            .await;
-                        self.bedrock_spawned.store(true, Ordering::Relaxed);
-                    }
-                }
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                client.send_chunks(&chunk_of_chunks).await;
+            });
+            if let ClientPlatform::Bedrock(bedrock_client) = self.client.as_ref()
+                && !self.bedrock_spawned.load(Ordering::Relaxed)
+                && total_sent_chunks > 4
+            {
+                bedrock_client
+                    .enqueue_packet(&CPlayStatus::PlayerSpawn)
+                    .await;
+                self.bedrock_spawned.store(true, Ordering::Relaxed);
             }
         }
         self.tick_counter.fetch_add(1, Ordering::Relaxed);
