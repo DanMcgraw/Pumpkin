@@ -85,6 +85,11 @@ pub mod connection;
 pub mod login;
 pub mod open_connection;
 pub mod unconnected;
+
+/// Temporary diagnostic switch for the Bedrock join crash. While disabled,
+/// radius negotiation still runs, but no LevelChunk/SubChunk data or
+/// PlayerSpawn status is sent.
+pub const CHUNK_DATA_ENABLED: bool = false;
 use crate::{
     entity::player::Player,
     net::{DisconnectReason, GameProfile, PacketHandlerResult, PlayerConfig},
@@ -359,6 +364,10 @@ impl BedrockClient {
     }
 
     pub async fn send_chunks(&self, chunks: &[SyncChunk]) {
+        if !CHUNK_DATA_ENABLED {
+            return;
+        }
+
         let player = self.player.lock().await.clone();
         let Some(player) = player.as_ref() else {
             debug!(

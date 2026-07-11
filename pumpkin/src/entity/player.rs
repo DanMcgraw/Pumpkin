@@ -2021,7 +2021,8 @@ impl Player {
                     // usable, leaving the Bedrock loading screen stuck.
                     bedrock_client.send_chunks(&chunk_of_chunks).await;
 
-                    if !self.bedrock_spawned.load(Ordering::Relaxed)
+                    if crate::net::bedrock::CHUNK_DATA_ENABLED
+                        && !self.bedrock_spawned.load(Ordering::Relaxed)
                         && total_sent_chunks > 4
                     {
                         bedrock_client

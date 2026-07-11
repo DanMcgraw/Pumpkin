@@ -48,8 +48,8 @@ pub struct SubChunkEntry {
     pub blob_id: u64,
 }
 
-impl PacketWrite for SubChunkEntry {
-    fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
+impl SubChunkEntry {
+    fn write<W: Write>(&self, writer: &mut W, cache_enabled: bool) -> Result<(), Error> {
         self.offset.write(writer)?;
         self.result.write(writer)?;
 
@@ -72,7 +72,10 @@ impl PacketWrite for SubChunkEntry {
             }
         }
 
-        self.blob_id.write(writer)
+        if cache_enabled {
+            self.blob_id.write(writer)?;
+        }
+        Ok(())
     }
 }
 
@@ -94,7 +97,7 @@ impl PacketWrite for CSubChunkPacket {
         // SubChunk entry count is a fixed uint32, not a varint.
         (self.entries.len() as u32).write(writer)?;
         for entry in &self.entries {
-            entry.write(writer)?;
+            entry.write(writer, self.cache_enabled)?;
         }
         Ok(())
     }

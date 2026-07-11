@@ -38,7 +38,7 @@ use pumpkin_protocol::{
             player_auth_input::{InputData, SPlayerAuthInput},
             request_chunk_radius::SRequestChunkRadius,
             set_local_player_as_initialized::SSetLocalPlayerAsInitialized,
-            sub_chunk_request::{SSubChunkRequest, SubChunkOffset as RequestSubChunkOffset},
+            sub_chunk_request::SSubChunkRequest,
             text::SText,
         },
     },
@@ -185,6 +185,12 @@ impl BedrockClient {
         ))
         .await;
 
+        if !super::CHUNK_DATA_ENABLED {
+            debug!(
+                "Bedrock diagnostic: LevelChunk, SubChunk, and PlayerSpawn packets are suppressed"
+            );
+        }
+
         let old_view_distance = {
             let current_config = player.config.load();
             let old_vd = current_config.view_distance;
@@ -209,6 +215,11 @@ impl BedrockClient {
         player: &Arc<Player>,
         packet: SSubChunkRequest,
     ) {
+        if !super::CHUNK_DATA_ENABLED {
+            debug!("Bedrock diagnostic: ignored SubChunkRequest while chunk data is suppressed");
+            return;
+        }
+
         let dimension = packet.dimension.0;
         let center = packet.position;
         let mut entries = Vec::with_capacity(packet.offsets.len());
