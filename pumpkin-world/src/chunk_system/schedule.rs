@@ -21,7 +21,7 @@ use std::mem::swap;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
 pub(crate) struct TaskHeapNode(i8, NodeKey);
@@ -78,7 +78,8 @@ pub struct GenerationSchedule {
     listener: Arc<ChunkListener>,
     level: Arc<Level>,
     lighting_config: LightingEngineConfig,
-    last_unload: std::time::Instant,
+    last_unload: Instant,
+    last_stall_log: Instant,
 }
 
 impl GenerationSchedule {
@@ -174,7 +175,8 @@ impl GenerationSchedule {
                     level: level_sched.clone(),
                     chunk_map: HashMap::default(),
                     lighting_config,
-                    last_unload: std::time::Instant::now(),
+                    last_unload: Instant::now(),
+                    last_stall_log: Instant::now(),
                 };
                 scheduler.work(&level_sched);
             })
@@ -459,6 +461,62 @@ impl GenerationSchedule {
         }
     }
 
+    /// Rebuild dependency holders that disappeared while a task was parked.
+    /// Normal scheduling should never need this recovery path.
+    fn repair_missing_waiting_dependencies(&mut self) -> usize {
+        let waiting = self
+            .waiting_for_chunks
+            .iter()
+            .filter_map(|&node_key| {
+                self.graph
+                    .nodes
+                    .get(node_key)
+                    .map(|node| (node_key, node.pos, node.stage))
+            })
+            .collect::<Vec<_>>();
+        let mut missing_positions = HashSetType::default();
+        for (_, pos, stage) in &waiting {
+            let write_radius = stage.get_write_radius();
+            for dx in -write_radius..=write_radius {
+                for dz in -write_radius..=write_radius {
+                    let dependency_pos = pos.add_raw(dx, dz);
+                    if !self.chunk_map.contains_key(&dependency_pos) {
+                        missing_positions.insert(dependency_pos);
+                    }
+                }
+            }
+        }
+        let repaired = missing_positions.len();
+
+        for (node_key, pos, stage) in waiting {
+            let write_radius = stage.get_write_radius();
+            let dependencies = stage.get_direct_dependencies();
+            for dx in -write_radius..=write_radius {
+                for dz in -write_radius..=write_radius {
+                    let dependency_pos = pos.add_raw(dx, dz);
+                    if !missing_positions.contains(&dependency_pos) {
+                        continue;
+                    }
+
+                    let required_stage = dependencies[dx.abs().max(dz.abs()) as usize];
+                    let holder = self.chunk_map.entry(dependency_pos).or_default();
+                    Self::ensure_dependency_chain(
+                        &mut self.graph,
+                        &mut self.queue,
+                        &self.last_level,
+                        &self.last_high_priority,
+                        node_key,
+                        dependency_pos,
+                        holder,
+                        required_stage,
+                    );
+                }
+            }
+        }
+
+        repaired
+    }
+
     #[expect(clippy::too_many_lines)]
     fn resort_work(&mut self, new_data: (Option<LevelChange>, Option<Vec<ChunkPos>>)) -> bool {
         if new_data.0.is_none() && new_data.1.is_none() {
@@ -631,6 +689,38 @@ impl GenerationSchedule {
         }
     }
 
+    /// Returns whether a holder is still referenced by a live generation task.
+    ///
+    /// Reaching `dependency_stage` only means the chunk contains enough data for
+    /// its dependents. The data must remain resident until those dependents have
+    /// actually consumed it and their graph nodes have been dropped.
+    pub(crate) fn holder_has_live_dependents(graph: &DAG, holder: &ChunkHolder) -> bool {
+        let mut cur_edge = holder.occupied_by;
+        while !cur_edge.is_null() {
+            let Some(edge) = graph.edges.get(cur_edge) else {
+                break;
+            };
+            if graph.nodes.contains_key(edge.to) {
+                return true;
+            }
+            cur_edge = edge.next;
+        }
+        false
+    }
+
+    pub(crate) fn dependency_is_releasable(graph: &DAG, holder: &ChunkHolder) -> bool {
+        holder.target_stage == StagedChunkEnum::None
+            && holder.current_stage >= holder.dependency_stage
+            && !Self::holder_has_live_dependents(graph, holder)
+    }
+
+    fn release_dependency_if_unused(&mut self, pos: ChunkPos, holder: &mut ChunkHolder) {
+        if Self::dependency_is_releasable(&self.graph, holder) {
+            holder.dependency_stage = StagedChunkEnum::None;
+            self.unload_chunks.insert(pos);
+        }
+    }
+
     fn process_unload_queue(&mut self) {
         if self.unload_chunks.is_empty() {
             return;
@@ -643,6 +733,25 @@ impl GenerationSchedule {
             let holder = self.chunk_map.get_mut(&pos).unwrap();
             debug_assert_eq!(holder.target_stage, StagedChunkEnum::None);
             if holder.occupied.is_null() {
+                // Before unloading, check if any other task still depends on
+                // this chunk's data being present (via occupied_by edges).
+                // This prevents a race where a dependency chunk is unloaded
+                // before a dependent task's write_radius check can consume it.
+                if Self::holder_has_live_dependents(&self.graph, holder) {
+                    // Re-queue: some task still needs this chunk's data
+                    debug!(
+                        "process_unload_queue: DEFERRING chunk ({}, {}) — still has dependents",
+                        pos.x, pos.y
+                    );
+                    self.unload_chunks.insert(pos);
+                    continue;
+                }
+
+                debug!(
+                    "process_unload_queue: UNLOADING chunk ({}, {}) — no dependents",
+                    pos.x, pos.y
+                );
+
                 let mut tmp = None;
                 swap(&mut holder.chunk, &mut tmp);
                 let Some(tmp) = tmp else {
@@ -919,12 +1028,7 @@ impl GenerationSchedule {
 
                             // If this chunk was only loaded for a dependency or cancelled
                             // and is no longer needed, clear dependency_stage and queue unload.
-                            if holder.target_stage == StagedChunkEnum::None
-                                && holder.current_stage >= holder.dependency_stage
-                            {
-                                holder.dependency_stage = StagedChunkEnum::None;
-                                self.unload_chunks.insert(new_pos);
-                            }
+                            self.release_dependency_if_unused(new_pos, &mut holder);
 
                             self.chunk_map.insert(new_pos, holder);
                         }
@@ -952,12 +1056,7 @@ impl GenerationSchedule {
                             }
 
                             // Clear dependency_stage and queue unload if no longer needed
-                            if holder.target_stage == StagedChunkEnum::None
-                                && holder.current_stage >= holder.dependency_stage
-                            {
-                                holder.dependency_stage = StagedChunkEnum::None;
-                                self.unload_chunks.insert(new_pos);
-                            }
+                            self.release_dependency_if_unused(new_pos, &mut holder);
 
                             holder.occupied = NodeKey::null();
                             holder.chunk = Some(Chunk::Proto(chunk));
@@ -1199,15 +1298,25 @@ impl GenerationSchedule {
                         // see chunk==None in that window. We park here and let
                         // check_waiting_tasks() re-queue once all data has arrived.
                         {
+                            let mut missing: Vec<(i32, i32)> = Vec::new();
                             let all_ready = (-write_radius..=write_radius).all(|dx| {
                                 (-write_radius..=write_radius).all(|dy| {
-                                    self.chunk_map
+                                    let ready = self
+                                        .chunk_map
                                         .get(&node.pos.add_raw(dx, dy))
-                                        .is_some_and(|h| h.chunk.is_some())
+                                        .is_some_and(|h| h.chunk.is_some());
+                                    if !ready {
+                                        missing.push((node.pos.x + dx, node.pos.y + dy));
+                                    }
+                                    ready
                                 })
                             });
 
                             if !all_ready {
+                                debug!(
+                                    "schedule: PARKING task {:?} pos ({}, {}) stage {:?} — missing neighbor chunks: {:?}",
+                                    task.1, node.pos.x, node.pos.y, node.stage, missing
+                                );
                                 if let Some(n) = self.graph.nodes.get_mut(task.1) {
                                     n.in_queue = false;
                                     n.in_flight = false;
@@ -1329,6 +1438,25 @@ impl GenerationSchedule {
                         Err(crossfire::compat::RecvTimeoutError::Timeout) => {
                             // Periodically check LevelChannel for new requests
                             self.resort_work(self.send_level.get());
+
+                            // Repair dependency holders lost by older scheduler state instead
+                            // of leaving their tasks parked forever.
+                            if self.running_task_count == 0 && !self.waiting_for_chunks.is_empty() {
+                                let repaired = self.repair_missing_waiting_dependencies();
+                                if repaired > 0 {
+                                    warn!(
+                                        "Rebuilt {repaired} missing chunk dependency holders for {} parked tasks",
+                                        self.waiting_for_chunks.len()
+                                    );
+                                } else if self.last_stall_log.elapsed() >= Duration::from_secs(5) {
+                                    warn!(
+                                        "Chunk scheduler has {} parked tasks and no work in flight",
+                                        self.waiting_for_chunks.len()
+                                    );
+                                    self.last_stall_log = Instant::now();
+                                }
+                                self.check_waiting_tasks();
+                            }
                         }
                         Err(crossfire::compat::RecvTimeoutError::Disconnected) => break,
                     }

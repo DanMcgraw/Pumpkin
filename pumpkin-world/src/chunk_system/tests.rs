@@ -1,6 +1,5 @@
 use super::*;
-use crate::chunk_system::dag::Node;
-use crate::chunk_system::dag::NodeKey;
+use crate::chunk_system::dag::{Edge, EdgeKey, Node, NodeKey};
 use slotmap::Key;
 use std::collections::BinaryHeap;
 use std::collections::HashMap;
@@ -238,6 +237,35 @@ fn ensure_dependency_chain_early_return_skips_edge() {
         dep_node.in_degree, 0,
         "Dependency task should not be blocked if the neighbor is already past the required stage"
     );
+}
+
+#[test]
+fn dependency_holder_stays_live_until_feature_dependent_is_dropped() {
+    let mut graph = DAG::default();
+    let dependent = graph
+        .nodes
+        .insert(Node::new(ChunkPos::new(10, 10), StagedChunkEnum::Features));
+    let mut holder = ChunkHolder {
+        current_stage: StagedChunkEnum::Carvers,
+        dependency_stage: StagedChunkEnum::Carvers,
+        ..Default::default()
+    };
+    holder.occupied_by = graph.edges.insert(Edge::new(dependent, EdgeKey::null()));
+
+    assert!(GenerationSchedule::holder_has_live_dependents(
+        &graph, &holder
+    ));
+    assert!(!GenerationSchedule::dependency_is_releasable(
+        &graph, &holder
+    ));
+
+    graph.nodes.remove(dependent);
+    assert!(!GenerationSchedule::holder_has_live_dependents(
+        &graph, &holder
+    ));
+    assert!(GenerationSchedule::dependency_is_releasable(
+        &graph, &holder
+    ));
 }
 
 #[test]
