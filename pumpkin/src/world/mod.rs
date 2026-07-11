@@ -17,7 +17,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     sync::atomic::Ordering,
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 pub mod chunker;
 pub mod explosion;
@@ -1111,20 +1111,7 @@ impl World {
             dragon_fight::DragonFight::tick(fight_mutex, self).await;
         }
 
-        let total_elapsed = start.elapsed();
-        if total_elapsed.as_millis() > 50 {
-            debug!(
-                "Slow Tick [{}ms]: Chunks: {:?} | Players({}): {:?} | Entities({}): {:?} | Block Entities({}): {:?}",
-                total_elapsed.as_millis(),
-                chunk_elapsed,
-                player_count,
-                player_elapsed,
-                entity_count,
-                entity_elapsed,
-                block_entity_count,
-                block_entity_elapsed,
-            );
-        }
+        let _total_elapsed = start.elapsed();
     }
 
     pub async fn register_block_change(&self, position: BlockPos, block_state_id: BlockStateId) {
@@ -2635,10 +2622,6 @@ impl World {
         // This code follows the vanilla packet order
         let entity_id = player.entity_id();
         let gamemode = player.gamemode.load();
-        debug!(
-            "spawning player {}, entity id {}",
-            player.gameprofile.name, entity_id
-        );
 
         let Some(client) = player.client.java() else {
             return;
@@ -2691,7 +2674,6 @@ impl World {
         };
 
         // Start waiting for level chunks before the initial center chunk is sent.
-        debug!("Sending waiting chunks to {}", player.gameprofile.name);
         client
             .send_packet_now(&CGameEvent::new(GameEvent::StartWaitingChunks, 0.0))
             .await;
@@ -2738,7 +2720,6 @@ impl World {
 
         let velocity = player.living_entity.entity.velocity.load();
 
-        debug!("Sending player teleport to {}", player.gameprofile.name);
         player.request_teleport(position, yaw, pitch).await;
 
         client.send_packet_now(&CChunkBatchStart).await;
@@ -2871,7 +2852,6 @@ impl World {
                 })
                 .collect::<Vec<_>>();
 
-            debug!("Sending player info to {}", player.gameprofile.name);
             client
                 .enqueue_packet(&CPlayerInfoUpdate::new(action_flags.bits(), &entries))
                 .await;
@@ -3470,11 +3450,6 @@ impl World {
 
                     // Skip the transfer if redirected back to the current world.
                     if destination.uuid != self.uuid {
-                        debug!(
-                            "Cross-dimension respawn: {} -> {}",
-                            self.dimension.minecraft_name, destination.dimension.minecraft_name
-                        );
-
                         // Detach from the old world before publishing into the new one, so no
                         // observer sees the player in a world whose chunk manager doesn't match.
                         self.remove_player(player, false).await;
@@ -3690,10 +3665,7 @@ impl World {
         player.clone().spawn_task(async move {
             'main: loop {
                 let recv_result = tokio::select! {
-                    () = player.client.await_close_interrupt() => {
-                        debug!("Canceling player packet processing");
-                        None
-                    },
+                    () = player.client.await_close_interrupt() => None,
                     recv_result = entity_receiver.recv() => {
                         recv_result
                     }
@@ -3725,10 +3697,7 @@ impl World {
                 // tick against real collision data instead of falling through an
                 // unloaded chunk.
                 let block_chunk_loaded = tokio::select! {
-                    () = player.client.await_close_interrupt() => {
-                        debug!("Canceling entity chunk processing while waiting for block chunk");
-                        false
-                    },
+                    () = player.client.await_close_interrupt() => false,
                     () = level.get_or_fetch_chunk(position, |_| ()) => true,
                 };
 
@@ -3758,7 +3727,6 @@ impl World {
                     let mut seen_entity_uuids = FxHashSet::default();
                     for entity_nbt in &entity_nbts {
                         let Some(id) = entity_nbt.get_string("id") else {
-                            debug!("Entity has no ID");
                             continue;
                         };
                         let Some(entity_type) =
@@ -3846,8 +3814,6 @@ impl World {
                 }
             }
 
-            #[cfg(debug_assertions)]
-            debug!("Chunks queued after {}ms", inst.elapsed().as_millis());
         });
     }
 

@@ -467,11 +467,6 @@ impl NetherPortal {
         world: &Arc<World>,
         target_pos: BlockPos,
     ) -> Option<PortalSearchResult> {
-        tracing::debug!(
-            "Searching for portal in {:?} around {:?}",
-            world.dimension.minecraft_name,
-            target_pos
-        );
         let min_y = world.min_y;
         let max_y = min_y + world.dimension.height - 1;
         let worldborder = world.worldborder.lock().await;
@@ -550,11 +545,6 @@ impl NetherPortal {
         target_pos: BlockPos,
         axis: HorizontalAxis,
     ) -> Option<(BlockPos, HorizontalAxis, bool)> {
-        tracing::debug!(
-            "Finding safe location for portal in {:?} around {:?}",
-            world.dimension.minecraft_name,
-            target_pos
-        );
         let min_y = world.min_y;
         let max_y = min_y + world.dimension.height - 1;
         let worldborder = world.worldborder.lock().await;

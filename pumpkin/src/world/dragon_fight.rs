@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::info;
 use uuid::Uuid;
 
 use pumpkin_data::{Block, entity::EntityType, world::WorldEvent};
@@ -286,11 +286,9 @@ impl DragonFight {
         };
 
         if let Some(u) = uuid {
-            debug!("Re-acquired existing dragon {:?}.", u);
             self.dragon_uuid = Some(u);
             self.ticks_since_dragon_seen = 0;
         } else {
-            debug!("No dragon found – spawning one.");
             self.create_new_dragon(world).await;
         }
     }
@@ -376,7 +374,6 @@ impl DragonFight {
             .iter()
             .filter(|e| e.get_entity().entity_type == &EntityType::END_CRYSTAL)
             .count() as u32;
-        debug!("Found {} end crystals still alive.", self.crystals_alive);
     }
 
     // ── Crystal destruction ───────────────────────────────────────────────────
@@ -435,12 +432,10 @@ impl DragonFight {
             if let Some(e) = found {
                 ritual_uuids.push(e.get_entity().entity_uuid);
             } else {
-                debug!("Respawn attempt failed – missing crystal near {:?}.", check);
                 return;
             }
         }
 
-        debug!("Found all four ritual crystals – beginning respawn.");
         self.begin_respawn(world, ritual_uuids).await;
     }
 
@@ -481,7 +476,6 @@ impl DragonFight {
     }
 
     async fn abort_respawn(&mut self, world: &Arc<World>) {
-        debug!("Aborting dragon respawn sequence.");
         self.respawn_stage = None;
         self.respawn_time = 0;
         self.respawn_crystal_uuids.clear();
