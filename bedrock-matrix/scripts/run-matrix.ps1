@@ -39,7 +39,8 @@ foreach ($cell in $cells) {
         Runtime = $cell.Runtime
         ResultFile = $resultPath
     }
-    & (Join-Path $ScriptDir "run-cell.ps1") @cellArgs
+    $runCell = Join-Path $ScriptDir "run-cell.ps1"
+    & $runCell @cellArgs
 
     Write-Host "`nCell $($cell.Label) complete. Result file: $resultPath" -ForegroundColor Green
 }
