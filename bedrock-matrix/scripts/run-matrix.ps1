@@ -34,10 +34,12 @@ foreach ($cell in $cells) {
     Read-Host "Press ENTER to start this cell (make sure the previous server is stopped)"
 
     $resultPath = Join-Path $ResultDir $cell.Result
-    & (Join-Path $ScriptDir "run-cell.ps1") `
-        -Binary $cell.Binary `
-        -Runtime $cell.Runtime `
-        -ResultFile $resultPath
+    $cellArgs = @{
+        Binary = $cell.Binary
+        Runtime = $cell.Runtime
+        ResultFile = $resultPath
+    }
+    & (Join-Path $ScriptDir "run-cell.ps1") @cellArgs
 
     Write-Host "`nCell $($cell.Label) complete. Result file: $resultPath" -ForegroundColor Green
 }
