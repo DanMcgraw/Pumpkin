@@ -13,6 +13,25 @@ use super::format::{ChunkSectionBiomes, ChunkSectionBlockStates};
 /// 3d array indexed by y,z,x
 type AbstractCube<T, const DIM: usize> = [[[T; DIM]; DIM]; DIM];
 
+/// Bedrock block storage only accepts these palette widths:
+/// 1, 2, 3, 4, 5, 6, 8, and 16 bits per entry.
+///
+/// Using the minimal integer width directly produces unsupported 7-bit
+/// storage for palettes with 65-128 entries, which makes affected chunks
+/// unreadable by the client.
+const fn bedrock_bits_per_entry(palette_len: usize) -> u8 {
+    match palette_len {
+        0..=2 => 1,
+        3..=4 => 2,
+        5..=8 => 3,
+        9..=16 => 4,
+        17..=32 => 5,
+        33..=64 => 6,
+        65..=256 => 8,
+        _ => 16,
+    }
+}
+
 #[inline]
 #[must_use]
 pub fn has_random_ticking_fluid(id: BlockStateId) -> bool {
@@ -505,7 +524,7 @@ impl BiomePalette {
                 packed_data: Box::new([]),
             },
             Self::Heterogeneous(data) => {
-                let bits_per_entry = encompassing_bits(data.palette.len());
+                let bits_per_entry = bedrock_bits_per_entry(data.palette.len());
 
                 let key_to_index_map: HashMap<_, usize> = data
                     .palette
@@ -654,7 +673,7 @@ impl BlockPalette {
                 packed_data: Box::new([]),
             },
             Self::Heterogeneous(data) => {
-                let bits_per_entry = encompassing_bits(data.palette.len());
+                let bits_per_entry = bedrock_bits_per_entry(data.palette.len());
 
                 let key_to_index_map: HashMap<_, usize> = data
                     .palette
@@ -870,3 +889,30 @@ const BIOME_DISK_MIN_BITS: u8 = 0;
 const BIOME_NETWORK_MIN_MAP_BITS: u8 = 1;
 const BIOME_NETWORK_MAX_MAP_BITS: u8 = 3;
 pub(crate) const BIOME_NETWORK_MAX_BITS: u8 = 7;
+
+#[cfg(test)]
+mod tests {
+    use super::bedrock_bits_per_entry;
+
+    #[test]
+    fn bedrock_palette_widths_skip_unsupported_values() {
+        let cases = [
+            (2, 1),
+            (3, 2),
+            (5, 3),
+            (9, 4),
+            (17, 5),
+            (33, 6),
+            (64, 6),
+            (65, 8),
+            (128, 8),
+            (256, 8),
+            (257, 16),
+            (4096, 16),
+        ];
+
+        for (palette_len, expected_bits) in cases {
+            assert_eq!(bedrock_bits_per_entry(palette_len), expected_bits);
+        }
+    }
+}
