@@ -44,7 +44,11 @@ function Build-Project {
         Pop-Location
     }
 
-    $SourceExe = Join-Path $RepoPath "target\debug\pumpkin.exe"
+    # Respect per-project target-dir overrides (e.g. Pumpkin's .cargo/config.toml
+    # sets target-dir = "../PumpkinRunner/target").
+    $metadata = & cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $RepoPath "Cargo.toml") | ConvertFrom-Json
+    $TargetDir = [System.IO.Path]::GetFullPath($metadata.target_directory)
+    $SourceExe = Join-Path $TargetDir "debug\pumpkin.exe"
     if (-not (Test-Path $SourceExe)) {
         throw "Expected build output not found: $SourceExe"
     }
