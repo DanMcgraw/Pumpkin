@@ -63,25 +63,19 @@ pub struct InventoryAction {
 
 impl PacketRead for InventoryAction {
     fn read<R: Read>(buf: &mut R) -> Result<Self, Error> {
-        let source_type = VarULong::read(buf)?.0 as u32;
+        let source_type = VarUInt::read(buf)?.0;
 
-        let mut window_id = None;
-        let mut source_flags = None;
+        let window_id = bool::read(buf)?
+            .then(|| i8::read(buf).map(i32::from))
+            .transpose()?;
+        let source_flags = bool::read(buf)?
+            .then(|| VarUInt::read(buf).map(|flags| flags.0))
+            .transpose()?;
 
-        match InventoryActionSource::from(source_type) {
-            InventoryActionSource::Container | InventoryActionSource::Todo => {
-                window_id = Some(VarInt::read(buf)?.0);
-            }
-            InventoryActionSource::World => {
-                source_flags = Some(VarULong::read(buf)?.0 as u32);
-            }
-            _ => {}
-        }
+        let inventory_slot = VarUInt::read(buf)?.0;
 
-        let inventory_slot = VarULong::read(buf)?.0 as u32;
-
-        let old_item = NetworkItemDescriptor::read(buf)?;
-        let new_item = NetworkItemDescriptor::read(buf)?;
+        let old_item = NetworkItemDescriptor::read_cereal(buf)?;
+        let new_item = NetworkItemDescriptor::read_cereal(buf)?;
 
         Ok(Self {
             source_type,
@@ -102,7 +96,7 @@ pub struct MismatchTransactionData;
 
 #[derive(Debug)]
 pub struct UseItemTransactionData {
-    pub action_type: VarUInt,
+    pub action_type: VarInt,
     pub trigger_type: u8,
     pub block_position: BlockPos,
     pub block_face: i32,
@@ -118,12 +112,12 @@ pub struct UseItemTransactionData {
 impl PacketRead for UseItemTransactionData {
     fn read<R: Read>(buf: &mut R) -> Result<Self, Error> {
         Ok(Self {
-            action_type: VarUInt::read(buf)?,
+            action_type: VarInt::read(buf)?,
             trigger_type: u8::read(buf)?,
             block_position: BlockPos::read(buf)?,
             block_face: i32::from(u8::read(buf)?),
             hot_bar_slot: VarInt::read(buf)?,
-            item_in_hand: NetworkItemDescriptor::read(buf)?,
+            item_in_hand: NetworkItemDescriptor::read_cereal(buf)?,
             player_position: Vector3::read(buf)?,
             click_position: Vector3::read(buf)?,
             block_runtime_id: VarUInt::read(buf)?,
@@ -136,7 +130,7 @@ impl PacketRead for UseItemTransactionData {
 #[derive(Debug)]
 pub struct UseItemOnEntityTransactionData {
     pub target_entity_runtime_id: VarULong,
-    pub action_type: VarUInt,
+    pub action_type: VarInt,
     pub hot_bar_slot: VarInt,
     pub item_in_hand: NetworkItemDescriptor,
     pub player_position: Vector3<f32>,
@@ -147,9 +141,9 @@ impl PacketRead for UseItemOnEntityTransactionData {
     fn read<R: Read>(buf: &mut R) -> Result<Self, Error> {
         Ok(Self {
             target_entity_runtime_id: VarULong::read(buf)?,
-            action_type: VarUInt::read(buf)?,
+            action_type: VarInt::read(buf)?,
             hot_bar_slot: VarInt::read(buf)?,
-            item_in_hand: NetworkItemDescriptor::read(buf)?,
+            item_in_hand: NetworkItemDescriptor::read_cereal(buf)?,
             player_position: Vector3::read(buf)?,
             click_position: Vector3::read(buf)?,
         })
@@ -158,7 +152,7 @@ impl PacketRead for UseItemOnEntityTransactionData {
 
 #[derive(Debug)]
 pub struct ReleaseItemTransactionData {
-    pub action_type: VarUInt,
+    pub action_type: VarInt,
     pub hot_bar_slot: VarInt,
     pub item_in_hand: NetworkItemDescriptor,
     pub head_position: Vector3<f32>,
@@ -167,9 +161,9 @@ pub struct ReleaseItemTransactionData {
 impl PacketRead for ReleaseItemTransactionData {
     fn read<R: Read>(buf: &mut R) -> Result<Self, Error> {
         Ok(Self {
-            action_type: VarUInt::read(buf)?,
+            action_type: VarInt::read(buf)?,
             hot_bar_slot: VarInt::read(buf)?,
-            item_in_hand: NetworkItemDescriptor::read(buf)?,
+            item_in_hand: NetworkItemDescriptor::read_cereal(buf)?,
             head_position: Vector3::read(buf)?,
         })
     }
@@ -202,8 +196,6 @@ impl PacketRead for SInventoryTransaction {
         let _has_transaction_type = bool::read(buf)?;
         let transaction_type = VarUInt::read(buf)?;
 
-        let _has_tr_data = bool::read(buf)?;
-
         let has_value = bool::read(buf)?;
         let mut actions = Vec::new();
         if has_value {
@@ -235,5 +227,49 @@ impl PacketRead for SInventoryTransaction {
             transaction_type,
             transaction_data,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::serial::PacketRead;
+
+    use super::{SInventoryTransaction, TransactionData};
+
+    #[test]
+    fn reads_cereal_attack_transaction_without_losing_alignment() {
+        let mut bytes = vec![
+            0, // legacy request id
+            0, // no legacy slots
+            1, 3, // transaction type present: item use on actor
+            1, 0, // actions present, zero actions
+            1, // target runtime id
+            2, // zig-zag encoded attack action (1)
+            0, // hotbar slot
+            // Empty ItemV4: i16 id, u16 count, metadata, optional net id,
+            // block runtime id, extra-data length.
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for value in [1.0_f32, 2.0, 3.0, 0.25, 0.5, 0.75] {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        let packet = SInventoryTransaction::read(&mut Cursor::new(bytes)).unwrap();
+        assert!(packet.has_value);
+        assert!(packet.actions.is_empty());
+
+        let TransactionData::UseItemOnEntity(data) = packet.transaction_data else {
+            panic!("expected item-use-on-actor transaction");
+        };
+        assert_eq!(data.target_entity_runtime_id.0, 1);
+        assert_eq!(data.action_type.0, 1);
+        assert_eq!(data.player_position.x, 1.0);
+        assert_eq!(data.player_position.y, 2.0);
+        assert_eq!(data.player_position.z, 3.0);
+        assert_eq!(data.click_position.x, 0.25);
+        assert_eq!(data.click_position.y, 0.5);
+        assert_eq!(data.click_position.z, 0.75);
     }
 }

@@ -155,11 +155,31 @@ impl PacketRead for PlayerInventoryAction {
     }
 }
 
-#[derive(Debug, PacketRead)]
+#[derive(Debug)]
 pub struct PlayerBlockAction {
     pub action: VarInt,
-    pub block_pos: BlockPos,
-    pub face: VarInt,
+    pub block_pos: Option<BlockPos>,
+    pub face: Option<VarInt>,
+}
+
+impl PacketRead for PlayerBlockAction {
+    fn read<R: Read>(reader: &mut R) -> Result<Self, Error> {
+        let action = VarInt::read(reader)?;
+        // PlayerBlockActionData is a discriminated union. StopDestroyBlock and
+        // unknown/default actions contain no position or facing data.
+        let has_block_data = matches!(action.0, 0 | 1 | 18 | 26 | 27);
+        let (block_pos, face) = if has_block_data {
+            (Some(BlockPos::read(reader)?), Some(VarInt::read(reader)?))
+        } else {
+            (None, None)
+        };
+
+        Ok(Self {
+            action,
+            block_pos,
+            face,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,4 +276,42 @@ pub enum InputData {
     SneakReleasedRaw = 62,
     SneakPressedRaw = 63,
     SneakCurrentRaw = 64,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Read};
+
+    use crate::{codec::var_int::VarInt, serial::PacketRead};
+
+    use super::PlayerBlockAction;
+
+    #[test]
+    fn stop_destroy_block_has_no_position_or_face() {
+        // VarInt(2) followed by a byte from the next auth-input field.
+        let mut cursor = Cursor::new([4, 0x7f]);
+        let action = PlayerBlockAction::read(&mut cursor).unwrap();
+
+        assert_eq!(action.action.0, 2);
+        assert!(action.block_pos.is_none());
+        assert!(action.face.is_none());
+
+        let mut next = [0];
+        cursor.read_exact(&mut next).unwrap();
+        assert_eq!(next[0], 0x7f);
+    }
+
+    #[test]
+    fn predict_destroy_block_has_position_and_face() {
+        // Bedrock signed VarInts are zig-zag encoded: 26 => 52. BlockPos and
+        // face are signed VarInts too.
+        let mut cursor = Cursor::new([52, 2, 128, 1, 4, 2]);
+        let action = PlayerBlockAction::read(&mut cursor).unwrap();
+
+        assert_eq!(action.action.0, 26);
+        assert_eq!(action.block_pos.unwrap().0.x, 1);
+        assert_eq!(action.block_pos.unwrap().0.y, 64);
+        assert_eq!(action.block_pos.unwrap().0.z, 2);
+        assert_eq!(action.face, Some(VarInt(1)));
+    }
 }

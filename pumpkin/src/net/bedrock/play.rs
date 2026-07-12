@@ -383,6 +383,21 @@ impl BedrockClient {
             }
         }
 
+        if let Some(item_interaction) = packet.item_interaction {
+            self.handle_inventory_action(
+                player,
+                SInventoryTransaction {
+                    legacy_request_id: item_interaction.legacy_request_id,
+                    legacy_set_item_slots: item_interaction.legacy_slots,
+                    has_value: !item_interaction.actions.is_empty(),
+                    actions: item_interaction.actions,
+                    transaction_type: VarUInt(2),
+                    transaction_data: TransactionData::UseItem(item_interaction.transaction),
+                },
+            )
+            .await;
+        }
+
         if let Some(block_actions) = packet.block_actions {
             for action in block_actions {
                 self.handle_player_block_action(player, server, action)
@@ -398,16 +413,28 @@ impl BedrockClient {
         packet: pumpkin_protocol::bedrock::server::player_auth_input::PlayerBlockAction,
     ) {
         use pumpkin_protocol::bedrock::server::player_action::Action as PlayerAction;
-        let action = PlayerAction::try_from(packet.action.0).unwrap();
+        let Ok(action) = PlayerAction::try_from(packet.action.0) else {
+            tracing::warn!("Unknown Bedrock player block action {}", packet.action.0);
+            return;
+        };
+        let target = *player.mining_target.lock().await;
+        let block_pos = packet
+            .block_pos
+            .or_else(|| target.map(|target| target.position))
+            .unwrap_or(BlockPos::ZERO);
+        let face = packet
+            .face
+            .or_else(|| target.and_then(|target| target.face.map(|face| VarInt(face as i32))))
+            .unwrap_or(VarInt(-1));
         self.handle_player_action(
             player,
             server,
             SPlayerAction {
                 runtime_id: VarInt(0), // Unused
                 action,
-                block_pos: packet.block_pos,
+                block_pos,
                 result_pos: BlockPos::ZERO,
-                face: packet.face,
+                face,
             },
         )
         .await;
@@ -482,7 +509,7 @@ impl BedrockClient {
         player: &Arc<Player>,
         packet: SInventoryTransaction,
     ) {
-        tracing::info!("handle_inventory_action: packet={:?}", packet);
+        tracing::debug!("handle_inventory_action: packet={:?}", packet);
         let mut inventory_updated = false;
         let mut updates = Vec::new();
         let result = 0u8;
@@ -1016,6 +1043,10 @@ impl BedrockClient {
                             player.apply_tool_damage_for_block_break(broken_state).await;
                         }
                     } else {
+                        player.start_mining_time.store(
+                            player.tick_counter.load(Ordering::Relaxed),
+                            Ordering::Relaxed,
+                        );
                         player.mining.store(true, Ordering::Relaxed);
                         let mut target = player.mining_target.lock().await;
                         if starts_new_target

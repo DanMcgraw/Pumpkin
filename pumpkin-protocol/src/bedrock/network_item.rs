@@ -65,6 +65,36 @@ impl PacketRead for NetworkItemDescriptor {
 }
 
 impl NetworkItemDescriptor {
+    /// Reads the Cereal representation used by server-bound inventory
+    /// transactions since Bedrock protocol 985.
+    ///
+    /// Unlike the legacy representation, the item id and stack size are fixed
+    /// width and every field is present even when the item id is zero.
+    pub fn read_cereal<R: Read>(buf: &mut R) -> Result<Self, Error> {
+        let id = i16::read(buf)?;
+        let stack_size = u16::read(buf)?;
+        let aux_value = VarUInt::read(buf)?;
+
+        let has_net_id = bool::read(buf)?;
+        if has_net_id {
+            let _variant = VarUInt::read(buf)?;
+            let _net_id = VarInt::read(buf)?;
+        }
+
+        let block_runtime_id = VarUInt::read(buf)?;
+        let user_data_len = VarUInt::read(buf)?.0;
+        let mut user_data = vec![0u8; user_data_len as usize];
+        buf.read_exact(&mut user_data)?;
+
+        Ok(Self {
+            id: VarInt(i32::from(id)),
+            stack_size,
+            aux_value,
+            block_runtime_id: VarInt(block_runtime_id.0 as i32),
+            ..Default::default()
+        })
+    }
+
     #[allow(clippy::option_option)]
     fn write_with_net_id<W: Write>(
         &self,
@@ -341,6 +371,28 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
                 },
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Read};
+
+    use super::NetworkItemDescriptor;
+
+    #[test]
+    fn cereal_empty_item_consumes_the_complete_descriptor() {
+        // Fixed i16 id, fixed u16 count, aux, net-id presence, block id,
+        // user-data length, followed by a byte belonging to the next field.
+        let mut cursor = Cursor::new([0, 0, 0, 0, 0, 0, 0, 0, 0x7f]);
+
+        let item = NetworkItemDescriptor::read_cereal(&mut cursor).unwrap();
+        assert_eq!(item.id.0, 0);
+        assert_eq!(item.stack_size, 0);
+
+        let mut next = [0];
+        cursor.read_exact(&mut next).unwrap();
+        assert_eq!(next[0], 0x7f);
     }
 }
 
