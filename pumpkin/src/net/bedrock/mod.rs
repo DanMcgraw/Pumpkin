@@ -6,7 +6,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -95,16 +95,9 @@ use pumpkin_protocol::bedrock::server::login::ClientData;
 use pumpkin_util::version::BedrockMinecraftVersion;
 use pumpkin_world::level::SyncChunk;
 
-const BEDROCK_MAX_UNACKED_FRAMES: usize = 64;
-const BEDROCK_CHUNK_PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
-const BEDROCK_ENTITY_PACING_DELAY: std::time::Duration = std::time::Duration::from_millis(5);
-
 pub struct OutgoingPacket {
     data: Bytes,
     packet_id: Option<u16>,
-    is_chunk: bool,
-    is_gameplay_update: bool,
-    chunk_position: Option<(i32, i32)>,
     completion: Option<oneshot::Sender<()>>,
 }
 
@@ -113,9 +106,6 @@ impl OutgoingPacket {
         Self {
             data,
             packet_id: None,
-            is_chunk: false,
-            is_gameplay_update: false,
-            chunk_position: None,
             completion: None,
         }
     }
@@ -124,31 +114,6 @@ impl OutgoingPacket {
         Self {
             data: payload,
             packet_id: Some(packet_id),
-            is_chunk: false,
-            is_gameplay_update: true,
-            chunk_position: None,
-            completion: None,
-        }
-    }
-
-    pub const fn chunk(data: Bytes, x: i32, z: i32) -> Self {
-        Self {
-            data,
-            packet_id: None,
-            is_chunk: true,
-            is_gameplay_update: false,
-            chunk_position: Some((x, z)),
-            completion: None,
-        }
-    }
-
-    pub const fn entity_spawn(data: Bytes) -> Self {
-        Self {
-            data,
-            packet_id: None,
-            is_chunk: false,
-            is_gameplay_update: true,
-            chunk_position: None,
             completion: None,
         }
     }
@@ -157,9 +122,6 @@ impl OutgoingPacket {
         Self {
             data,
             packet_id: None,
-            is_chunk: false,
-            is_gameplay_update: false,
-            chunk_position: None,
             completion: Some(completion),
         }
     }
@@ -196,7 +158,6 @@ pub struct BedrockClient {
     output_split_number: AtomicU16,
     output_sequenced_index: AtomicU32,
     output_ordered_index: AtomicU32,
-    queued_chunk_packets: AtomicUsize,
     /// The next form ID to use for custom forms.
     pub next_form_id: AtomicU32,
     pub inventory_opened: AtomicBool,
@@ -208,7 +169,6 @@ pub struct BedrockClient {
     //input_sequence_number: AtomicU32,
     received_sequences: Mutex<HashSet<u32>>,
     pending_acks: Mutex<Vec<u32>>,
-    ack_notify: tokio::sync::Notify,
     #[allow(clippy::type_complexity)]
     unacked_outgoing_frames: Mutex<HashMap<u32, (u8, Vec<u8>, std::time::Instant)>>,
     expected_order_index: Mutex<HashMap<u8, u32>>,
@@ -251,7 +211,6 @@ impl BedrockClient {
             output_split_number: AtomicU16::new(0),
             output_sequenced_index: AtomicU32::new(0),
             output_ordered_index: AtomicU32::new(0),
-            queued_chunk_packets: AtomicUsize::new(0),
             next_form_id: AtomicU32::new(0),
             inventory_opened: AtomicBool::new(false),
             compounds: Arc::new(Mutex::new(HashMap::new())),
@@ -259,7 +218,6 @@ impl BedrockClient {
             last_seen: Arc::new(AtomicCell::new(std::time::Instant::now())),
             received_sequences: Mutex::new(HashSet::new()),
             pending_acks: Mutex::new(Vec::new()),
-            ack_notify: tokio::sync::Notify::new(),
             unacked_outgoing_frames: Mutex::new(HashMap::new()),
             expected_order_index: Mutex::new(HashMap::new()),
             highest_sequence_index: Mutex::new(HashMap::new()),
@@ -351,25 +309,6 @@ impl BedrockClient {
                 } else {
                     packet.data
                 };
-                let is_chunk = packet.is_chunk;
-                let is_gameplay_update = packet.is_gameplay_update;
-
-                if (is_chunk || is_gameplay_update) && !client.wait_for_reliable_window().await {
-                    break;
-                }
-
-                let chunk_sequence_start =
-                    is_chunk.then(|| client.output_sequence_number.load(Ordering::Relaxed));
-                if is_chunk {
-                    debug!(
-                        "Sending Bedrock LevelChunk: {} bytes, estimated {} fragments",
-                        packet_data.len(),
-                        packet_data.len().div_ceil(SPLIT_FRAME_MAX_CONTENT)
-                    );
-                    if let Some((x, z)) = packet.chunk_position {
-                        debug!("Bedrock LevelChunk coordinates: ({}, {})", x, z);
-                    }
-                }
 
                 // Encrypt the packet payload if encryption is enabled.
                 if packet_data.len() > 1 && packet_data[0] == 0xfe {
@@ -387,20 +326,6 @@ impl BedrockClient {
                 client
                     .send_framed_packet_data(packet_data.to_vec(), RakReliability::ReliableOrdered)
                     .await;
-
-                if let Some(sequence_start) = chunk_sequence_start {
-                    let sequence_end = client
-                        .output_sequence_number
-                        .load(Ordering::Relaxed)
-                        .saturating_sub(1);
-                    debug!(
-                        "Sent Bedrock LevelChunk in reliable sequences {}..={}",
-                        sequence_start, sequence_end
-                    );
-                    tokio::time::sleep(BEDROCK_CHUNK_PACING_DELAY).await;
-                } else if is_gameplay_update {
-                    tokio::time::sleep(BEDROCK_ENTITY_PACING_DELAY).await;
-                }
 
                 if let Some(completion) = packet.completion {
                     let _ = completion.send(());
@@ -468,29 +393,23 @@ impl BedrockClient {
         let mut serialize_tasks = Vec::with_capacity(valid_chunks.len());
         for chunk in valid_chunks {
             serialize_tasks.push(tokio::task::spawn_blocking(move || {
-                let position = (chunk.x, chunk.z);
                 let mut packet_payload = Vec::new();
                 let packet = CLevelChunk {
                     dimension: 0,
                     cache_enabled: false,
                     chunk: &chunk,
                 };
-                (
-                    position,
-                    packet
-                        .write_packet(&mut packet_payload)
-                        .map(|()| packet_payload),
-                )
+                packet
+                    .write_packet(&mut packet_payload)
+                    .map(|()| packet_payload)
             }));
         }
 
         let mut encoded_payloads = Vec::with_capacity(serialize_tasks.len());
         for task in serialize_tasks {
             match task.await {
-                Ok((position, Ok(payload))) => encoded_payloads.push((position, payload)),
-                Ok((position, Err(e))) => {
-                    error!("Failed to serialize Bedrock chunk {:?}: {:?}", position, e)
-                }
+                Ok(Ok(payload)) => encoded_payloads.push(payload),
+                Ok(Err(e)) => error!("Failed to serialize Bedrock chunk: {:?}", e),
                 Err(e) => error!("Join error in Bedrock chunk serialization: {:?}", e),
             }
         }
@@ -498,7 +417,7 @@ impl BedrockClient {
         let mut packets_to_enqueue = Vec::with_capacity(encoded_payloads.len());
         {
             let encoder = self.network_writer.read().await;
-            for (position, payload) in encoded_payloads {
+            for payload in encoded_payloads {
                 let mut packet_buf = Vec::new();
                 match encoder.write_game_packet(
                     CLevelChunk::PACKET_ID as u16,
@@ -507,14 +426,13 @@ impl BedrockClient {
                     &payload,
                     &mut packet_buf,
                 ) {
-                    Ok(()) => packets_to_enqueue.push((position, packet_buf)),
+                    Ok(()) => packets_to_enqueue.push(packet_buf),
                     Err(err) => error!("Failed to write game packet wrapper: {err}"),
                 }
             }
         }
-        for ((x, z), packet_buf) in packets_to_enqueue {
-            self.enqueue_chunk_packet_data(packet_buf.into(), x, z)
-                .await;
+        for packet_buf in packets_to_enqueue {
+            self.enqueue_packet_data(packet_buf.into()).await;
         }
     }
 
@@ -540,30 +458,7 @@ impl BedrockClient {
     }
 
     pub async fn enqueue_entity_packet<P: BClientPacket>(&self, packet: &P) {
-        let mut packet_buf = Vec::new();
-        match self.write_game_packet(packet, &mut packet_buf).await {
-            Ok(()) => {
-                let payload = Bytes::from(packet_buf);
-                let player = self.player.lock().await.clone();
-                let cancelled = if let Some(player) = player.as_ref() {
-                    player
-                        .fire_packet_sent_no_obj(P::PACKET_ID, payload.clone())
-                        .await
-                } else {
-                    false
-                };
-                if !cancelled
-                    && let Err(err) = self
-                        .outgoing_packet_queue_send
-                        .send(OutgoingPacket::entity_spawn(payload))
-                        .await
-                    && !self.is_closed()
-                {
-                    error!("Failed to queue Bedrock entity spawn packet: {err}");
-                }
-            }
-            Err(err) => error!("Failed to write Bedrock entity spawn packet: {err}"),
-        }
+        self.enqueue_packet(packet).await;
     }
 
     pub async fn enqueue_packet_internal<P: BClientPacket>(&self, packet: &P) {
@@ -604,24 +499,6 @@ impl BedrockClient {
                 error!("Failed to add packet to the outgoing packet queue for client: {err}");
             }
         }
-    }
-
-    async fn enqueue_chunk_packet_data(&self, packet_data: Bytes, x: i32, z: i32) {
-        if let Err(err) = self
-            .outgoing_packet_queue_send
-            .send(OutgoingPacket::chunk(packet_data, x, z))
-            .await
-        {
-            if !self.is_closed() {
-                error!("Failed to add chunk packet to the outgoing packet queue: {err}");
-            }
-        } else {
-            self.queued_chunk_packets.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn queued_chunk_packets(&self) -> usize {
-        self.queued_chunk_packets.load(Ordering::Relaxed)
     }
 
     pub fn try_enqueue_packet_data(&self, packet_data: Bytes) {
@@ -913,59 +790,7 @@ impl BedrockClient {
         Ok(())
     }
 
-    async fn wait_for_reliable_window(&self) -> bool {
-        let mut reported_pause = false;
-        loop {
-            if self.is_closed() {
-                return false;
-            }
-            if self.last_seen.load().elapsed() > std::time::Duration::from_secs(10) {
-                debug!("Bedrock client {} timed out", self.address);
-                self.close().await;
-                return false;
-            }
 
-            let unacked_count = self.unacked_outgoing_frames.lock().await.len();
-            if unacked_count < BEDROCK_MAX_UNACKED_FRAMES {
-                if reported_pause {
-                    debug!(
-                        "Bedrock reliable window resumed with {} unacknowledged frames",
-                        unacked_count
-                    );
-                }
-                return true;
-            }
-
-            if !reported_pause {
-                debug!(
-                    "Bedrock reliable window paused at {} unacknowledged frames",
-                    unacked_count
-                );
-                reported_pause = true;
-            }
-
-            tokio::select! {
-                () = self.await_close_interrupt() => return false,
-                () = self.ack_notify.notified() => {},
-                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    let ack = {
-                        let mut pending = self.pending_acks.lock().await;
-                        if pending.is_empty() {
-                            None
-                        } else {
-                            let ack = Acknowledge::new(pending.clone());
-                            pending.clear();
-                            Some(ack)
-                        }
-                    };
-                    if let Some(ack) = ack {
-                        let _ = self.send_acknowledgement(&ack, RAKNET_ACK).await;
-                    }
-                    self.resend_expired_frames(16).await;
-                }
-            }
-        }
-    }
 
     async fn resend_expired_frames(&self, limit: usize) {
         let now = std::time::Instant::now();
@@ -1002,8 +827,6 @@ impl BedrockClient {
         for seq in &ack.sequences {
             unacked.remove(seq);
         }
-        drop(unacked);
-        self.ack_notify.notify_waiters();
     }
 
     async fn handle_nack(&self, nack: &Acknowledge) {

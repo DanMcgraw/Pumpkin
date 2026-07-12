@@ -1984,21 +1984,19 @@ impl Player {
                 *xp -= 1;
             }
         }
-        let chunk_of_chunks = {
+        let (chunk_of_chunks, total_sent_chunks) = {
             let mut chunk_manager = self.chunk_manager.lock().await;
             chunk_manager.pull_new_chunks();
-            if let ClientPlatform::Java(_) = self.client.as_ref() {
+            let chunks = if let ClientPlatform::Java(_) = self.client.as_ref() {
                 // Java clients can only send a limited amount of chunks per tick.
                 // If we have sent too many chunks without receiving an ack, we stop sending chunks.
                 chunk_manager
                     .can_send_chunk()
                     .then(|| chunk_manager.next_chunk())
             } else {
-                // Bedrock LevelChunks fragment into many UDP datagrams. Admit
-                // one chunk per tick; the Bedrock writer applies the ACK-based
-                // reliable-frame window before putting it on the wire.
-                Some(chunk_manager.next_chunks(1))
-            }
+                Some(chunk_manager.next_chunk())
+            };
+            (chunks, chunk_manager.sent_chunks_count())
         };
         if let Some(chunk_of_chunks) = chunk_of_chunks {
             match self.client.as_ref() {
@@ -2013,7 +2011,7 @@ impl Player {
                     // the fifth initial LevelChunk in the outgoing queue.
                     bedrock_client.send_chunks(&chunk_of_chunks).await;
                     if !self.bedrock_spawned.load(Ordering::Relaxed)
-                        && bedrock_client.queued_chunk_packets() >= 5
+                        && total_sent_chunks > 4
                     {
                         bedrock_client
                             .enqueue_packet(&CPlayStatus::PlayerSpawn)
