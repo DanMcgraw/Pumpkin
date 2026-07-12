@@ -35,7 +35,7 @@ foreach ($cell in $cells) {
 
     $resultPath = Join-Path $ResultDir $cell.Result
     $runCell = Join-Path $ScriptDir "run-cell.ps1"
-    & $runCell -Binary $cell.Binary -Runtime $cell.Runtime -ResultFile $resultPath
+    powershell -NoProfile -ExecutionPolicy Bypass -File $runCell -Binary $cell.Binary -Runtime $cell.Runtime -ResultFile $resultPath
 
     Write-Host "`nCell $($cell.Label) complete. Result file: $resultPath" -ForegroundColor Green
 }
