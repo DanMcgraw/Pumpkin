@@ -10,7 +10,8 @@
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$ReposRoot = Split-Path -Parent $Root
+$ProjectRoot = Split-Path -Parent $Root
+$ReposRoot = Split-Path -Parent $ProjectRoot
 
 $RuntimeDir = Join-Path $Root "runtimes"
 $OriginalRepo = Join-Path $ReposRoot "Original-Pumpkin"

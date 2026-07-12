@@ -11,7 +11,8 @@
 
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$ReposRoot = Split-Path -Parent $Root
+$ProjectRoot = Split-Path -Parent $Root
+$ReposRoot = Split-Path -Parent $ProjectRoot
 
 $BinaryDir = Join-Path $Root "binaries"
 $OriginalRepo = Join-Path $ReposRoot "Original-Pumpkin"
