@@ -1211,6 +1211,56 @@ impl Player {
         if config.swing {}
     }
 
+    /// Handles an attack received from a Bedrock client without letting repeated
+    /// early transactions continually reset the Java combat cooldown.
+    pub async fn attack_from_bedrock(&self, victim: Arc<dyn EntityBase>) {
+        let world = self.world();
+        let server = world.server.upgrade().expect("Server is gone");
+        let mut attack_speed = 4.0;
+
+        {
+            let item_stack = self.inventory().held_item();
+            let stack = item_stack.lock().await;
+            if let Some(modifiers) = stack.get_data_component::<AttributeModifiersImpl>() {
+                for item_mod in modifiers.attribute_modifiers.iter() {
+                    if item_mod.operation == Operation::AddValue
+                        && item_mod.id == "minecraft:base_attack_speed"
+                    {
+                        attack_speed += item_mod.amount;
+                    }
+                }
+            }
+        }
+
+        let elapsed_ticks = self.last_attacked_ticks.load(Ordering::Acquire);
+        let required_ticks =
+            Self::bedrock_attack_cooldown_ticks(f64::from(server.basic_config.tps), attack_speed);
+
+        if elapsed_ticks < required_ticks {
+            debug!(
+                player = %self.gameprofile.name,
+                elapsed_ticks,
+                required_ticks,
+                attack_speed,
+                "Ignoring Bedrock attack before the server combat cooldown is ready"
+            );
+            return;
+        }
+
+        self.attack(victim).await;
+    }
+
+    fn bedrock_attack_cooldown_ticks(tps: f64, attack_speed: f64) -> u32 {
+        if !tps.is_finite() || !attack_speed.is_finite() || tps <= 0.0 || attack_speed <= 0.0 {
+            return u32::MAX;
+        }
+
+        // Java's cooldown calculation includes half a tick of progress. Bedrock can
+        // submit attacks faster than Java's target hurt-immunity window, so retain
+        // at least ten ticks between accepted attacks as well.
+        ((tps / attack_speed) - 0.5).ceil().max(10.0) as u32
+    }
+
     /// Returns the durability cost for using the held item as a weapon in combat.
     /// Derived from the `Weapon` data component: items without it (e.g. shears, tools
     /// not designed for combat) take no durability damage on attack.

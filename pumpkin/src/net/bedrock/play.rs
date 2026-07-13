@@ -801,7 +801,7 @@ impl BedrockClient {
                     1 => {
                         let world = player.world();
                         if let Some(target) = world.get_entity_by_id(target_runtime_id) {
-                            player.attack(target).await;
+                            player.attack_from_bedrock(target).await;
                         }
                     }
                     _ => {
@@ -890,7 +890,7 @@ impl BedrockClient {
                 let target_runtime_id = packet.target_runtime_id.0 as i32;
                 let world = player.world();
                 if let Some(target) = world.get_entity_by_id(target_runtime_id) {
-                    player.attack(target).await;
+                    player.attack_from_bedrock(target).await;
                 }
             }
             _ => {}
