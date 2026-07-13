@@ -666,6 +666,24 @@ impl BedrockClient {
                 let block = world.get_block(&data.block_position);
                 let server = world.server.upgrade().expect("Server is gone");
 
+                // Some Bedrock interaction modes also report a predicted block
+                // destruction through the item-use transaction path.
+                if data.action_type.0 == 2 {
+                    self.handle_player_action(
+                        player,
+                        &server,
+                        SPlayerAction {
+                            runtime_id: VarInt(0),
+                            action: PlayerAction::PredictDestroyBlock,
+                            block_pos: data.block_position,
+                            result_pos: BlockPos::ZERO,
+                            face: VarInt(data.block_face),
+                        },
+                    )
+                    .await;
+                    return;
+                }
+
                 if player.gamemode.load() == GameMode::Spectator {
                     // TODO: openMenu ?
                     return;
@@ -1064,7 +1082,9 @@ impl BedrockClient {
                             });
                         }
                         let progress = (speed * 10.0) as i32;
-                        world.set_block_breaking(entity, location, progress).await;
+                        world
+                            .set_block_breaking_with_rate(entity, location, progress, Some(speed))
+                            .await;
                         player
                             .current_block_destroy_stage
                             .store(progress, Ordering::Relaxed);

@@ -4639,13 +4639,27 @@ impl World {
     }
 
     pub async fn set_block_breaking(&self, from: &Entity, location: BlockPos, progress: i32) {
+        self.set_block_breaking_with_rate(from, location, progress, None)
+            .await;
+    }
+
+    pub async fn set_block_breaking_with_rate(
+        &self,
+        from: &Entity,
+        location: BlockPos,
+        progress: i32,
+        bedrock_break_rate: Option<f32>,
+    ) {
         let chunk_pos = location.chunk_position(); // pumpkin's BlockPos already has this method
         let je_packet = CSetBlockDestroyStage::new(from.entity_id.into(), location, progress as i8);
 
         let (event_id, data) = match progress {
             -1 => (LevelEvent::BlockStopBreak, 0),
-            0 => (LevelEvent::BlockStartBreak, 0),
-            _ => (LevelEvent::BlockUpdateBreak, progress),
+            0 => (LevelEvent::BlockStartBreak, bedrock_break_data(bedrock_break_rate)),
+            _ => (
+                LevelEvent::BlockUpdateBreak,
+                bedrock_break_data(bedrock_break_rate),
+            ),
         };
 
         let be_packet = CLevelEvent {
@@ -4665,6 +4679,14 @@ impl World {
             &be_packet,
         )
         .await;
+
+        // Java predicts its own crack animation, but Bedrock expects the
+        // authoritative LevelEvent even for the player doing the mining.
+        if let Some(player) = self.get_player_by_uuid(from.entity_uuid)
+            && let ClientPlatform::Bedrock(client) = player.client.as_ref()
+        {
+            client.enqueue_packet(&be_packet).await;
+        }
     }
 
     /// Sets a block and returns the old block id
@@ -5922,6 +5944,12 @@ impl World {
             recipient.enqueue_packet(be_packet).await;
         }
     }
+}
+
+fn bedrock_break_data(break_rate: Option<f32>) -> i32 {
+    break_rate.map_or(0, |rate| {
+        (rate * 65_535.0).round().clamp(1.0, 65_535.0) as i32
+    })
 }
 
 impl BlockAccessor for World {

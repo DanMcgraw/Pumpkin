@@ -2052,6 +2052,7 @@ impl Player {
                         pos,
                         &world,
                         state,
+                        target.face,
                         self.start_mining_time.load(Ordering::Relaxed),
                     )
                     .await;
@@ -2099,18 +2100,70 @@ impl Player {
     async fn continue_mining(
         &self,
         location: BlockPos,
-        world: &World,
+        world: &Arc<World>,
         state: &BlockState,
+        face: Option<BlockDirection>,
         starting_time: i32,
     ) {
         let time = self.tick_counter.load(Ordering::Relaxed) - starting_time;
-        let speed = block::calc_block_breaking(self, state, Block::from_state_id(state.id)).await
-            * (time + 1) as f32;
+        let block = Block::from_state_id(state.id);
+        let break_rate = block::calc_block_breaking(self, state, block).await;
+        let speed = break_rate * (time + 1) as f32;
+
+        if speed >= 1.0 && matches!(self.client.as_ref(), ClientPlatform::Bedrock(_)) {
+            self.mining.store(false, Ordering::Relaxed);
+            *self.mining_target.lock().await = None;
+            world
+                .set_block_breaking(&self.living_entity.entity, location, -1)
+                .await;
+            self.current_block_destroy_stage
+                .store(-1, Ordering::Relaxed);
+
+            let block_drop = self.can_harvest(state, block).await;
+            let Some(cause) = world.get_player_by_id(self.entity_id()) else {
+                return;
+            };
+            let new_state = world
+                .break_block_with_face(
+                    &location,
+                    Some(cause.clone()),
+                    face,
+                    if block_drop {
+                        pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS
+                    } else {
+                        pumpkin_world::world::BlockFlags::SKIP_DROPS
+                            | pumpkin_world::world::BlockFlags::NOTIFY_NEIGHBORS
+                    },
+                )
+                .await;
+            if new_state.is_some()
+                && let Some(server) = world.server.upgrade()
+            {
+                server
+                    .block_registry
+                    .broken(world, block, &cause, &location, &server, state)
+                    .await;
+                self.apply_tool_damage_for_block_break(state).await;
+            }
+            return;
+        }
+
         let progress = (speed * 10.0) as i32;
         if progress != self.current_block_destroy_stage.load(Ordering::Relaxed) {
-            world
-                .set_block_breaking(&self.living_entity.entity, location, progress)
-                .await;
+            if matches!(self.client.as_ref(), ClientPlatform::Bedrock(_)) {
+                world
+                    .set_block_breaking_with_rate(
+                        &self.living_entity.entity,
+                        location,
+                        progress,
+                        Some(break_rate),
+                    )
+                    .await;
+            } else {
+                world
+                    .set_block_breaking(&self.living_entity.entity, location, progress)
+                    .await;
+            }
             self.current_block_destroy_stage
                 .store(progress, Ordering::Relaxed);
         }
@@ -5109,13 +5162,32 @@ impl InventoryPlayer for Player {
                     use pumpkin_protocol::codec::var_uint::VarUInt;
 
                     let window_id = packet.window_id.0 as u32;
-                    let slots: Vec<NetworkItemStackDescriptor> = packet
-                        .slot_data
-                        .iter()
-                        .map(|s| NetworkItemStackDescriptor::from(&*s.0))
-                        .collect();
-
                     if window_id == 0 {
+                        // Java's player screen is crafting/armour, main inventory,
+                        // then hotbar. Bedrock container 0 is hotbar then main
+                        // inventory and contains exactly 36 slots.
+                        let mut slots = Vec::with_capacity(36);
+                        if packet.slot_data.len() >= 45 {
+                            slots.extend(
+                                packet.slot_data[36..45]
+                                    .iter()
+                                    .map(|s| NetworkItemStackDescriptor::from(&*s.0)),
+                            );
+                            slots.extend(
+                                packet.slot_data[9..36]
+                                    .iter()
+                                    .map(|s| NetworkItemStackDescriptor::from(&*s.0)),
+                            );
+                        } else {
+                            slots.extend(
+                                packet
+                                    .slot_data
+                                    .iter()
+                                    .take(36)
+                                    .map(|s| NetworkItemStackDescriptor::from(&*s.0)),
+                            );
+                        }
+
                         let bedrock_packet = CInventoryContent {
                             container_id: VarUInt(0),
                             slots,
@@ -5148,17 +5220,20 @@ impl InventoryPlayer for Player {
                     use pumpkin_protocol::codec::var_uint::VarUInt;
 
                     let window_id = packet.window_id;
-                    tracing::info!(
+                    tracing::debug!(
                         "enqueue_slot_packet: window_id={}, slot={}",
                         window_id,
                         packet.slot
                     );
 
                     if window_id == 0 {
-                        tracing::info!(
-                            "enqueue_slot_packet: window_id is 0, sending CInventorySlot to Bedrock client"
-                        );
-                        let slot_idx = packet.slot as usize;
+                        let Some(slot_idx) = (match packet.slot {
+                            9..=35 => Some(packet.slot as usize),
+                            36..=44 => Some(packet.slot as usize - 36),
+                            _ => None,
+                        }) else {
+                            return;
+                        };
                         let item_desc = NetworkItemStackDescriptor::from(&*packet.slot_data.0);
 
                         let bedrock_packet = CInventorySlot {
