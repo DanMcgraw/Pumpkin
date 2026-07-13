@@ -289,7 +289,7 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
             let packet = CAddActor::new(
                 VarLong(runtime_id as i64),
                 VarULong(runtime_id),
-                self.get_entity().entity_type.resource_name.to_string(),
+                format!("minecraft:{}", self.get_entity().entity_type.resource_name),
                 entity.pos.load().to_f32_lossy(),
                 entity.velocity.load().to_f32_lossy(),
                 entity.pitch.load(),

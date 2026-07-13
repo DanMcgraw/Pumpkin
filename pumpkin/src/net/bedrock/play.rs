@@ -207,7 +207,14 @@ impl BedrockClient {
         }
         let entity = player.get_entity();
 
-        let new_pos = packet.position.to_f64();
+        // Bedrock reports the local player's eye position in PlayerAuthInput,
+        // while Pumpkin stores entity positions at their feet (as Java does).
+        // Keeping the eye position here makes the player float for Java clients
+        // and applies the eye-height offset twice to interaction reach checks.
+        let new_pos = packet
+            .position
+            .add_raw(0.0, -entity.get_eye_height() as f32, 0.0)
+            .to_f64();
         let old_pos = player.position();
 
         let new_pitch = packet.pitch;
@@ -244,7 +251,7 @@ impl BedrockClient {
                 pumpkin_protocol::codec::var_ulong::VarULong(player.entity_id() as u64),
                 pumpkin_util::math::vector3::Vector3::new(
                     new_pos.x as f32,
-                    new_pos.y as f32,
+                    new_pos.y as f32 + entity.get_eye_height() as f32,
                     new_pos.z as f32,
                 ),
                 new_pitch,

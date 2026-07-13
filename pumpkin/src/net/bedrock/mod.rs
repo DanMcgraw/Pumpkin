@@ -720,14 +720,15 @@ impl BedrockClient {
     }
 
     pub async fn close(&self) {
-        if self.is_closed() {
-            return;
-        }
+        let was_open = !self.is_closed();
         self.close_token.cancel();
 
-        self.send_framed_packet(&CDisconnect, RakReliability::Unreliable)
-            .await;
+        if was_open {
+            self.send_framed_packet(&CDisconnect, RakReliability::Unreliable)
+                .await;
+        }
 
+        self.unacked_outgoing_frames.lock().await.clear();
         self.be_clients.lock().await.remove(&self.address);
     }
 
@@ -790,16 +791,18 @@ impl BedrockClient {
         Ok(())
     }
 
-
-
     async fn resend_expired_frames(&self, limit: usize) {
+        if self.is_closed() || self.last_seen.load().elapsed() > std::time::Duration::from_secs(2) {
+            return;
+        }
+
         let now = std::time::Instant::now();
         let mut resend = Vec::new();
         {
             let mut unacked = self.unacked_outgoing_frames.lock().await;
-            for (seq, (id, data, timestamp)) in unacked.iter_mut() {
+            for (seq, (_id, data, timestamp)) in unacked.iter_mut() {
                 if now.duration_since(*timestamp) > std::time::Duration::from_secs(1) {
-                    resend.push((*seq, *id, data.clone()));
+                    resend.push((*seq, data.clone()));
                     *timestamp = now;
                     if resend.len() >= limit {
                         break;
@@ -809,9 +812,9 @@ impl BedrockClient {
         }
 
         if !resend.is_empty() {
+            debug!("Resending {} expired reliable frame sets", resend.len());
             let encoder = self.network_writer.read().await;
-            for (seq, id, data) in resend {
-                debug!("Resending reliable sequence {} (ID: {})", seq, id);
+            for (seq, data) in resend {
                 if let Err(err) = encoder
                     .write_packet(&data, self.address, &self.socket)
                     .await
