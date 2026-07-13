@@ -3285,9 +3285,46 @@ impl World {
 
         let entity = &player.get_entity();
 
-        self.broadcast_packet_except(
+        let velocity = entity.velocity.load();
+        let bedrock_add_player = CAddPlayer {
+            uuid: player.gameprofile.id,
+            username: player.gameprofile.name.clone(),
+            entity_runtime_id: VarULong(entity.entity_id as u64),
+            platform_chat_id: String::new(),
+            position: position.to_f32_lossy(),
+            velocity: velocity.to_f32_lossy(),
+            pitch,
+            yaw,
+            head_yaw: yaw,
+            held_item: NetworkItemDescriptor::default(),
+            game_mode: VarInt(match player.gamemode.load() {
+                GameMode::Survival => 0,
+                GameMode::Creative => 1,
+                GameMode::Adventure => 2,
+                GameMode::Spectator => 6,
+            }),
+            metadata: entity.bedrock_metadata(),
+            properties: EntityProperties::default(),
+            ability_data: pumpkin_protocol::bedrock::client::add_player::AbilityData {
+                entity_unique_id: entity.entity_id as i64,
+                player_permissions: 0,
+                command_permissions: 0,
+                layers: vec![pumpkin_protocol::bedrock::client::AbilityLayer {
+                    serialized_layer: 0,
+                    abilities_set: 0,
+                    ability_value: 0,
+                    fly_speed: 0.05,
+                    vertical_fly_speed: 0.05,
+                    walk_speed: 0.1,
+                }],
+            },
+            links: Vec::new(),
+            device_id: String::new(),
+            build_platform: 0,
+        };
+
+        self.broadcast_packet_except_editioned_sync(
             &[player.gameprofile.id],
-            // TODO: add velo
             &CSpawnEntity::new(
                 entity.entity_id.into(),
                 player.gameprofile.id,
@@ -3297,8 +3334,9 @@ impl World {
                 yaw,
                 yaw,
                 0.into(),
-                Vector3::new(0.0, 0.0, 0.0),
+                velocity,
             ),
+            &bedrock_add_player,
         );
 
         player.send_client_information();
@@ -3596,12 +3634,17 @@ impl World {
         player.request_teleport(position, yaw, pitch).await;
 
         // Ensure at least the center chunk is sent synchronously after teleport.
-        if let crate::net::ClientPlatform::Java(java_client) = player.client.as_ref() {
-            java_client.send_packet_now(&CChunkBatchStart).await;
-            java_client.send_packet_now(&CChunkData(&chunk)).await;
-            java_client
-                .send_packet_now(&CChunkBatchEnd::new(1u16))
-                .await;
+        match player.client.as_ref() {
+            crate::net::ClientPlatform::Java(java_client) => {
+                java_client.send_packet_now(&CChunkBatchStart).await;
+                java_client.send_packet_now(&CChunkData(&chunk)).await;
+                java_client
+                    .send_packet_now(&CChunkBatchEnd::new(1u16))
+                    .await;
+            }
+            crate::net::ClientPlatform::Bedrock(_) => {
+                player.set_client_loaded(true);
+            }
         }
     }
 

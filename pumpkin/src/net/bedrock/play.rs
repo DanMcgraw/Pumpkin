@@ -30,6 +30,7 @@ use pumpkin_protocol::{
             player_action::{Action as PlayerAction, SPlayerAction},
             player_auth_input::{InputData, SPlayerAuthInput},
             request_chunk_radius::SRequestChunkRadius,
+            respawn::SRespawn,
             set_local_player_as_initialized::SSetLocalPlayerAsInitialized,
             text::SText,
         },
@@ -987,6 +988,12 @@ impl BedrockClient {
         server: &Server,
         packet: SPlayerAction,
     ) {
+        if matches!(packet.action, PlayerAction::Respawn) {
+            if player.living_entity.dead.load(Ordering::Relaxed) {
+                player.respawn().await;
+            }
+            return;
+        }
         if !player.has_client_loaded() {
             return;
         }
@@ -1141,6 +1148,20 @@ impl BedrockClient {
             // TODO
             _ => {}
         }
+    }
+
+    pub async fn handle_respawn(&self, player: &Arc<Player>, packet: SRespawn) {
+        if packet.state
+            != pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
+        {
+            return;
+        }
+        self.enqueue_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
+            player.position().to_f32_lossy(),
+            pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ReadyToSpawn,
+            VarULong(player.entity_id() as u64),
+        ))
+        .await;
     }
 
     pub async fn handle_chat_command(

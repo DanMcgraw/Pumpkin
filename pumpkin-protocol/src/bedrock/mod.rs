@@ -5,6 +5,7 @@ pub mod frame_set;
 pub mod network_item;
 pub mod packet_decoder;
 pub mod packet_encoder;
+pub mod respawn;
 pub mod server;
 
 pub const RAKNET_PROTOCOL_VERSION: u8 = 11;

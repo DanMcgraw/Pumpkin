@@ -22,6 +22,8 @@ use pumpkin_protocol::bedrock::client::AbilityLayer;
 use pumpkin_protocol::bedrock::client::play_status::CPlayStatus;
 use pumpkin_protocol::bedrock::client::set_time::CSetTime;
 use pumpkin_protocol::bedrock::client::update_abilities::{Ability, CUpdateAbilities};
+use pumpkin_protocol::bedrock::client::{CDeathInfo, CRespawn as CBedrockRespawn};
+use pumpkin_protocol::bedrock::respawn::PlayerRespawnState;
 use pumpkin_protocol::bedrock::server::text::SText;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_util::translation::Locale;
@@ -64,6 +66,7 @@ use pumpkin_protocol::SoundEvent;
 use pumpkin_protocol::bedrock::client::container_open::CContainerOpen;
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::codec::var_long::VarLong;
+use pumpkin_protocol::codec::var_ulong::VarULong;
 use pumpkin_protocol::java::client::play::{
     Animation, CActionBar, CAwardStats, CChangeDifficulty, CCloseContainer, CCombatDeath,
     CCustomPayload, CDisguisedChatMessage, CEntityAnimation, CEntityPositionSync, CGameEvent,
@@ -3043,9 +3046,43 @@ impl Player {
         // Reset air supply & drowning ticks on death
         self.breath_manager.reset(self);
 
-        self.client
-            .send_packet_now(&CCombatDeath::new(self.entity_id().into(), &death_msg))
-            .await;
+        match self.client.as_ref() {
+            ClientPlatform::Java(client) => {
+                client
+                    .send_packet_now(&CCombatDeath::new(self.entity_id().into(), &death_msg))
+                    .await;
+            }
+            ClientPlatform::Bedrock(client) => {
+                let (cause, messages) = match &*death_msg.0.content {
+                    pumpkin_util::text::TextContent::Translate {
+                        translate,
+                        bedrock_translate,
+                        with,
+                    } => (
+                        bedrock_translate
+                            .as_deref()
+                            .unwrap_or(translate.as_ref())
+                            .to_string(),
+                        with.iter()
+                            .map(pumpkin_util::text::TextComponentBase::to_bedrock_string)
+                            .collect(),
+                    ),
+                    _ => (
+                        "death.attack.generic".to_string(),
+                        vec![death_msg.0.to_bedrock_string()],
+                    ),
+                };
+
+                client
+                    .enqueue_packet(&CBedrockRespawn::new(
+                        self.position().to_f32_lossy(),
+                        PlayerRespawnState::SearchingForSpawn,
+                        VarULong(self.entity_id() as u64),
+                    ))
+                    .await;
+                client.enqueue_packet(&CDeathInfo { cause, messages }).await;
+            }
+        }
     }
 
     pub async fn set_gamemode(self: &Arc<Self>, gamemode: GameMode) -> bool {
