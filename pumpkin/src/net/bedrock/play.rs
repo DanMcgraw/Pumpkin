@@ -542,8 +542,7 @@ impl BedrockClient {
                                     dynamic_id: None,
                                 },
                                 slot_id,
-                                0,
-                                VarInt(0),
+                                ItemStack::EMPTY,
                             );
                             inventory_updated = true;
                         }
@@ -1361,15 +1360,13 @@ impl BedrockClient {
                                 &mut updates,
                                 source.container_name.clone(),
                                 source.slot_id,
-                                source_stack.item_count,
-                                source.stack_id,
+                                &source_stack,
                             );
                             record_update(
                                 &mut updates,
                                 destination.container_name.clone(),
                                 destination.slot_id,
-                                dest_stack.item_count,
-                                destination.stack_id,
+                                &dest_stack,
                             );
                         }
                     }
@@ -1388,15 +1385,13 @@ impl BedrockClient {
                             &mut updates,
                             slot1.container_name.clone(),
                             slot1.slot_id,
-                            stack2.item_count,
-                            slot2.stack_id,
+                            &stack2,
                         );
                         record_update(
                             &mut updates,
                             slot2.container_name.clone(),
                             slot2.slot_id,
-                            stack1.item_count,
-                            slot1.stack_id,
+                            &stack1,
                         );
                     }
                     ItemStackRequestAction::Drop {
@@ -1434,8 +1429,7 @@ impl BedrockClient {
                                 &mut updates,
                                 source.container_name.clone(),
                                 source.slot_id,
-                                source_stack.item_count,
-                                source.stack_id,
+                                &source_stack,
                             );
                         }
                     }
@@ -1468,8 +1462,7 @@ impl BedrockClient {
                                 &mut updates,
                                 source.container_name.clone(),
                                 source.slot_id,
-                                source_stack.item_count,
-                                source.stack_id,
+                                &source_stack,
                             );
                         }
                     }
@@ -1534,8 +1527,7 @@ impl BedrockClient {
                                         dynamic_id: None,
                                     },
                                     i as u8,
-                                    grid_stack.item_count,
-                                    VarInt(0),
+                                    &grid_stack,
                                 );
                             }
                         }
@@ -2075,23 +2067,81 @@ fn record_update(
     updates: &mut Vec<SlotUpdate>,
     container_name: FullContainerName,
     slot_id: u8,
-    count: u8,
-    stack_id: VarInt,
+    stack: &ItemStack,
 ) {
-    let final_stack_id = if count == 0 { VarInt(0) } else { stack_id };
+    let count = stack.item_count;
+    // Stack-response IDs describe the authoritative post-action stack. The
+    // requested destination ID is zero when moving into an empty slot (notably
+    // the cursor), so echoing it makes Bedrock treat a non-empty result as
+    // empty. ItemStack already assigns a fresh UID when a stack is split.
+    let stack_id = if stack.is_empty() {
+        VarInt(0)
+    } else {
+        VarInt(stack.uid.get())
+    };
     if let Some(existing) = updates
         .iter_mut()
         .find(|u| u.container_name == container_name && u.slot_id == slot_id)
     {
         existing.count = count;
-        existing.stack_id = final_stack_id;
+        existing.stack_id = stack_id;
     } else {
         updates.push(SlotUpdate {
             container_name,
             slot_id,
             count,
-            stack_id: final_stack_id,
+            stack_id,
         });
+    }
+}
+
+#[cfg(test)]
+mod inventory_stack_response_tests {
+    use pumpkin_data::{item::Item, item_stack::ItemStack};
+    use pumpkin_protocol::bedrock::network_item::{ContainerName, FullContainerName};
+
+    use super::record_update;
+
+    #[test]
+    fn split_stack_response_uses_destination_uid() {
+        let source = ItemStack::new(14, &Item::STONE);
+        let destination = source.copy_with_count(7);
+        let mut updates = Vec::new();
+
+        record_update(
+            &mut updates,
+            FullContainerName {
+                container_name: ContainerName::Cursor,
+                dynamic_id: None,
+            },
+            0,
+            &destination,
+        );
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].count, 7);
+        assert_eq!(updates[0].stack_id.0, destination.uid.get());
+        assert_ne!(updates[0].stack_id.0, 0);
+        assert_ne!(updates[0].stack_id.0, source.uid.get());
+    }
+
+    #[test]
+    fn empty_stack_response_uses_zero_uid() {
+        let mut updates = Vec::new();
+
+        record_update(
+            &mut updates,
+            FullContainerName {
+                container_name: ContainerName::HotBar,
+                dynamic_id: None,
+            },
+            0,
+            ItemStack::EMPTY,
+        );
+
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].count, 0);
+        assert_eq!(updates[0].stack_id.0, 0);
     }
 }
 
