@@ -65,9 +65,11 @@ impl PacketRead for InventoryAction {
     fn read<R: Read>(buf: &mut R) -> Result<Self, Error> {
         let source_type = VarUInt::read(buf)?.0;
 
+        let _container_presence = bool::read(buf)?;
         let window_id = bool::read(buf)?
             .then(|| i8::read(buf).map(i32::from))
             .transpose()?;
+        let _flag_presence = bool::read(buf)?;
         let source_flags = bool::read(buf)?
             .then(|| VarUInt::read(buf).map(|flags| flags.0))
             .transpose()?;
@@ -193,8 +195,11 @@ impl PacketRead for SInventoryTransaction {
             }
         }
 
-        let _has_transaction_type = bool::read(buf)?;
-        let transaction_type = VarUInt::read(buf)?;
+        let transaction_type = if bool::read(buf)? {
+            VarUInt::read(buf)?
+        } else {
+            VarUInt(0)
+        };
 
         let has_value = bool::read(buf)?;
         let mut actions = Vec::new();
@@ -232,7 +237,7 @@ impl PacketRead for SInventoryTransaction {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
 
     use crate::serial::PacketRead;
 
@@ -271,5 +276,35 @@ mod tests {
         assert_eq!(data.click_position.x, 0.25);
         assert_eq!(data.click_position.y, 0.5);
         assert_eq!(data.click_position.z, 0.75);
+    }
+
+    #[test]
+    fn reads_normal_action_with_nested_presence_markers() {
+        let mut bytes = vec![
+            0, // legacy request id
+            0, // no legacy slots
+            1, 0, // transaction type present: normal
+            1, 1, // actions present, one action
+            0, // container source
+            1, // container presence
+            1, 0, // window id option present: inventory
+            0, // flags presence
+            0, // flags option absent
+            0, // inventory slot
+        ];
+        bytes.extend_from_slice(&[0; 8]); // old empty ItemV4
+        bytes.extend_from_slice(&[0; 8]); // new empty ItemV4
+        bytes.push(0x7f);
+
+        let mut cursor = Cursor::new(bytes);
+        let packet = SInventoryTransaction::read(&mut cursor).unwrap();
+        assert!(packet.has_value);
+        assert_eq!(packet.actions.len(), 1);
+        assert_eq!(packet.actions[0].window_id, Some(0));
+        assert_eq!(packet.actions[0].source_flags, None);
+
+        let mut trailing = [0];
+        cursor.read_exact(&mut trailing).unwrap();
+        assert_eq!(trailing[0], 0x7f);
     }
 }
