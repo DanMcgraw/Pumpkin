@@ -357,7 +357,13 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
             JavaToBedrockItemMapping::from_java_item_id(stack.get_item().id).map_or(
                 Self::default(),
                 |mapping| {
-                    let extra_data = vec![0u8, 0u8];
+                    // ItemV4's opaque network-user-data buffer still contains
+                    // the legacy payload: NBT marker followed by fixed-width
+                    // can-place and can-destroy list lengths.
+                    let mut extra_data = vec![0u8; 10];
+                    if mapping.bedrock_item.id == BedrockItem::SHIELD.id {
+                        extra_data.extend_from_slice(&0i64.to_le_bytes());
+                    }
 
                     Self {
                         id: mapping.bedrock_item.id,
@@ -378,7 +384,9 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
 mod tests {
     use std::io::{Cursor, Read};
 
-    use super::NetworkItemDescriptor;
+    use pumpkin_data::{item::Item, item_stack::ItemStack};
+
+    use super::{NetworkItemDescriptor, NetworkItemStackDescriptor};
 
     #[test]
     fn cereal_empty_item_consumes_the_complete_descriptor() {
@@ -393,6 +401,14 @@ mod tests {
         let mut next = [0];
         cursor.read_exact(&mut next).unwrap();
         assert_eq!(next[0], 0x7f);
+    }
+
+    #[test]
+    fn item_v4_has_complete_empty_user_data() {
+        let stack = ItemStack::new(1, &Item::STONE);
+        let item = NetworkItemStackDescriptor::from(&stack);
+
+        assert_eq!(item.extra_data, vec![0; 10]);
     }
 }
 

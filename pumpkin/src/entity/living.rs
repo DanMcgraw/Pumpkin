@@ -206,20 +206,31 @@ impl LivingEntity {
     }
 
     /// Picks up and Item entity or XP Orb
-    pub fn pickup(&self, item: &Entity, stack_amount: u32) {
+    pub fn pickup(&self, item: &Entity, stack_amount: u32, take_entire_actor: bool) {
         let chunk_pos = self.entity.chunk_pos.load();
-        self.entity.world.load().broadcast_to_chunk_editioned_sync(
+        let world = self.entity.world.load();
+        world.broadcast_to_chunk(
             chunk_pos,
             &CTakeItemEntity::new(
                 item.entity_id.into(),
                 self.entity.entity_id.into(),
                 VarInt(stack_amount as i32),
             ),
-            &CTakeItemActor::new(
-                VarULong(item.entity_id as u64),
-                VarULong(self.entity.entity_id as u64),
-            ),
         );
+
+        // Bedrock's TakeItemActor packet has no amount field and removes the
+        // entire item actor. Do not send it for a partial stack pickup.
+        if take_entire_actor {
+            let packet = CTakeItemActor::new(
+                VarULong(item.entity_id as u64),
+                pumpkin_protocol::codec::var_uint::VarUInt(self.entity.entity_id as u32),
+            );
+            for player in world.players.load().iter() {
+                if let crate::net::ClientPlatform::Bedrock(client) = player.client.as_ref() {
+                    client.try_enqueue_packet(&packet);
+                }
+            }
+        }
     }
 
     /// Sends the Hand animation to all others, used when Eating for example

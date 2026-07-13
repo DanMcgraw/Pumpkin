@@ -586,7 +586,7 @@ impl EntityBase for ItemEntity {
 
                 player
                     .living_entity
-                    .pickup(&self.entity, amount_picked_up.into());
+                    .pickup(&self.entity, amount_picked_up.into(), is_empty);
 
                 player
                     .current_screen_handler
@@ -596,6 +596,7 @@ impl EntityBase for ItemEntity {
                     .await
                     .send_content_updates()
                     .await;
+                player.sync_bedrock_main_inventory().await;
 
                 if is_empty {
                     self.entity.remove().await;

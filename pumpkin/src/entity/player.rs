@@ -2765,6 +2765,39 @@ impl Player {
         health > 0.0 && health < max_health
     }
 
+    /// Sends the authoritative 36-slot player inventory to a Bedrock client.
+    /// Used after server-driven mutations such as item pickup, where there is
+    /// no client stack request whose response can confirm the new state.
+    pub async fn sync_bedrock_main_inventory(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        use pumpkin_protocol::bedrock::{
+            client::inventory_content::CInventoryContent,
+            network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
+        };
+        use pumpkin_protocol::codec::var_uint::VarUInt;
+
+        let slots = futures::future::join_all(
+            self.inventory
+                .main_inventory
+                .iter()
+                .map(async |slot| NetworkItemStackDescriptor::from(&*slot.lock().await)),
+        )
+        .await;
+        client
+            .enqueue_packet(&CInventoryContent {
+                container_id: VarUInt(0),
+                slots,
+                full_container_name: FullContainerName {
+                    container_name: ContainerName::Inventory,
+                    dynamic_id: None,
+                },
+                storage_item: NetworkItemStackDescriptor::default(),
+            })
+            .await;
+    }
+
     pub async fn add_exhaustion(&self, exhaustion: f32) {
         if self.abilities.lock().await.invulnerable {
             return;
@@ -5198,6 +5231,35 @@ impl InventoryPlayer for Player {
                             storage_item: NetworkItemStackDescriptor::default(),
                         };
                         bedrock.enqueue_packet(&bedrock_packet).await;
+
+                        if packet.slot_data.len() > 45 {
+                            let armor = CInventoryContent {
+                                container_id: VarUInt(120),
+                                slots: packet.slot_data[5..9]
+                                    .iter()
+                                    .map(|s| NetworkItemStackDescriptor::from(&*s.0))
+                                    .collect(),
+                                full_container_name: FullContainerName {
+                                    container_name: ContainerName::Armor,
+                                    dynamic_id: None,
+                                },
+                                storage_item: NetworkItemStackDescriptor::default(),
+                            };
+                            bedrock.enqueue_packet(&armor).await;
+
+                            let offhand = CInventoryContent {
+                                container_id: VarUInt(119),
+                                slots: vec![NetworkItemStackDescriptor::from(
+                                    &*packet.slot_data[45].0,
+                                )],
+                                full_container_name: FullContainerName {
+                                    container_name: ContainerName::Offhand,
+                                    dynamic_id: None,
+                                },
+                                storage_item: NetworkItemStackDescriptor::default(),
+                            };
+                            bedrock.enqueue_packet(&offhand).await;
+                        }
                     }
                 }
             }
@@ -5227,9 +5289,13 @@ impl InventoryPlayer for Player {
                     );
 
                     if window_id == 0 {
-                        let Some(slot_idx) = (match packet.slot {
-                            9..=35 => Some(packet.slot as usize),
-                            36..=44 => Some(packet.slot as usize - 36),
+                        let Some((container_id, slot_idx, container_name)) = (match packet.slot {
+                            9..=35 => Some((0, packet.slot as usize, ContainerName::Inventory)),
+                            36..=44 => {
+                                Some((0, packet.slot as usize - 36, ContainerName::Inventory))
+                            }
+                            5..=8 => Some((120, packet.slot as usize - 5, ContainerName::Armor)),
+                            45 => Some((119, 0, ContainerName::Offhand)),
                             _ => None,
                         }) else {
                             return;
@@ -5237,10 +5303,10 @@ impl InventoryPlayer for Player {
                         let item_desc = NetworkItemStackDescriptor::from(&*packet.slot_data.0);
 
                         let bedrock_packet = CInventorySlot {
-                            window_id: VarUInt(0),
+                            window_id: VarUInt(container_id),
                             inventory_slot: VarUInt(slot_idx as u32),
                             container_name: Some(FullContainerName {
-                                container_name: ContainerName::Inventory,
+                                container_name,
                                 dynamic_id: None,
                             }),
                             storage: None,
@@ -5360,18 +5426,27 @@ impl InventoryPlayer for Player {
                     };
                     use pumpkin_protocol::codec::var_uint::VarUInt;
 
-                    tracing::info!(
+                    tracing::debug!(
                         "enqueue_slot_set_packet: slot={}, sending CInventorySlot to Bedrock client",
                         packet.slot.0
                     );
 
+                    let Some((window_id, slot, container_name)) = (match packet.slot.0 {
+                        0..=35 => Some((0, packet.slot.0 as u32, ContainerName::Inventory)),
+                        36..=39 => Some((120, (39 - packet.slot.0) as u32, ContainerName::Armor)),
+                        40 => Some((119, 0, ContainerName::Offhand)),
+                        _ => None,
+                    }) else {
+                        return;
+                    };
+
                     let item_stack = &*packet.item.0;
                     let item_desc = NetworkItemStackDescriptor::from(item_stack);
                     let bedrock_packet = CInventorySlot {
-                        window_id: VarUInt(0),
-                        inventory_slot: VarUInt(packet.slot.0 as u32),
+                        window_id: VarUInt(window_id),
+                        inventory_slot: VarUInt(slot),
                         container_name: Some(FullContainerName {
-                            container_name: ContainerName::Inventory,
+                            container_name,
                             dynamic_id: None,
                         }),
                         storage: None,

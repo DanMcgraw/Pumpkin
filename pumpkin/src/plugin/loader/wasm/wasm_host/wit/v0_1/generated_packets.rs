@@ -2222,7 +2222,7 @@ pub fn serialize_bedrock_packet(packet: &BClientboundPacket) -> Option<Bytes> {
                 item_runtime_id: pumpkin_protocol::codec::var_ulong::VarULong(
                     data.item_runtime_id.try_into().unwrap(),
                 ),
-                actor_runtime_id: pumpkin_protocol::codec::var_ulong::VarULong(
+                actor_runtime_id: pumpkin_protocol::codec::var_uint::VarUInt(
                     data.actor_runtime_id.try_into().unwrap(),
                 ),
             };

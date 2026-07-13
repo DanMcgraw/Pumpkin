@@ -214,11 +214,6 @@ impl PlayerInventory {
             stack,
         ) {
             i16::from(self.get_selected_slot())
-        } else if Self::can_stack_add_more(
-            &*self.get_stack(Self::OFF_HAND_SLOT).await.lock().await,
-            stack,
-        ) {
-            Self::OFF_HAND_SLOT as i16
         } else {
             for i in 0..Self::MAIN_SIZE {
                 if Self::can_stack_add_more(&*self.main_inventory[i].lock().await, stack) {
