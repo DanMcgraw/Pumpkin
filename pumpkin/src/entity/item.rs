@@ -6,7 +6,7 @@ use pumpkin_data::data_component_impl::DamageResistantType;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::bedrock::client::CAddItemActor;
+use pumpkin_protocol::bedrock::client::{CAddItemActor, CSetActorMotion};
 use pumpkin_protocol::bedrock::network_item::ItemStackWrapper;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::codec::var_long::VarLong;
@@ -667,16 +667,29 @@ impl EntityBase for ItemEntity {
             let entity = &self.entity;
             let runtime_id = entity.entity_id as u64;
             let item_stack = self.item_stack.lock().await;
+            let position = entity.pos.load().to_f32_lossy();
+            let velocity = entity.velocity.load().to_f32_lossy();
             let packet = CAddItemActor {
                 entity_unique_id: VarLong(runtime_id as i64),
                 entity_runtime_id: VarULong(runtime_id),
                 item: ItemStackWrapper::from(&*item_stack),
-                position: entity.pos.load().to_f32_lossy(),
-                velocity: entity.velocity.load().to_f32_lossy(),
+                position,
+                velocity,
                 metadata: entity.bedrock_metadata(),
                 from_fishing: false,
             };
             client.enqueue_entity_packet(&packet).await;
+
+            // Bedrock does not consistently begin simulating an item from the
+            // velocity embedded in AddItemActor. Queue an explicit motion update
+            // after the spawn so it cannot arrive before the actor exists.
+            client
+                .enqueue_entity_packet(&CSetActorMotion::new(
+                    VarULong(runtime_id),
+                    velocity,
+                    VarULong(0),
+                ))
+                .await;
         })
     }
 }
