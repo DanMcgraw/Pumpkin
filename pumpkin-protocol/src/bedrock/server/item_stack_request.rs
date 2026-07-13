@@ -283,3 +283,45 @@ impl PacketRead for SItemStackRequest {
         Ok(Self { requests })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::{bedrock::network_item::ContainerName, serial::PacketRead};
+
+    use super::{ItemStackRequestAction, SItemStackRequest};
+
+    #[test]
+    fn reads_drop_request_from_inventory() {
+        let packet = SItemStackRequest::read(&mut Cursor::new([
+            1, // request count
+            2, // request id 1, zig-zag encoded
+            1, // action count
+            3, // Drop
+            1, // item count
+            29, // Inventory FullContainerName
+            0, // no dynamic container id
+            0, // hotbar slot 0
+            246, 1, // stack id 123, zig-zag encoded
+            0, // not random
+            0, // no filter strings
+            0, 0, 0, 0, // filter cause
+        ]))
+        .unwrap();
+
+        let ItemStackRequestAction::Drop {
+            count,
+            source,
+            randomly,
+        } = &packet.requests[0].actions[0]
+        else {
+            panic!("expected drop action");
+        };
+        assert_eq!(*count, 1);
+        assert_eq!(source.container_name.container_name, ContainerName::Inventory);
+        assert_eq!(source.slot_id, 0);
+        assert_eq!(source.stack_id.0, 123);
+        assert!(!randomly);
+    }
+}

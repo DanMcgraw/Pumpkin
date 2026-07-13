@@ -1142,8 +1142,12 @@ impl BedrockClient {
                 continue;
             }
 
+            let packet_id = packet.id;
+            let payload_len = packet.payload.len();
             if let Err(err) = self.handle_play_packet(player, server, packet).await {
-                error!("Failed to handle Bedrock play packet: {err}");
+                error!(
+                    "Failed to handle Bedrock play packet {packet_id} ({payload_len} bytes): {err}"
+                );
             }
         }
     }
