@@ -6,10 +6,7 @@ use pumpkin_data::data_component_impl::DamageResistantType;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::bedrock::client::{
-    CAddItemActor, CMoveActorDelta, MOVE_ACTOR_DELTA_FLAG_HAS_X, MOVE_ACTOR_DELTA_FLAG_HAS_Y,
-    MOVE_ACTOR_DELTA_FLAG_HAS_Z, MOVE_ACTOR_DELTA_FLAG_ON_GROUND,
-};
+use pumpkin_protocol::bedrock::client::CAddItemActor;
 use pumpkin_protocol::bedrock::network_item::ItemStackWrapper;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::codec::var_long::VarLong;
@@ -44,10 +41,12 @@ pub struct ItemEntity {
 }
 
 impl ItemEntity {
-    const BEDROCK_POSITION_SYNC_INTERVAL: u32 = 4;
-
-    fn should_sync_bedrock_position(age: u32, is_moving: bool) -> bool {
-        is_moving && age.is_multiple_of(Self::BEDROCK_POSITION_SYNC_INTERVAL)
+    const fn should_sync_motion(
+        velocity_dirty: bool,
+        was_on_ground: bool,
+        on_ground: bool,
+    ) -> bool {
+        velocity_dirty || (!was_on_ground && on_ground)
     }
 
     pub fn new(entity: Entity, item_stack: ItemStack) -> Self {
@@ -379,7 +378,6 @@ impl ItemEntity {
         entity.update_fluid_state(caller).await;
 
         let on_ground = entity.on_ground.load(Ordering::SeqCst);
-        let landed = !was_on_ground && on_ground;
         let velocity_dirty = entity.velocity_dirty.swap(false, Ordering::SeqCst)
             || entity.touching_water.load(Ordering::SeqCst)
             || entity.touching_lava.load(Ordering::SeqCst)
@@ -388,39 +386,9 @@ impl ItemEntity {
         // Both editions simulate dropped-item motion from the spawn velocity.
         // Shared corrections are reserved for meaningful motion changes so
         // Java interpolation is not reset every tick.
-        if velocity_dirty || landed {
+        if Self::should_sync_motion(velocity_dirty, was_on_ground, on_ground) {
             entity.send_pos_rot();
             entity.send_velocity();
-            return;
-        }
-
-        // Bedrock item physics can diverge from the server more noticeably, so
-        // send it an occasional absolute correction without touching Java's
-        // relative-movement baseline or interpolation stream.
-        let velocity = entity.velocity.load();
-        let is_moving = !on_ground || velocity.length_squared() > 1.0e-5;
-        let age = self.item_age.load(Ordering::Relaxed);
-        if Self::should_sync_bedrock_position(age, is_moving) {
-            let position = entity.pos.load();
-            let mut flags = MOVE_ACTOR_DELTA_FLAG_HAS_X
-                | MOVE_ACTOR_DELTA_FLAG_HAS_Y
-                | MOVE_ACTOR_DELTA_FLAG_HAS_Z;
-            if on_ground {
-                flags |= MOVE_ACTOR_DELTA_FLAG_ON_GROUND;
-            }
-            entity.world.load().broadcast_to_chunk_bedrock_sync(
-                entity.chunk_pos.load(),
-                &CMoveActorDelta::new(
-                    VarULong(entity.entity_id as u64),
-                    flags,
-                    position.x as f32,
-                    position.y as f32,
-                    position.z as f32,
-                    0,
-                    0,
-                    0,
-                ),
-            );
         }
     }
 }
@@ -430,11 +398,11 @@ mod tests {
     use super::ItemEntity;
 
     #[test]
-    fn bedrock_item_position_sync_is_periodic_while_moving() {
-        assert!(!ItemEntity::should_sync_bedrock_position(1, true));
-        assert!(ItemEntity::should_sync_bedrock_position(4, true));
-        assert!(ItemEntity::should_sync_bedrock_position(8, true));
-        assert!(!ItemEntity::should_sync_bedrock_position(4, false));
+    fn item_motion_syncs_on_velocity_changes_and_landing_only() {
+        assert!(ItemEntity::should_sync_motion(true, false, false));
+        assert!(ItemEntity::should_sync_motion(false, false, true));
+        assert!(!ItemEntity::should_sync_motion(false, false, false));
+        assert!(!ItemEntity::should_sync_motion(false, true, true));
     }
 }
 
