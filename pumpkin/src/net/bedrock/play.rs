@@ -1219,6 +1219,8 @@ impl BedrockClient {
 
         for request in packet.requests {
             let mut created_item: Option<ItemStack> = None;
+            let mut pending_craft: Option<(ItemStack, u8)> = None;
+            let mut crafting_prediction_active = false;
             let mut updates = Vec::new();
             let mut result = 0u8; // 0 = Success, 1 = Error
 
@@ -1368,6 +1370,42 @@ impl BedrockClient {
                                 destination.slot_id,
                                 &dest_stack,
                             );
+
+                            // Bedrock describes crafting as CraftRecipe followed
+                            // by predicted Consume actions and finally a transfer
+                            // from CreatedOutput. Keep the inputs intact while
+                            // validating those predictions, then let Pumpkin's
+                            // output slot consume ingredients and apply recipe
+                            // remainders exactly once when the result is taken.
+                            if source.container_name.container_name == ContainerName::CreatedOutput
+                                && let Some((output_stack, repetitions)) = pending_craft.take()
+                            {
+                                let output_slot = screen_handler.get_behaviour().slots[0].clone();
+                                for _ in 0..repetitions {
+                                    output_slot
+                                        .on_take_item(player.as_ref(), &output_stack)
+                                        .await;
+                                }
+
+                                let is_player = screen_handler.window_type().is_none();
+                                let grid_size = if is_player { 4 } else { 9 };
+                                for i in 0..grid_size {
+                                    let grid_slot_index = 1 + i;
+                                    let grid_stack = screen_handler.get_behaviour().slots
+                                        [grid_slot_index]
+                                        .get_cloned_stack()
+                                        .await;
+                                    record_update(
+                                        &mut updates,
+                                        FullContainerName {
+                                            container_name: ContainerName::CraftingInput,
+                                            dynamic_id: None,
+                                        },
+                                        i as u8,
+                                        &grid_stack,
+                                    );
+                                }
+                            }
                         }
                     }
                     ItemStackRequestAction::Swap { slot1, slot2 } => {
@@ -1442,6 +1480,14 @@ impl BedrockClient {
                             break;
                         }
                         let count = count.min(source_stack.item_count);
+                        if crafting_prediction_active
+                            && source.container_name.container_name == ContainerName::CraftingInput
+                        {
+                            // This is the client's prediction of the ingredient
+                            // consumption. The output slot performs the actual
+                            // server-side mutation when CreatedOutput is taken.
+                            continue;
+                        }
                         if count > 0 {
                             source_stack.decrement(count);
                             let source_stack = if source_stack.is_empty() {
@@ -1505,31 +1551,8 @@ impl BedrockClient {
                             total_crafted.item_count =
                                 total_crafted.item_count.saturating_mul(repetitions);
                             created_item = Some(total_crafted);
-
-                            for _ in 0..repetitions {
-                                output_slot
-                                    .on_take_item(player.as_ref(), &output_stack)
-                                    .await;
-                            }
-
-                            // Record updates for all grid slots so Bedrock client is notified of consumed ingredients!
-                            let is_player = screen_handler.window_type().is_none();
-                            let grid_size = if is_player { 4 } else { 9 };
-                            for i in 0..grid_size {
-                                let grid_slot_index = 1 + i;
-                                let grid_slot =
-                                    screen_handler.get_behaviour().slots[grid_slot_index].clone();
-                                let grid_stack = grid_slot.get_cloned_stack().await;
-                                record_update(
-                                    &mut updates,
-                                    FullContainerName {
-                                        container_name: ContainerName::CraftingInput,
-                                        dynamic_id: None,
-                                    },
-                                    i as u8,
-                                    &grid_stack,
-                                );
-                            }
+                            pending_craft = Some((output_stack, repetitions));
+                            crafting_prediction_active = true;
                         }
                     }
                     ItemStackRequestAction::CraftResultsDeprecated { .. }
