@@ -351,7 +351,7 @@ impl JavaClient {
             return;
         };
 
-        self.send_packet_now(&CChunkBatchStart).await;
+        let mut chunk_packets = Vec::with_capacity(chunks.len());
         for chunk in chunks {
             let event = ChunkSend::new(player.world(), chunk.clone());
             let event = server.plugin_manager.fire(event).await;
@@ -366,10 +366,18 @@ impl JavaClient {
             CChunkData(chunk)
                 .write_packet_data(&mut buf, &version)
                 .unwrap();
-            self.send_packet_now_data(buf.into()).await;
+            chunk_packets.push(Bytes::from(buf));
         }
-        self.send_packet_now(&CChunkBatchEnd::new(chunks.len() as u16))
-            .await;
+
+        // Chunk batches must remain in the same ordered stream as the initial
+        // play-state packets. Sending every chunk through the priority queue can
+        // overtake login packets and starve the normal queue while chunks load.
+        self.enqueue_packet(&CChunkBatchStart).await;
+        let sent_chunks = chunk_packets.len() as u16;
+        for packet in chunk_packets {
+            self.enqueue_packet_data(packet).await;
+        }
+        self.enqueue_packet(&CChunkBatchEnd::new(sent_chunks)).await;
     }
 
     pub async fn enqueue_packet<P: ClientPacket>(&self, packet: &P) {

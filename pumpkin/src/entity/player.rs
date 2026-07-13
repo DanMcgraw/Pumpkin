@@ -2056,11 +2056,10 @@ impl Player {
         };
         if let Some(chunk_of_chunks) = chunk_of_chunks {
             match self.client.as_ref() {
-                ClientPlatform::Java(_) => {
-                    let client = self.client.clone();
-                    tokio::spawn(async move {
-                        client.send_chunks(&chunk_of_chunks).await;
-                    });
+                ClientPlatform::Java(java_client) => {
+                    // Keep Java ChunkBatchStart/Data/End ordered. Detached sends
+                    // can overlap on consecutive ticks and create nested batches.
+                    java_client.send_chunks(&chunk_of_chunks).await;
                 }
                 ClientPlatform::Bedrock(bedrock_client) => {
                     // Await serialization/enqueue so PlayerSpawn cannot overtake

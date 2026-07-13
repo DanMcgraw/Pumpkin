@@ -6,7 +6,10 @@ use pumpkin_data::data_component_impl::DamageResistantType;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::bedrock::client::{CAddItemActor, CSetActorMotion};
+use pumpkin_protocol::bedrock::client::{
+    CAddItemActor, CMoveActorDelta, CSetActorMotion, MOVE_ACTOR_DELTA_FLAG_HAS_X,
+    MOVE_ACTOR_DELTA_FLAG_HAS_Y, MOVE_ACTOR_DELTA_FLAG_HAS_Z,
+};
 use pumpkin_protocol::bedrock::network_item::ItemStackWrapper;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::codec::var_long::VarLong;
@@ -389,6 +392,26 @@ impl ItemEntity {
         if Self::should_sync_motion(velocity_dirty, was_on_ground, on_ground) {
             entity.send_pos_rot();
             entity.send_velocity();
+        } else if !on_ground {
+            // Bedrock does not consistently simulate item gravity from the spawn
+            // velocity. Correct only Bedrock's absolute position while airborne;
+            // Java continues to interpolate from normal entity movement packets.
+            let position = entity.pos.load();
+            entity.world.load().broadcast_to_chunk_bedrock_sync(
+                entity.chunk_pos.load(),
+                &CMoveActorDelta::new(
+                    VarULong(entity.entity_id as u64),
+                    MOVE_ACTOR_DELTA_FLAG_HAS_X
+                        | MOVE_ACTOR_DELTA_FLAG_HAS_Y
+                        | MOVE_ACTOR_DELTA_FLAG_HAS_Z,
+                    position.x as f32,
+                    position.y as f32,
+                    position.z as f32,
+                    0,
+                    0,
+                    0,
+                ),
+            );
         }
     }
 }

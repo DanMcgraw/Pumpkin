@@ -2251,15 +2251,19 @@ impl EntityBase for LivingEntity {
 
             // Fire EntityDamageEvent / EntityDamageByEntityEvent so plugins can
             // cancel or mutate damage.
-            let victim_arc = world
-                .get_entity_by_id(self.entity.entity_id)
-                .expect("damaged entity not found in world");
-            let server = world.server.upgrade().expect("server is gone");
+            let Some(victim_arc) = world.get_entity_by_id(self.entity.entity_id) else {
+                // Entity removal and environmental damage can race during chunk
+                // unload or shutdown. A removed victim cannot accept damage.
+                return false;
+            };
+            let Some(server) = world.server.upgrade() else {
+                return false;
+            };
 
             if let Some(source) = source {
-                let damager = world
-                    .get_entity_by_id(source.get_entity().entity_id)
-                    .expect("damager not found in world");
+                let Some(damager) = world.get_entity_by_id(source.get_entity().entity_id) else {
+                    return false;
+                };
                 let attacker =
                     cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
 
