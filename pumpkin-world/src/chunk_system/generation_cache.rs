@@ -14,7 +14,7 @@ use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_util::HeightMap;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
-use tracing::debug;
+use tracing::{debug, trace};
 
 pub struct Cache {
     pub x: i32,
@@ -150,9 +150,11 @@ impl GenerationCache for Cache {
         // debug_assert!(dx < self.size && dz < self.size);
         // debug_assert!(dx >= 0 && dz >= 0);
         if !(dx < self.size && dz < self.size && dx >= 0 && dz >= 0) {
-            // breakpoint here
-            debug!(
-                "illegal get_block_state {pos:?} cache pos ({}, {}) size {}",
+            // Features may sample just beyond their temporary generation cache.
+            // AIR is the established fallback; keep this at trace level because
+            // it is not an illegal persisted block state or an exception.
+            trace!(
+                "generation cache miss for get_block_state {pos:?} cache pos ({}, {}) size {}",
                 self.x, self.z, self.size
             );
             return BlockStateId::AIR;

@@ -146,6 +146,13 @@ impl OutgoingPacket {
             completion: Some(completion),
         }
     }
+
+    const fn normal_with_completion(data: Bytes, completion: oneshot::Sender<()>) -> Self {
+        Self {
+            data,
+            completion: Some(completion),
+        }
+    }
 }
 
 impl JavaClient {
@@ -377,7 +384,49 @@ impl JavaClient {
         for packet in chunk_packets {
             self.enqueue_packet_data(packet).await;
         }
-        self.enqueue_packet(&CChunkBatchEnd::new(sent_chunks)).await;
+        self.enqueue_packet_and_wait(&CChunkBatchEnd::new(sent_chunks))
+            .await;
+    }
+
+    async fn enqueue_packet_and_wait<P: ClientPacket>(&self, packet: &P) {
+        let mut buf = Vec::new();
+        self.write_packet(packet, &mut buf).unwrap();
+        let payload = Bytes::from(buf);
+
+        let player = self.player.lock().await.clone();
+        let cancelled = if let Some(player) = player.as_ref() {
+            player
+                .fire_packet_sent_no_obj(P::to_id(self.version.load()), payload.clone())
+                .await
+        } else {
+            false
+        };
+
+        if cancelled {
+            return;
+        }
+
+        let (completion_tx, completion_rx) = oneshot::channel();
+        if let Err(err) = self
+            .outgoing_packet_queue_send
+            .send(OutgoingPacket::normal_with_completion(
+                payload,
+                completion_tx,
+            ))
+            .await
+        {
+            if !self.close_token.is_cancelled() {
+                error!(
+                    "Failed to add packet to the outgoing packet queue for client {}: {}",
+                    self.id, err
+                );
+            }
+            return;
+        }
+
+        if completion_rx.await.is_err() && !self.close_token.is_cancelled() {
+            self.close();
+        }
     }
 
     pub async fn enqueue_packet<P: ClientPacket>(&self, packet: &P) {

@@ -14,7 +14,7 @@ use pumpkin_protocol::bedrock::network_item::ItemStackWrapper;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::codec::var_long::VarLong;
 use pumpkin_protocol::codec::var_ulong::VarULong;
-use pumpkin_protocol::java::client::play::Metadata;
+use pumpkin_protocol::java::client::play::{CEntityPositionSync, Metadata};
 use pumpkin_util::math::atomic_f32::AtomicF32;
 use pumpkin_util::math::vector3::Vector3;
 use std::sync::atomic::Ordering::{AcqRel, Relaxed};
@@ -390,7 +390,46 @@ impl ItemEntity {
         // Shared corrections are reserved for meaningful motion changes so
         // Java interpolation is not reset every tick.
         if Self::should_sync_motion(velocity_dirty, was_on_ground, on_ground) {
-            entity.send_pos_rot();
+            let position = entity.pos.load();
+            let velocity = entity.velocity.load();
+            let chunk_pos = entity.chunk_pos.load();
+            let world = entity.world.load();
+
+            // Java already simulates the spawn velocity. A relative movement
+            // packet here would apply the whole server displacement a second
+            // time, producing the visible bounce. Correct it absolutely.
+            entity.last_sent_pos.store(position);
+            world.broadcast_to_chunk(
+                chunk_pos,
+                &CEntityPositionSync::new(
+                    entity.entity_id.into(),
+                    position,
+                    velocity,
+                    entity.yaw.load(),
+                    entity.pitch.load(),
+                    on_ground,
+                ),
+            );
+
+            let mut flags = MOVE_ACTOR_DELTA_FLAG_HAS_X
+                | MOVE_ACTOR_DELTA_FLAG_HAS_Y
+                | MOVE_ACTOR_DELTA_FLAG_HAS_Z;
+            if on_ground {
+                flags |= pumpkin_protocol::bedrock::client::MOVE_ACTOR_DELTA_FLAG_ON_GROUND;
+            }
+            world.broadcast_to_chunk_bedrock_sync(
+                chunk_pos,
+                &CMoveActorDelta::new(
+                    VarULong(entity.entity_id as u64),
+                    flags,
+                    position.x as f32,
+                    position.y as f32,
+                    position.z as f32,
+                    0,
+                    0,
+                    0,
+                ),
+            );
             entity.send_velocity();
         } else if !on_ground {
             // Bedrock does not consistently simulate item gravity from the spawn
