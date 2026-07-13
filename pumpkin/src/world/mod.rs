@@ -5885,6 +5885,25 @@ impl World {
         Self::broadcast_java_grouped(je_packet, recipients_by_version);
     }
 
+    /// Broadcasts a Bedrock packet to players who currently have the target
+    /// chunk loaded without also disturbing Java-side entity interpolation.
+    pub fn broadcast_to_chunk_bedrock_sync<B: BClientPacket>(
+        &self,
+        chunk_pos: Vector2<i32>,
+        packet: &B,
+    ) {
+        let players = self.players.load();
+        for player in players.iter() {
+            let center = player.get_entity().chunk_pos.load();
+            let view_distance = get_view_distance(player).get() as i32;
+            if is_within_view_distance(chunk_pos, center, view_distance)
+                && let ClientPlatform::Bedrock(client) = player.client.as_ref()
+            {
+                client.try_enqueue_packet(packet);
+            }
+        }
+    }
+
     /// Broadcasts a packet to chunk watchers, excluding specific players.
     pub fn broadcast_to_chunk_except<P: ClientPacket>(
         &self,

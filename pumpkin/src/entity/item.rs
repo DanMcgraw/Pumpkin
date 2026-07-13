@@ -6,7 +6,10 @@ use pumpkin_data::data_component_impl::DamageResistantType;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{damage::DamageType, meta_data_type::MetaDataType, tracked_data::TrackedData};
 use pumpkin_nbt::compound::NbtCompound;
-use pumpkin_protocol::bedrock::client::CAddItemActor;
+use pumpkin_protocol::bedrock::client::{
+    CAddItemActor, CMoveActorDelta, MOVE_ACTOR_DELTA_FLAG_HAS_X, MOVE_ACTOR_DELTA_FLAG_HAS_Y,
+    MOVE_ACTOR_DELTA_FLAG_HAS_Z, MOVE_ACTOR_DELTA_FLAG_ON_GROUND,
+};
 use pumpkin_protocol::bedrock::network_item::ItemStackWrapper;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_protocol::codec::var_long::VarLong;
@@ -41,6 +44,12 @@ pub struct ItemEntity {
 }
 
 impl ItemEntity {
+    const BEDROCK_POSITION_SYNC_INTERVAL: u32 = 4;
+
+    fn should_sync_bedrock_position(age: u32, is_moving: bool) -> bool {
+        is_moving && age.is_multiple_of(Self::BEDROCK_POSITION_SYNC_INTERVAL)
+    }
+
     pub fn new(entity: Entity, item_stack: ItemStack) -> Self {
         entity.velocity.store(Vector3::new(
             rand::random::<f64>().mul_add(0.2, -0.1),
@@ -363,25 +372,69 @@ impl ItemEntity {
         &'a self,
         caller: &'a Arc<dyn EntityBase>,
         original_velo: Vector3<f64>,
+        was_on_ground: bool,
     ) {
         let entity = &self.entity;
 
         entity.update_fluid_state(caller).await;
 
+        let on_ground = entity.on_ground.load(Ordering::SeqCst);
+        let landed = !was_on_ground && on_ground;
         let velocity_dirty = entity.velocity_dirty.swap(false, Ordering::SeqCst)
             || entity.touching_water.load(Ordering::SeqCst)
             || entity.touching_lava.load(Ordering::SeqCst)
             || entity.velocity.load().sub(&original_velo).length_squared() > 0.1;
 
-        // Dropped items are client-simulated after AddItemActor, but their
-        // gravity and collision result can diverge between editions. Keep the
-        // server position authoritative on every moving tick so Bedrock items
-        // do not remain at their spawn height or trail behind the throw.
-        entity.send_pos();
-
-        if velocity_dirty {
+        // Both editions simulate dropped-item motion from the spawn velocity.
+        // Shared corrections are reserved for meaningful motion changes so
+        // Java interpolation is not reset every tick.
+        if velocity_dirty || landed {
+            entity.send_pos_rot();
             entity.send_velocity();
+            return;
         }
+
+        // Bedrock item physics can diverge from the server more noticeably, so
+        // send it an occasional absolute correction without touching Java's
+        // relative-movement baseline or interpolation stream.
+        let velocity = entity.velocity.load();
+        let is_moving = !on_ground || velocity.length_squared() > 1.0e-5;
+        let age = self.item_age.load(Ordering::Relaxed);
+        if Self::should_sync_bedrock_position(age, is_moving) {
+            let position = entity.pos.load();
+            let mut flags = MOVE_ACTOR_DELTA_FLAG_HAS_X
+                | MOVE_ACTOR_DELTA_FLAG_HAS_Y
+                | MOVE_ACTOR_DELTA_FLAG_HAS_Z;
+            if on_ground {
+                flags |= MOVE_ACTOR_DELTA_FLAG_ON_GROUND;
+            }
+            entity.world.load().broadcast_to_chunk_bedrock_sync(
+                entity.chunk_pos.load(),
+                &CMoveActorDelta::new(
+                    VarULong(entity.entity_id as u64),
+                    flags,
+                    position.x as f32,
+                    position.y as f32,
+                    position.z as f32,
+                    0,
+                    0,
+                    0,
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ItemEntity;
+
+    #[test]
+    fn bedrock_item_position_sync_is_periodic_while_moving() {
+        assert!(!ItemEntity::should_sync_bedrock_position(1, true));
+        assert!(ItemEntity::should_sync_bedrock_position(4, true));
+        assert!(ItemEntity::should_sync_bedrock_position(8, true));
+        assert!(!ItemEntity::should_sync_bedrock_position(4, false));
     }
 }
 
@@ -442,6 +495,7 @@ impl EntityBase for ItemEntity {
             let entity = &self.entity;
             self.decrement_pickup_delay();
 
+            let was_on_ground = entity.on_ground.load(Ordering::SeqCst);
             let original_velo = entity.velocity.load();
             entity
                 .velocity
@@ -461,7 +515,8 @@ impl EntityBase for ItemEntity {
             }
 
             if self.process_age_and_merge().await {
-                self.sync_motion_if_dirty(caller, original_velo).await;
+                self.sync_motion_if_dirty(caller, original_velo, was_on_ground)
+                    .await;
             }
         })
     }
