@@ -993,6 +993,12 @@ impl BedrockClient {
         packet: SPlayerAction,
     ) {
         if matches!(packet.action, PlayerAction::Respawn) {
+            debug!(
+                player = %player.gameprofile.name,
+                pending = player.bedrock_respawn_pending.load(Ordering::Relaxed),
+                dead = player.living_entity.dead.load(Ordering::Relaxed),
+                "Received Bedrock respawn action"
+            );
             if player.bedrock_respawn_pending.load(Ordering::Relaxed)
                 && player.living_entity.dead.load(Ordering::Relaxed)
             {
@@ -1157,6 +1163,14 @@ impl BedrockClient {
     }
 
     pub async fn handle_respawn(&self, player: &Arc<Player>, packet: SRespawn) {
+        debug!(
+            player = %player.gameprofile.name,
+            state = ?packet.state,
+            client_position = ?packet.position,
+            runtime_id = packet.player_runtime_id.0,
+            pending = player.bedrock_respawn_pending.load(Ordering::Relaxed),
+            "Received Bedrock respawn handshake"
+        );
         if packet.state
             != pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
             || player
@@ -1166,8 +1180,15 @@ impl BedrockClient {
         {
             return;
         }
+        let network_position = player.bedrock_network_position();
+        debug!(
+            player = %player.gameprofile.name,
+            feet_position = ?player.position(),
+            network_position = ?network_position,
+            "Completing Bedrock respawn handshake"
+        );
         self.enqueue_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
-            player.position().to_f32_lossy(),
+            network_position,
             pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ReadyToSpawn,
             VarULong(player.entity_id() as u64),
         ))

@@ -2714,26 +2714,75 @@ impl Player {
 
             'after: {
                 let position = event.to;
-                let i = self
-                    .teleport_id_count
-                    .fetch_add(1, Ordering::Relaxed);
-                let teleport_id = i + 1;
                 self.living_entity.entity.set_pos(position);
                 let entity = &self.living_entity.entity;
                 entity.set_rotation(yaw, pitch);
-                *self.awaiting_teleport.lock().await = Some((teleport_id.into(), position));
-                self.client
-                    .send_packet_now(&CPlayerPosition::new(
-                        teleport_id.into(),
-                        position,
-                        Vector3::new(0.0, 0.0, 0.0),
-                        yaw,
-                        pitch,
-                        // TODO
-                        Vec::new(),
-                    )).await;
+                match self.client.as_ref() {
+                    ClientPlatform::Java(client) => {
+                        let teleport_id = self
+                            .teleport_id_count
+                            .fetch_add(1, Ordering::Relaxed)
+                            + 1;
+                        *self.awaiting_teleport.lock().await =
+                            Some((teleport_id.into(), position));
+                        client
+                            .send_packet_now(&CPlayerPosition::new(
+                                teleport_id.into(),
+                                position,
+                                Vector3::new(0.0, 0.0, 0.0),
+                                yaw,
+                                pitch,
+                                // TODO
+                                Vec::new(),
+                            ))
+                            .await;
+                    }
+                    ClientPlatform::Bedrock(client) => {
+                        *self.awaiting_teleport.lock().await = None;
+                        if !self.has_client_loaded() {
+                            // Initial Bedrock spawn has its own ordered start-game flow.
+                            // A MovePlayer packet is only valid once that flow has completed.
+                            return;
+                        }
+                        // Bedrock represents a player at its network/eye position,
+                        // whereas Pumpkin stores the entity at its feet.
+                        let network_position = position.add_raw(
+                            0.0,
+                            f64::from(entity.get_eye_height()),
+                            0.0,
+                        );
+                        client
+                            .enqueue_packet(
+                                &pumpkin_protocol::bedrock::client::CMovePlayer::new(
+                                    VarULong(entity.entity_id as u64),
+                                    network_position.to_f32_lossy(),
+                                    pitch,
+                                    yaw,
+                                    yaw,
+                                    pumpkin_protocol::bedrock::client::CMovePlayer::MODE_TELEPORT,
+                                    entity.on_ground.load(Ordering::Relaxed),
+                                    VarULong(0),
+                                    0,
+                                    0,
+                                    VarULong(0),
+                                ),
+                            )
+                            .await;
+                    }
+                }
             }
         }}
+    }
+
+    /// Converts Pumpkin's feet-based player position to Bedrock's network position.
+    #[must_use]
+    pub fn bedrock_network_position(&self) -> Vector3<f32> {
+        let entity = &self.living_entity.entity;
+        entity
+            .pos
+            .load()
+            .add_raw(0.0, f64::from(entity.get_eye_height()), 0.0)
+            .to_f32_lossy()
     }
 
     pub fn block_interaction_range(&self) -> f64 {
@@ -3101,7 +3150,7 @@ impl Player {
 
                 client
                     .enqueue_packet(&CBedrockRespawn::new(
-                        self.position().to_f32_lossy(),
+                        self.bedrock_network_position(),
                         PlayerRespawnState::SearchingForSpawn,
                         VarULong(self.entity_id() as u64),
                     ))
