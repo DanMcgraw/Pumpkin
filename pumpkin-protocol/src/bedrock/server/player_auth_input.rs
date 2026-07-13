@@ -67,7 +67,16 @@ impl PacketRead for SPlayerAuthInput {
             None
         };
 
-        // 3. Block Actions
+        // 3. Vehicle Info
+        let mut vehicle_rotation = None;
+        let mut vehicle_unique_id = None;
+        if input_data.get(InputData::ClientPredictedVehicle as usize) {
+            vehicle_rotation = Some(Vector2::<f32>::read(reader)?);
+            vehicle_unique_id = Some(VarLong::read(reader)?);
+        }
+
+        // 4. Block Actions. In protocol 1001 this follows the optional
+        // client-predicted vehicle data, not the inventory fields directly.
         let block_actions = if input_data.get(InputData::PerformBlockActions as usize) {
             let count = VarInt::read(reader)?.0 as usize;
             let mut actions = Vec::with_capacity(count);
@@ -78,14 +87,6 @@ impl PacketRead for SPlayerAuthInput {
         } else {
             None
         };
-
-        // 4. Vehicle Info (Matches Go logic)
-        let mut vehicle_rotation = None;
-        let mut vehicle_unique_id = None;
-        if input_data.get(InputData::ClientPredictedVehicle as usize) {
-            vehicle_rotation = Some(Vector2::<f32>::read(reader)?);
-            vehicle_unique_id = Some(VarLong::read(reader)?);
-        }
 
         // 5. Trailing Data
         let analog_move = Vector2::<f32>::read(reader)?;

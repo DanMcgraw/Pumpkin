@@ -206,6 +206,13 @@ impl BedrockClient {
             return;
         }
         let entity = player.get_entity();
+        let on_ground = packet
+            .input_data
+            .get(InputData::VerticalCollision as usize)
+            && packet.delta.y <= 0.0;
+        entity
+            .on_ground
+            .store(on_ground, std::sync::atomic::Ordering::Relaxed);
 
         // Bedrock reports the local player's eye position in PlayerAuthInput,
         // while Pumpkin stores entity positions at their feet (as Java does).
@@ -228,8 +235,6 @@ impl BedrockClient {
 
         if pos_changed || rot_changed {
             let world = player.world();
-            let on_ground = entity.on_ground.load(std::sync::atomic::Ordering::Relaxed);
-
             if pos_changed {
                 player.get_entity().set_pos(new_pos);
             }
@@ -265,60 +270,21 @@ impl BedrockClient {
                 pumpkin_protocol::codec::var_ulong::VarULong(0),
             );
 
-            if pos_changed && delta.length_squared() >= 64.0 {
-                world.broadcast_packet_except(
-                    &[player.gameprofile.id],
-                    &pumpkin_protocol::java::client::play::CEntityPositionSync::new(
-                        player.entity_id().into(),
-                        new_pos,
-                        pumpkin_util::math::vector3::Vector3::new(0.0, 0.0, 0.0),
-                        je_yaw,
-                        je_pitch,
-                        on_ground,
-                    ),
-                );
-            } else if pos_changed && rot_changed {
-                world.broadcast_packet_except_editioned_sync(
-                    &[player.gameprofile.id],
-                    &pumpkin_protocol::java::client::play::CUpdateEntityPosRot::new(
-                        player.entity_id().into(),
-                        pumpkin_util::math::vector3::Vector3::new(
-                            new_pos.x.mul_add(4096.0, -(old_pos.x * 4096.0)) as i16,
-                            new_pos.y.mul_add(4096.0, -(old_pos.y * 4096.0)) as i16,
-                            new_pos.z.mul_add(4096.0, -(old_pos.z * 4096.0)) as i16,
-                        ),
-                        je_yaw as u8,   // Use converted Java byte
-                        je_pitch as u8, // Use converted Java byte
-                        on_ground,
-                    ),
-                    &bedrock_move_packet,
-                );
-            } else if pos_changed {
-                world.broadcast_packet_except_editioned_sync(
-                    &[player.gameprofile.id],
-                    &pumpkin_protocol::java::client::play::CUpdateEntityPos::new(
-                        player.entity_id().into(),
-                        pumpkin_util::math::vector3::Vector3::new(
-                            new_pos.x.mul_add(4096.0, -(old_pos.x * 4096.0)) as i16,
-                            new_pos.y.mul_add(4096.0, -(old_pos.y * 4096.0)) as i16,
-                            new_pos.z.mul_add(4096.0, -(old_pos.z * 4096.0)) as i16,
-                        ),
-                        on_ground,
-                    ),
-                    &bedrock_move_packet,
-                );
-            } else if rot_changed {
-                world.broadcast_packet_except_editioned_sync(
-                    &[player.gameprofile.id],
-                    &pumpkin_protocol::java::client::play::CUpdateEntityRot::new(
-                        player.entity_id().into(),
-                        je_yaw as u8,   // Use converted Java byte
-                        je_pitch as u8, // Use converted Java byte
-                        on_ground,
-                    ),
-                    &bedrock_move_packet,
-                );
-            }
+            // Bedrock positions arrive as absolute predictions. Keep Java
+            // observers on that same authoritative position instead of
+            // accumulating fixed-point relative-move rounding across editions.
+            world.broadcast_packet_except_editioned_sync(
+                &[player.gameprofile.id],
+                &pumpkin_protocol::java::client::play::CEntityPositionSync::new(
+                    player.entity_id().into(),
+                    new_pos,
+                    pumpkin_util::math::vector3::Vector3::new(0.0, 0.0, 0.0),
+                    je_yaw,
+                    je_pitch,
+                    on_ground,
+                ),
+                &bedrock_move_packet,
+            );
 
             if rot_changed {
                 world.broadcast_packet_except(
@@ -408,6 +374,16 @@ impl BedrockClient {
                     .await;
             }
         }
+
+        if let Some(request) = packet.item_stack_request {
+            self.handle_item_stack_request(
+                player,
+                pumpkin_protocol::bedrock::server::item_stack_request::SItemStackRequest {
+                    requests: vec![request],
+                },
+            )
+            .await;
+        }
     }
 
     pub async fn handle_player_block_action(
@@ -430,6 +406,13 @@ impl BedrockClient {
             .face
             .or_else(|| target.and_then(|target| target.face.map(|face| VarInt(face as i32))))
             .unwrap_or(VarInt(-1));
+        tracing::debug!(
+            player = %player.gameprofile.name,
+            action = ?action,
+            block = ?block_pos,
+            position = ?player.position(),
+            "Processing Bedrock block action"
+        );
         self.handle_player_action(
             player,
             server,
