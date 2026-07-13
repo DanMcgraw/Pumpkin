@@ -244,7 +244,6 @@ impl BedrockClient {
             }
 
             let je_yaw = (new_yaw * 256.0 / 360.0).rem_euclid(256.0);
-            let je_pitch = (new_pitch * 256.0 / 360.0).rem_euclid(256.0);
 
             let delta = pumpkin_util::math::vector3::Vector3::new(
                 new_pos.x - old_pos.x,
@@ -279,8 +278,13 @@ impl BedrockClient {
                     player.entity_id().into(),
                     new_pos,
                     pumpkin_util::math::vector3::Vector3::new(0.0, 0.0, 0.0),
-                    je_yaw,
-                    je_pitch,
+                    // EntityPositionSync stores rotations as degrees. Do not use
+                    // the legacy byte-angle representation used by the relative
+                    // movement and head-rotation packets below: converting a
+                    // negative Bedrock pitch with rem_euclid turns (for example)
+                    // -45 degrees into 224, making Java observers look downward.
+                    new_yaw,
+                    new_pitch,
                     on_ground,
                 ),
                 &bedrock_move_packet,

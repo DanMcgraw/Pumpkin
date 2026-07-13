@@ -373,8 +373,13 @@ impl ItemEntity {
             || entity.touching_lava.load(Ordering::SeqCst)
             || entity.velocity.load().sub(&original_velo).length_squared() > 0.1;
 
+        // Dropped items are client-simulated after AddItemActor, but their
+        // gravity and collision result can diverge between editions. Keep the
+        // server position authoritative on every moving tick so Bedrock items
+        // do not remain at their spawn height or trail behind the throw.
+        entity.send_pos();
+
         if velocity_dirty {
-            entity.send_pos_rot();
             entity.send_velocity();
         }
     }
