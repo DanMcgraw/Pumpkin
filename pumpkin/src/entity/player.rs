@@ -2740,10 +2740,36 @@ impl Player {
                     .await;
             }
             ClientPlatform::Bedrock(client) => {
+                let health = self.living_entity.health.load();
+                let max_health = self.living_entity.get_max_health();
                 client
-                    .send_game_packet(
+                    .enqueue_packet(
+                        &pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
+                            runtime_id: pumpkin_protocol::codec::var_ulong::VarULong(
+                                self.entity_id() as u64,
+                            ),
+                            attributes: vec![
+                                pumpkin_protocol::bedrock::client::update_attributes::Attribute {
+                                    min_value: 0.0,
+                                    max_value: max_health,
+                                    current_value: health,
+                                    default_min_value: 0.0,
+                                    default_max_value: max_health,
+                                    default_value: max_health,
+                                    name: "minecraft:health".to_string(),
+                                    modifiers_list_size: pumpkin_protocol::codec::var_uint::VarUInt(
+                                        0,
+                                    ),
+                                },
+                            ],
+                            player_tick: pumpkin_protocol::codec::var_ulong::VarULong(0),
+                        },
+                    )
+                    .await;
+                client
+                    .enqueue_packet(
                         &pumpkin_protocol::bedrock::client::set_health::CSetHealth::new(
-                            self.living_entity.health.load() as i32,
+                            health as i32,
                         ),
                     )
                     .await;

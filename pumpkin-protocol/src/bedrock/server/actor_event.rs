@@ -1,4 +1,4 @@
-use crate::{codec::var_long::VarLong, serial::PacketWrite};
+use crate::{codec::var_ulong::VarULong, serial::PacketWrite};
 use std::io::{Error, Write};
 
 use pumpkin_macros::packet;
@@ -9,7 +9,7 @@ use crate::codec::var_int::VarInt;
 #[derive(Debug, PacketWrite)]
 #[packet(27)]
 pub struct SActorEvent {
-    pub entity_runtime_id: VarLong,
+    pub entity_runtime_id: VarULong,
     pub event_type: ActorEventType,
     pub event_data: VarInt,
     pub fire_at_position: Option<Vector3<f32>>,
@@ -85,5 +85,29 @@ pub enum ActorEventType {
 impl PacketWrite for ActorEventType {
     fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
         (*self as u8).write(writer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        codec::{var_int::VarInt, var_ulong::VarULong},
+        serial::PacketWrite,
+    };
+
+    use super::{ActorEventType, SActorEvent};
+
+    #[test]
+    fn actor_runtime_id_uses_unsigned_varint_encoding() {
+        let packet = SActorEvent {
+            entity_runtime_id: VarULong(126),
+            event_type: ActorEventType::Hurt,
+            event_data: VarInt(0),
+            fire_at_position: None,
+        };
+        let mut bytes = Vec::new();
+        packet.write(&mut bytes).unwrap();
+
+        assert_eq!(bytes, [126, 2, 0, 0]);
     }
 }

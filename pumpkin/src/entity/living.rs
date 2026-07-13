@@ -8,7 +8,6 @@ use pumpkin_inventory::player::player_inventory::PlayerInventory;
 use pumpkin_inventory::screen_handler::InventoryPlayer;
 use pumpkin_protocol::bedrock::client::take_item_actor::CTakeItemActor;
 use pumpkin_protocol::bedrock::server::actor_event::{ActorEventType, SActorEvent};
-use pumpkin_protocol::codec::var_long::VarLong;
 use pumpkin_protocol::codec::var_ulong::VarULong;
 use pumpkin_util::GameMode;
 use pumpkin_util::Hand;
@@ -1323,7 +1322,17 @@ impl LivingEntity {
             self.update_death_stats(&*dyn_self, cause).await;
 
             // Plays the death sound
-            world.send_entity_status(&self.entity, EntityStatus::Death);
+            world
+                .broadcast_editioned(
+                    &CEntityStatus::new(self.entity.entity_id, EntityStatus::Death as i8),
+                    &SActorEvent {
+                        entity_runtime_id: VarULong(self.entity.entity_id as u64),
+                        event_type: ActorEventType::Death,
+                        event_data: VarInt(0),
+                        fire_at_position: None,
+                    },
+                )
+                .await;
             let tool = if let Some(cause_ent) = cause {
                 if let Some(player) = cause_ent
                     .cast_any()
@@ -2300,7 +2309,7 @@ impl EntityBase for LivingEntity {
                         - self.entity.yaw.load()
                 });
                 let hurt_event = SActorEvent {
-                    entity_runtime_id: VarLong(entity_id as i64),
+                    entity_runtime_id: VarULong(entity_id as u64),
                     event_type: ActorEventType::Hurt,
                     event_data: VarInt(0),
                     fire_at_position: None,

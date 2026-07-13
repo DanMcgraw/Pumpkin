@@ -1985,7 +1985,11 @@ impl World {
                 entity_id: VarLong(runtime_id as _),
                 runtime_entity_id: VarULong(runtime_id),
                 player_gamemode: player.gamemode.load(),
-                position: Vector3::new(position.x as f32, position.y as f32, position.z as f32),
+                position: Vector3::new(
+                    position.x as f32,
+                    position.y as f32 + player.get_entity().get_eye_height() as f32,
+                    position.z as f32,
+                ),
                 pitch,
                 yaw,
                 level_settings,
@@ -2449,7 +2453,11 @@ impl World {
             username: gameprofile.name.clone(),
             entity_runtime_id: VarULong(runtime_id),
             platform_chat_id: String::new(),
-            position: Vector3::new(position.x as f32, position.y as f32, position.z as f32),
+            position: Vector3::new(
+                position.x as f32,
+                position.y as f32 + entity.get_eye_height() as f32,
+                position.z as f32,
+            ),
             velocity: Vector3::new(velocity.x as f32, velocity.y as f32, velocity.z as f32),
             pitch,
             yaw,
@@ -2526,7 +2534,6 @@ impl World {
         {
             let ex_profile = &existing_player.gameprofile;
             let ex_entity = &existing_player.get_entity();
-            let ex_pos = ex_entity.pos.load();
             let ex_vel = ex_entity.velocity.load();
 
             let ex_player_list = CPlayerList {
@@ -2553,7 +2560,7 @@ impl World {
                 username: ex_profile.name.clone(),
                 entity_runtime_id: VarULong(existing_player.entity_id() as u64),
                 platform_chat_id: String::new(),
-                position: Vector3::new(ex_pos.x as f32, ex_pos.y as f32, ex_pos.z as f32),
+                position: ex_entity.get_eye_pos_f32(),
                 velocity: Vector3::new(ex_vel.x as f32, ex_vel.y as f32, ex_vel.z as f32),
                 pitch: ex_entity.pitch.load(),
                 yaw: ex_entity.yaw.load(),
@@ -2881,7 +2888,11 @@ impl World {
             username: gameprofile.name.clone(),
             entity_runtime_id: VarULong(entity_id as u64),
             platform_chat_id: String::new(),
-            position: Vector3::new(position.x as f32, position.y as f32, position.z as f32),
+            position: Vector3::new(
+                position.x as f32,
+                position.y as f32 + player.get_entity().get_eye_height() as f32,
+                position.z as f32,
+            ),
             velocity: Vector3::new(velocity.x as f32, velocity.y as f32, velocity.z as f32),
             pitch,
             yaw,
@@ -2976,7 +2987,7 @@ impl World {
                 username: gameprofile.name.clone(),
                 entity_runtime_id: VarULong(existing_player.entity_id() as u64),
                 platform_chat_id: String::new(),
-                position: Vector3::new(pos.x as f32, pos.y as f32, pos.z as f32),
+                position: entity.get_eye_pos_f32(),
                 velocity: Vector3::new(
                     entity.velocity.load().x as f32,
                     entity.velocity.load().y as f32,
