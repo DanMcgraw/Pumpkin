@@ -216,14 +216,39 @@ impl PacketWrite for VarInt {
 
 impl PacketRead for VarInt {
     fn read<W: Read>(read: &mut W) -> Result<Self, Error> {
-        let mut val = 0;
+        let mut val = 0u32;
         for i in 0..Self::MAX_SIZE.get() {
             let byte = u8::read(read)?;
-            val |= (i32::from(byte) & 0x7F) << (i * 7);
+            val |= (u32::from(byte) & 0x7F) << (i * 7);
             if byte & 0x80 == 0 {
-                return Ok(Self((val >> 1) ^ (val << 31)));
+                return Ok(Self(((val >> 1) as i32) ^ -((val & 1) as i32)));
             }
         }
         Err(Error::new(ErrorKind::InvalidData, ""))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use crate::serial::{PacketRead, PacketWrite};
+
+    use super::VarInt;
+
+    #[test]
+    fn packet_round_trip_preserves_signed_values() {
+        for value in [i32::MIN, -2_097_152, -2, -1, 0, 1, 2, 2_097_152, i32::MAX] {
+            let mut bytes = Vec::new();
+            VarInt(value).write(&mut bytes).unwrap();
+            let decoded = VarInt::read(&mut Cursor::new(bytes)).unwrap();
+            assert_eq!(decoded.0, value);
+        }
+    }
+
+    #[test]
+    fn packet_decodes_negative_one_from_zigzag() {
+        let decoded = VarInt::read(&mut Cursor::new([1])).unwrap();
+        assert_eq!(decoded.0, -1);
     }
 }

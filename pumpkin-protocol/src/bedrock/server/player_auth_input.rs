@@ -315,4 +315,17 @@ mod tests {
         assert_eq!(action.block_pos.unwrap().0.z, 2);
         assert_eq!(action.face, Some(VarInt(1)));
     }
+
+    #[test]
+    fn block_action_preserves_negative_coordinates() {
+        // StartBreak(0), position (1, 68, -1), face 1.
+        let mut cursor = Cursor::new([0, 2, 136, 1, 1, 2]);
+        let action = PlayerBlockAction::read(&mut cursor).unwrap();
+
+        let position = action.block_pos.unwrap();
+        assert_eq!(position.0.x, 1);
+        assert_eq!(position.0.y, 68);
+        assert_eq!(position.0.z, -1);
+        assert_eq!(action.face, Some(VarInt(1)));
+    }
 }
