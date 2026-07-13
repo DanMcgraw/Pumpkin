@@ -453,8 +453,12 @@ impl BedrockClient {
             let be_packet = SAnimate {
                 action: packet.action,
                 runtime_entity_id: VarULong(entity.entity_id as u64),
-                data: 0.0,
-                swing_source: None,
+                // `ActorSwingSource` tells modern Bedrock clients which item swing
+                // timing to use. In particular, replacing `Attack` with `None`
+                // makes the arm animation recover immediately even though the
+                // server-side Java attack cooldown is still active.
+                data: packet.data,
+                swing_source: packet.swing_source,
             };
             world.broadcast_editioned(&je_packet, &be_packet).await;
         }
