@@ -3792,7 +3792,6 @@ impl World {
                         let entity =
                             from_type(entity_type, Vector3::new(0.0, 0.0, 0.0), &world, uuid);
                         entity.read_nbt_non_mut(entity_nbt).await;
-                        entity.init_data_tracker().await;
 
                         let base_entity = entity.get_entity();
                         // Clear velocity so the client does not replay the drop
@@ -4009,15 +4008,14 @@ impl World {
 
     fn collect_entity_tick_candidates(&self) -> Vec<Arc<dyn EntityBase>> {
         let active_chunks = self.active_chunks.load();
-        let mut seen_entities = FxHashSet::default();
-
-        self.collect_entities_in_chunks(&active_chunks)
-            .into_iter()
-            .filter(|entity| seen_entities.insert(entity.get_entity().entity_uuid))
+        self.entities
+            .load()
+            .iter()
             .filter(|entity| {
                 let live_chunk = Self::entity_live_chunk_pos(entity.get_entity());
                 active_chunks.contains(&live_chunk)
             })
+            .cloned()
             .collect()
     }
 
@@ -6356,6 +6354,29 @@ mod entity_chunk_index_tests {
             .store(Vector3::new(320.0, 64.0, 320.0));
 
         assert!(world.collect_entity_tick_candidates().is_empty());
+    }
+
+    #[tokio::test]
+    async fn entity_tick_candidates_use_authoritative_live_entities() {
+        let world = create_test_world();
+        let active_chunk = Vector2::new(0, 0);
+        let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
+
+        world.entities.rcu(|current_entities| {
+            let mut new_entities = (**current_entities).clone();
+            new_entities.push(entity.clone());
+            new_entities
+        });
+        world
+            .active_chunks
+            .store(Arc::new(FxHashSet::from_iter([active_chunk])));
+
+        let candidates = world.collect_entity_tick_candidates();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].get_entity().entity_uuid,
+            entity.get_entity().entity_uuid
+        );
     }
 
     #[tokio::test]

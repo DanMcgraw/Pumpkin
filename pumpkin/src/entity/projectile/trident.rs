@@ -418,7 +418,7 @@ impl EntityBase for TridentEntity {
 
             let mut stack = self.item_stack.lock().await.clone();
             if player.is_creative() || player.inventory.insert_stack_anywhere(&mut stack).await {
-                player.living_entity.pickup(&self.entity, 1, true);
+                player.living_entity.pickup(&self.entity, 1, true).await;
                 self.get_entity().remove().await;
             }
         })

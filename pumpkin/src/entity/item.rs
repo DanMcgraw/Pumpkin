@@ -676,7 +676,8 @@ impl EntityBase for ItemEntity {
 
                 player
                     .living_entity
-                    .pickup(&self.entity, amount_picked_up.into(), is_empty);
+                    .pickup(&self.entity, amount_picked_up.into(), is_empty)
+                    .await;
 
                 player
                     .current_screen_handler

@@ -37,6 +37,7 @@ use crate::plugin::api::events::entity::{
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
 use crate::server::Server;
+use crate::world::chunker::{get_view_distance, is_within_view_distance};
 use crate::world::loot::{LootContextParameters, LootTableExt};
 use crossbeam::atomic::AtomicCell;
 use pumpkin_data::attributes::Attributes;
@@ -206,29 +207,43 @@ impl LivingEntity {
     }
 
     /// Picks up and Item entity or XP Orb
-    pub fn pickup(&self, item: &Entity, stack_amount: u32, take_entire_actor: bool) {
+    pub async fn pickup(&self, item: &Entity, stack_amount: u32, take_entire_actor: bool) {
         let chunk_pos = self.entity.chunk_pos.load();
         let world = self.entity.world.load();
-        world.broadcast_to_chunk(
-            chunk_pos,
-            &CTakeItemEntity::new(
-                item.entity_id.into(),
-                self.entity.entity_id.into(),
-                VarInt(stack_amount as i32),
-            ),
+        let java_packet = CTakeItemEntity::new(
+            item.entity_id.into(),
+            self.entity.entity_id.into(),
+            VarInt(stack_amount as i32),
         );
+        let bedrock_packet = CTakeItemActor::new(
+            VarULong(item.entity_id as u64),
+            pumpkin_protocol::codec::var_uint::VarUInt(self.entity.entity_id as u32),
+        );
+        let recipients: Vec<_> = world
+            .players
+            .load()
+            .iter()
+            .filter(|player| {
+                let center = player.get_entity().chunk_pos.load();
+                let view_distance = get_view_distance(player).get() as i32;
+                is_within_view_distance(chunk_pos, center, view_distance)
+            })
+            .cloned()
+            .collect();
 
-        // Bedrock's TakeItemActor packet has no amount field and removes the
-        // entire item actor. Do not send it for a partial stack pickup.
-        if take_entire_actor {
-            let packet = CTakeItemActor::new(
-                VarULong(item.entity_id as u64),
-                pumpkin_protocol::codec::var_uint::VarUInt(self.entity.entity_id as u32),
-            );
-            for player in world.players.load().iter() {
-                if let crate::net::ClientPlatform::Bedrock(client) = player.client.as_ref() {
-                    client.try_enqueue_packet(&packet);
+        for player in recipients {
+            match player.client.as_ref() {
+                crate::net::ClientPlatform::Java(client) => {
+                    // Pickup removes an entity from the client's world and must
+                    // not be dropped behind chunk/entity traffic.
+                    client.send_packet_now(&java_packet).await;
                 }
+                crate::net::ClientPlatform::Bedrock(client) if take_entire_actor => {
+                    // Bedrock's packet has no amount field and removes the whole
+                    // actor, so partial stack pickups only update its metadata.
+                    client.enqueue_packet(&bedrock_packet).await;
+                }
+                crate::net::ClientPlatform::Bedrock(_) => {}
             }
         }
     }
