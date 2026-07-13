@@ -1287,7 +1287,8 @@ impl BedrockClient {
                         destination,
                     } => {
                         let mut source_stack =
-                            get_slot_stack(&*screen_handler, &source, created_item.as_ref()).await;
+                            get_source_slot_stack(&*screen_handler, &source, created_item.as_ref())
+                                .await;
                         if source_stack.is_empty() && created_item.is_none() {
                             tracing::debug!("Source stack is empty in Take/Place");
                             result = 1;
@@ -1295,12 +1296,8 @@ impl BedrockClient {
                         }
                         let count = count.min(source_stack.item_count);
                         if count > 0 {
-                            let mut dest_stack = get_slot_stack(
-                                &*screen_handler,
-                                &destination,
-                                created_item.as_ref(),
-                            )
-                            .await;
+                            let mut dest_stack =
+                                get_slot_stack(&*screen_handler, &destination).await;
                             if dest_stack.is_empty() {
                                 dest_stack = source_stack.copy_with_count(count);
                             } else if dest_stack.are_items_and_components_equal(&source_stack) {
@@ -1409,10 +1406,8 @@ impl BedrockClient {
                         }
                     }
                     ItemStackRequestAction::Swap { slot1, slot2 } => {
-                        let stack1 =
-                            get_slot_stack(&*screen_handler, &slot1, created_item.as_ref()).await;
-                        let stack2 =
-                            get_slot_stack(&*screen_handler, &slot2, created_item.as_ref()).await;
+                        let stack1 = get_slot_stack(&*screen_handler, &slot1).await;
+                        let stack2 = get_slot_stack(&*screen_handler, &slot2).await;
 
                         update_slot_stack(player, &mut *screen_handler, &slot1, stack2.clone())
                             .await;
@@ -1438,7 +1433,8 @@ impl BedrockClient {
                         randomly: _,
                     } => {
                         let mut source_stack =
-                            get_slot_stack(&*screen_handler, &source, created_item.as_ref()).await;
+                            get_source_slot_stack(&*screen_handler, &source, created_item.as_ref())
+                                .await;
                         if source_stack.is_empty() {
                             result = 1;
                             break;
@@ -1474,7 +1470,8 @@ impl BedrockClient {
                     ItemStackRequestAction::Destroy { count, source }
                     | ItemStackRequestAction::Consume { count, source } => {
                         let mut source_stack =
-                            get_slot_stack(&*screen_handler, &source, created_item.as_ref()).await;
+                            get_source_slot_stack(&*screen_handler, &source, created_item.as_ref())
+                                .await;
                         if source_stack.is_empty() {
                             result = 1;
                             break;
@@ -2187,20 +2184,9 @@ mod inventory_stack_response_tests {
 async fn get_slot_stack(
     screen_handler: &dyn ScreenHandler,
     slot_info: &pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestSlotInfo,
-    created_item: Option<&ItemStack>,
 ) -> ItemStack {
-    if let (ContainerName::CreatedOutput, Some(stack)) =
-        (slot_info.container_name.container_name, created_item)
-    {
-        return stack.clone();
-    }
     if slot_info.container_name.container_name == ContainerName::Cursor {
         let cursor_lock = screen_handler.get_behaviour().cursor_stack.lock().await;
-        if cursor_lock.is_empty()
-            && let Some(stack) = created_item
-        {
-            return stack.clone();
-        }
         return cursor_lock.clone();
     }
     if let Some(screen_slot) = map_bedrock_container_slot(
@@ -2214,6 +2200,27 @@ async fn get_slot_stack(
     } else {
         ItemStack::EMPTY.clone()
     }
+}
+
+async fn get_source_slot_stack(
+    screen_handler: &dyn ScreenHandler,
+    slot_info: &pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestSlotInfo,
+    created_item: Option<&ItemStack>,
+) -> ItemStack {
+    if let (ContainerName::CreatedOutput, Some(stack)) =
+        (slot_info.container_name.container_name, created_item)
+    {
+        return stack.clone();
+    }
+
+    let stack = get_slot_stack(screen_handler, slot_info).await;
+    if stack.is_empty()
+        && slot_info.container_name.container_name == ContainerName::Cursor
+        && let Some(created_item) = created_item
+    {
+        return created_item.clone();
+    }
+    stack
 }
 
 #[allow(clippy::unreachable)]
