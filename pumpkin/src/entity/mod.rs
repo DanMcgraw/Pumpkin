@@ -1544,7 +1544,7 @@ impl Entity {
                     &je_packet,
                     &CMovePlayer::new(
                         VarULong(self.entity_id as u64),
-                        self.get_eye_pos_f32(),
+                        Vector3::new(new.x as f32, new.y as f32, new.z as f32),
                         self.pitch.load(),
                         self.yaw.load(),
                         self.yaw.load(),
@@ -1593,7 +1593,7 @@ impl Entity {
                     &je_packet,
                     &CMovePlayer::new(
                         VarULong(self.entity_id as u64),
-                        self.get_eye_pos_f32(),
+                        Vector3::new(new.x as f32, new.y as f32, new.z as f32),
                         self.pitch.load(),
                         self.yaw.load(),
                         self.yaw.load(),
@@ -1641,7 +1641,7 @@ impl Entity {
                     &je_packet,
                     &CMovePlayer::new(
                         VarULong(self.entity_id as u64),
-                        self.get_eye_pos_f32(),
+                        Vector3::new(new.x as f32, new.y as f32, new.z as f32),
                         self.pitch.load(),
                         self.yaw.load(),
                         self.yaw.load(),
@@ -1717,7 +1717,7 @@ impl Entity {
                 &je_packet,
                 &CMovePlayer::new(
                     VarULong(self.entity_id as u64),
-                    self.get_eye_pos_f32(),
+                    Vector3::new(new.x as f32, new.y as f32, new.z as f32),
                     self.pitch.load(),
                     self.yaw.load(),
                     self.yaw.load(),
@@ -2925,11 +2925,6 @@ impl Entity {
             pos.y + f64::from(self.entity_dimension.load().eye_height),
             pos.z,
         )
-    }
-
-    pub fn get_eye_pos_f32(&self) -> Vector3<f32> {
-        let pos = self.get_eye_pos();
-        Vector3::new(pos.x as f32, pos.y as f32, pos.z as f32)
     }
 
     pub fn get_eye_y(&self) -> f64 {
