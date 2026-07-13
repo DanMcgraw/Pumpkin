@@ -293,6 +293,39 @@ impl GenerationSchedule {
         ready.len()
     }
 
+    /// Recover graph nodes that are still marked in-flight after the scheduler's
+    /// worker count reached zero. This should only be needed for stale state
+    /// created before a parked task was reattached to a rebuilt holder.
+    pub(crate) fn restore_stranded_in_flight_tasks(
+        graph: &mut DAG,
+        queue: &mut BinaryHeap<TaskHeapNode>,
+        last_level: &ChunkLevel,
+        last_high_priority: &[ChunkPos],
+    ) -> usize {
+        let mut stranded = Vec::new();
+        for (key, node) in &graph.nodes {
+            if node.in_flight && node.stage != StagedChunkEnum::None {
+                stranded.push((key, node.pos, node.stage));
+            }
+        }
+
+        for (key, pos, stage) in &stranded {
+            let Some(node) = graph.nodes.get_mut(*key) else {
+                continue;
+            };
+            node.in_flight = false;
+            if node.in_degree == 0 && !node.in_queue {
+                node.in_queue = true;
+                queue.push(TaskHeapNode(
+                    Self::calc_priority(last_level, last_high_priority, *pos, *stage),
+                    *key,
+                ));
+            }
+        }
+
+        stranded.len()
+    }
+
     /// Ensure that the dependency chain for `req_stage` exists on `holder` (for chunk at
     /// `chunk_pos`) and wire it to depend on `dependency_task`.
     ///
@@ -500,6 +533,22 @@ impl GenerationSchedule {
 
                     let required_stage = dependencies[dx.abs().max(dz.abs()) as usize];
                     let holder = self.chunk_map.entry(dependency_pos).or_default();
+
+                    // If the parked task's own holder was garbage-collected,
+                    // restore its ownership before rebuilding the dependency
+                    // chain. Otherwise the task can run and return successfully
+                    // but receive_chunk() cannot find and drop its graph node.
+                    if dependency_pos == pos {
+                        let task_slot = &mut holder.tasks[stage as usize];
+                        if task_slot.is_null() {
+                            *task_slot = node_key;
+                        } else if *task_slot != node_key {
+                            warn!(
+                                "Parked task {node_key:?} conflicts with rebuilt holder task {task_slot:?} at {pos:?} stage {stage:?}"
+                            );
+                        }
+                    }
+
                     Self::ensure_dependency_chain(
                         &mut self.graph,
                         &mut self.queue,
@@ -1462,6 +1511,19 @@ impl GenerationSchedule {
                     }
                 } else {
                     // No tasks in flight, wait indefinitely for LevelChannel changes
+                    let restored_in_flight = Self::restore_stranded_in_flight_tasks(
+                        &mut self.graph,
+                        &mut self.queue,
+                        &self.last_level,
+                        &self.last_high_priority,
+                    );
+                    if restored_in_flight > 0 {
+                        warn!(
+                            "Recovered {restored_in_flight} stranded in-flight chunk tasks after worker count reached zero"
+                        );
+                        continue;
+                    }
+
                     let restored = Self::restore_ready_tasks(
                         &mut self.graph,
                         &mut self.queue,

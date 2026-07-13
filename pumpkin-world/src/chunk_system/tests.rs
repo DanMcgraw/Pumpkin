@@ -383,3 +383,54 @@ fn cancellation_path_decrements_in_degree() {
         "The waiting task should have been dropped during cancellation"
     );
 }
+
+#[test]
+fn stranded_in_flight_task_is_restored_to_queue() {
+    let mut graph = DAG::default();
+    let mut queue = BinaryHeap::new();
+    let pos = ChunkPos::new(-11, -11);
+    let task = graph
+        .nodes
+        .insert(Node::new(pos, StagedChunkEnum::Features));
+    graph.nodes.get_mut(task).unwrap().in_flight = true;
+
+    let restored = GenerationSchedule::restore_stranded_in_flight_tasks(
+        &mut graph,
+        &mut queue,
+        &HashMapType::default(),
+        &[],
+    );
+
+    assert_eq!(restored, 1);
+    let node = graph.nodes.get(task).unwrap();
+    assert!(!node.in_flight);
+    assert!(node.in_queue);
+    assert_eq!(queue.pop().unwrap().node_key(), task);
+}
+
+#[test]
+fn rebuilt_holder_can_own_original_parked_task() {
+    let mut graph = DAG::default();
+    let mut queue = BinaryHeap::new();
+    let pos = ChunkPos::new(-11, -11);
+    let parked = graph
+        .nodes
+        .insert(Node::new(pos, StagedChunkEnum::Features));
+    let mut holder = ChunkHolder::default();
+
+    holder.tasks[StagedChunkEnum::Features as usize] = parked;
+    GenerationSchedule::ensure_dependency_chain(
+        &mut graph,
+        &mut queue,
+        &HashMapType::default(),
+        &[],
+        parked,
+        pos,
+        &mut holder,
+        StagedChunkEnum::Carvers,
+    );
+
+    assert_eq!(holder.tasks[StagedChunkEnum::Features as usize], parked);
+    assert!(graph.nodes.get(parked).is_some());
+    assert!(graph.nodes.get(parked).unwrap().in_degree > 0);
+}
