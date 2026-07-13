@@ -63,7 +63,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 pub mod config;
 pub mod handshake;
@@ -485,7 +485,7 @@ impl JavaClient {
         {
             match err {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                    debug!(
+                    trace!(
                         "Failed to add packet to the outgoing packet queue for client {}: channel full",
                         self.id
                     );

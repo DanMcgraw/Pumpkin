@@ -115,21 +115,23 @@ impl EntityBase for TNTEntity {
 
     fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
-            self.entity.send_meta_data_to(
-                player,
-                &[
-                    Metadata::new(
-                        TrackedData::FUSE_ID,
-                        MetaDataType::INTEGER,
-                        VarInt(self.fuse.load(Relaxed) as i32),
-                    ),
-                    Metadata::new(
-                        TrackedData::BLOCK_STATE_ID,
-                        MetaDataType::BLOCK_STATE,
-                        VarInt(i32::from(Block::TNT.default_state.id.as_u16())),
-                    ),
-                ],
-            );
+            self.entity
+                .send_meta_data_to(
+                    player,
+                    &[
+                        Metadata::new(
+                            TrackedData::FUSE_ID,
+                            MetaDataType::INTEGER,
+                            VarInt(self.fuse.load(Relaxed) as i32),
+                        ),
+                        Metadata::new(
+                            TrackedData::BLOCK_STATE_ID,
+                            MetaDataType::BLOCK_STATE,
+                            VarInt(i32::from(Block::TNT.default_state.id.as_u16())),
+                        ),
+                    ],
+                )
+                .await;
         })
     }
 

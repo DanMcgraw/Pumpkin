@@ -563,14 +563,16 @@ impl EntityBase for ItemEntity {
 
     fn send_initial_metadata<'a>(&'a self, player: &'a Arc<Player>) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
-            self.entity.send_meta_data_to(
-                player,
-                &[Metadata::new(
-                    TrackedData::ITEM,
-                    MetaDataType::ITEM_STACK,
-                    &ItemStackSerializer::from(self.item_stack.lock().await.clone()),
-                )],
-            );
+            self.entity
+                .send_meta_data_to(
+                    player,
+                    &[Metadata::new(
+                        TrackedData::ITEM,
+                        MetaDataType::ITEM_STACK,
+                        &ItemStackSerializer::from(self.item_stack.lock().await.clone()),
+                    )],
+                )
+                .await;
         })
     }
 
@@ -678,6 +680,11 @@ impl EntityBase for ItemEntity {
                     .living_entity
                     .pickup(&self.entity, amount_picked_up.into(), is_empty)
                     .await;
+
+                // A pickup is an authoritative server-side mutation. Send the
+                // Java inventory through the priority stream before ordinary
+                // slot listeners can sit behind initial chunk/entity traffic.
+                player.sync_java_inventory_after_pickup().await;
 
                 player
                     .current_screen_handler

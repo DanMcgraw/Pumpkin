@@ -198,14 +198,16 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
             let is_baby = entity.age.load(Ordering::Relaxed) < 0;
 
             if is_baby {
-                entity.send_meta_data_to(
-                    player,
-                    &[Metadata::new(
-                        TrackedData::BABY_ID,
-                        MetaDataType::BOOLEAN,
-                        true,
-                    )],
-                );
+                entity
+                    .send_meta_data_to(
+                        player,
+                        &[Metadata::new(
+                            TrackedData::BABY_ID,
+                            MetaDataType::BOOLEAN,
+                            true,
+                        )],
+                    )
+                    .await;
             }
         })
     }
@@ -2756,7 +2758,7 @@ impl Entity {
         }
     }
 
-    pub fn send_meta_data_to<T: Serialize>(&self, player: &Player, meta: &[Metadata<T>]) {
+    pub async fn send_meta_data_to<T: Serialize>(&self, player: &Player, meta: &[Metadata<T>]) {
         if let ClientPlatform::Java(client) = player.client.as_ref() {
             let mut buf = Vec::new();
             for m in meta {
@@ -2765,7 +2767,8 @@ impl Entity {
             buf.put_u8(255);
             player
                 .client
-                .try_enqueue_packet(&CSetEntityMetadata::new(self.entity_id.into(), buf.into()));
+                .enqueue_packet(&CSetEntityMetadata::new(self.entity_id.into(), buf.into()))
+                .await;
         }
     }
 

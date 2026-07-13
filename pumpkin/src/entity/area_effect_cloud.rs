@@ -276,35 +276,41 @@ impl EntityBase for AreaEffectCloudEntity {
             };
 
             // Send initial particle and radius
-            self.entity.send_meta_data_to(
-                player,
-                &[pumpkin_protocol::java::client::play::Metadata::new(
-                    pumpkin_data::tracked_data::TrackedData::PARTICLE,
-                    pumpkin_data::meta_data_type::MetaDataType::PARTICLE,
-                    &meta,
-                )],
-            );
+            self.entity
+                .send_meta_data_to(
+                    player,
+                    &[pumpkin_protocol::java::client::play::Metadata::new(
+                        pumpkin_data::tracked_data::TrackedData::PARTICLE,
+                        pumpkin_data::meta_data_type::MetaDataType::PARTICLE,
+                        &meta,
+                    )],
+                )
+                .await;
 
-            self.entity.send_meta_data_to(
-                player,
-                &[pumpkin_protocol::java::client::play::Metadata::new(
-                    pumpkin_data::tracked_data::TrackedData::RADIUS,
-                    pumpkin_data::meta_data_type::MetaDataType::FLOAT,
-                    radius,
-                )],
-            );
+            self.entity
+                .send_meta_data_to(
+                    player,
+                    &[pumpkin_protocol::java::client::play::Metadata::new(
+                        pumpkin_data::tracked_data::TrackedData::RADIUS,
+                        pumpkin_data::meta_data_type::MetaDataType::FLOAT,
+                        radius,
+                    )],
+                )
+                .await;
 
             // Initial waiting flag
             let wait_time = *self.wait_time.lock().await;
             let is_waiting = 0 < wait_time;
-            self.entity.send_meta_data_to(
-                player,
-                &[pumpkin_protocol::java::client::play::Metadata::new(
-                    pumpkin_data::tracked_data::TrackedData::WAITING,
-                    pumpkin_data::meta_data_type::MetaDataType::BOOLEAN,
-                    is_waiting,
-                )],
-            );
+            self.entity
+                .send_meta_data_to(
+                    player,
+                    &[pumpkin_protocol::java::client::play::Metadata::new(
+                        pumpkin_data::tracked_data::TrackedData::WAITING,
+                        pumpkin_data::meta_data_type::MetaDataType::BOOLEAN,
+                        is_waiting,
+                    )],
+                )
+                .await;
         })
     }
 

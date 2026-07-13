@@ -3798,6 +3798,8 @@ impl World {
                         // animation; residual velocity from the original drop is
                         // stale data.
                         base_entity.velocity.store(Vector3::default());
+                        base_entity.velocity_dirty.store(false, Relaxed);
+                        base_entity.last_pos.store(base_entity.pos.load());
 
                         if let Some(existing_entity) =
                             world.get_entity_by_uuid(base_entity.entity_uuid)

@@ -141,16 +141,18 @@ impl EntityBase for SplashPotionEntity {
             let stack = self.item_stack.read().await;
 
             // Sync the item stack
-            entity.send_meta_data_to(
-                player,
-                &[pumpkin_protocol::java::client::play::Metadata::new(
-                    pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
-                    pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
-                    &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
-                        stack.clone(),
-                    ),
-                )],
-            );
+            entity
+                .send_meta_data_to(
+                    player,
+                    &[pumpkin_protocol::java::client::play::Metadata::new(
+                        pumpkin_data::tracked_data::TrackedData::ITEM_STACK,
+                        pumpkin_data::meta_data_type::MetaDataType::ITEM_STACK,
+                        &pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer::from(
+                            stack.clone(),
+                        ),
+                    )],
+                )
+                .await;
         })
     }
 

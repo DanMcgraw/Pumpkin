@@ -2902,6 +2902,32 @@ impl Player {
             .await;
     }
 
+    /// Sends the authoritative player inventory ahead of queued chunk and
+    /// transient entity traffic after a server-side pickup.
+    pub async fn sync_java_inventory_after_pickup(&self) {
+        let ClientPlatform::Java(client) = self.client.as_ref() else {
+            return;
+        };
+
+        let handler = self.player_screen_handler.lock().await;
+        let behaviour = handler.get_behaviour();
+        let mut slots = Vec::with_capacity(behaviour.slots.len());
+        for slot in &behaviour.slots {
+            slots.push(ItemStackSerializer::from(slot.get_cloned_stack().await));
+        }
+        let carried = ItemStackSerializer::from(behaviour.cursor_stack.lock().await.clone());
+        let state_id = behaviour.next_revision();
+
+        client
+            .send_packet_now(&CSetContainerContent::new(
+                VarInt(behaviour.sync_id.into()),
+                VarInt(state_id as i32),
+                &slots,
+                &carried,
+            ))
+            .await;
+    }
+
     pub async fn add_exhaustion(&self, exhaustion: f32) {
         if self.abilities.lock().await.invulnerable {
             return;
