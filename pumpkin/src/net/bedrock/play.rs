@@ -1153,6 +1153,7 @@ impl BedrockClient {
     pub async fn handle_respawn(&self, player: &Arc<Player>, packet: SRespawn) {
         if packet.state
             != pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
+            || !player.living_entity.dead.load(Ordering::Relaxed)
         {
             return;
         }
