@@ -1401,7 +1401,7 @@ impl BedrockClient {
                                             container_name: ContainerName::CraftingInput,
                                             dynamic_id: None,
                                         },
-                                        i as u8,
+                                        bedrock_crafting_input_slot_id(is_player, i as u8),
                                         &grid_stack,
                                     );
                                 }
@@ -2079,6 +2079,14 @@ fn map_bedrock_container_slot(
     }
 }
 
+const fn bedrock_crafting_input_slot_id(is_player_screen: bool, grid_index: u8) -> u8 {
+    if is_player_screen {
+        28 + grid_index
+    } else {
+        32 + grid_index
+    }
+}
+
 struct SlotUpdate {
     container_name: FullContainerName,
     slot_id: u8,
@@ -2123,7 +2131,15 @@ mod inventory_stack_response_tests {
     use pumpkin_data::{item::Item, item_stack::ItemStack};
     use pumpkin_protocol::bedrock::network_item::{ContainerName, FullContainerName};
 
-    use super::record_update;
+    use super::{bedrock_crafting_input_slot_id, record_update};
+
+    #[test]
+    fn crafting_response_uses_bedrock_ui_slot_ids() {
+        assert_eq!(bedrock_crafting_input_slot_id(true, 0), 28);
+        assert_eq!(bedrock_crafting_input_slot_id(true, 3), 31);
+        assert_eq!(bedrock_crafting_input_slot_id(false, 0), 32);
+        assert_eq!(bedrock_crafting_input_slot_id(false, 8), 40);
+    }
 
     #[test]
     fn split_stack_response_uses_destination_uid() {
