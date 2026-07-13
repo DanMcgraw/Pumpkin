@@ -504,6 +504,8 @@ pub struct Player {
     pub bedrock_spawned: AtomicBool,
     /// The amount of time (in ticks) the client has to report having finished loading before being timed out.
     pub client_loaded_timeout: AtomicU32,
+    /// Whether a Bedrock death/respawn exchange is waiting for final client readiness.
+    pub bedrock_respawn_pending: AtomicBool,
     /// Item usage tracking for bows, crossbows, etc.
     pub using_item: AtomicBool,
     pub item_use_start_time: AtomicI32,
@@ -704,6 +706,7 @@ impl Player {
             client_loaded: AtomicBool::new(false),
             bedrock_spawned: AtomicBool::new(false),
             client_loaded_timeout: AtomicU32::new(60),
+            bedrock_respawn_pending: AtomicBool::new(false),
             // Item usage tracking
             using_item: AtomicBool::new(false),
             item_use_start_time: AtomicI32::new(0),
@@ -2933,6 +2936,28 @@ impl Player {
         self.world().respawn_player(self, false).await;
     }
 
+    /// Restores a saved dead player before the Bedrock login stream is constructed.
+    ///
+    /// Bedrock cannot safely enter the death/respawn exchange before it has initialized
+    /// the local player. This updates only server-side state so no gameplay packets are
+    /// emitted while the login packet sequence is still being assembled.
+    pub(crate) fn revive_persisted_death_for_bedrock_login(&self) {
+        let living = &self.living_entity;
+        living.health.store(living.get_max_health());
+        living.absorption.store(0.0);
+        living.fall_distance.store(0.0);
+        living.death_time.store(0, Ordering::Relaxed);
+        living.dead.store(false, Ordering::Relaxed);
+        living.entity.removed.store(false, Ordering::Relaxed);
+        living.entity.velocity.store(Vector3::default());
+        living.entity.extinguish();
+        living.movement_input.store(Vector3::default());
+        living.jumping.store(false, Ordering::Relaxed);
+        self.hunger_manager.restart();
+        self.last_sent_health.store(-1, Ordering::Relaxed);
+        self.bedrock_respawn_pending.store(false, Ordering::Relaxed);
+    }
+
     pub async fn ban(&self, server: &Server, reason: Option<TextComponent>) {
         let mut banned_players = server.data.banned_player_list.write().await;
         let string_reason = reason.clone().map_or_else(
@@ -3053,6 +3078,7 @@ impl Player {
                     .await;
             }
             ClientPlatform::Bedrock(client) => {
+                self.bedrock_respawn_pending.store(true, Ordering::Relaxed);
                 let (cause, messages) = match &*death_msg.0.content {
                     pumpkin_util::text::TextContent::Translate {
                         translate,

@@ -527,6 +527,16 @@ impl Server {
             player.read_nbt(&mut nbt_data).await;
         }
 
+        if matches!(player.client.as_ref(), ClientPlatform::Bedrock(_))
+            && player.living_entity.health.load() <= 0.0
+        {
+            debug!(
+                "Reviving persisted dead Bedrock player {} before login initialization",
+                player.gameprofile.name
+            );
+            player.revive_persisted_death_for_bedrock_login();
+        }
+
         // Wrap in Arc after data is loaded
         let player = Arc::new(player);
         {

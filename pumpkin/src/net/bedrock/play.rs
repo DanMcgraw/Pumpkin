@@ -989,7 +989,9 @@ impl BedrockClient {
         packet: SPlayerAction,
     ) {
         if matches!(packet.action, PlayerAction::Respawn) {
-            if player.living_entity.dead.load(Ordering::Relaxed) {
+            if player.bedrock_respawn_pending.load(Ordering::Relaxed)
+                && player.living_entity.dead.load(Ordering::Relaxed)
+            {
                 player.respawn().await;
             }
             return;
@@ -1153,7 +1155,10 @@ impl BedrockClient {
     pub async fn handle_respawn(&self, player: &Arc<Player>, packet: SRespawn) {
         if packet.state
             != pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
-            || !player.living_entity.dead.load(Ordering::Relaxed)
+            || player
+                .bedrock_respawn_pending
+                .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
         {
             return;
         }
