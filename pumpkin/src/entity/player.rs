@@ -3032,24 +3032,6 @@ impl Player {
                 should_select_block: true,
             })
             .await;
-
-        let cursor = {
-            let handler = self.player_screen_handler.lock().await;
-            let behaviour = handler.get_behaviour();
-            behaviour.cursor_stack.lock().await.clone()
-        };
-        client
-            .enqueue_packet(&CInventoryContent {
-                // Protocol 1001 uses the UI cursor container ID here.
-                container_id: VarUInt(59),
-                slots: vec![NetworkItemStackDescriptor::from(&cursor)],
-                full_container_name: FullContainerName {
-                    container_name: ContainerName::Cursor,
-                    dynamic_id: None,
-                },
-                storage_item: NetworkItemStackDescriptor::default(),
-            })
-            .await;
     }
 
     /// Sends the authoritative 36-slot player inventory after an ordinary
@@ -5846,27 +5828,9 @@ impl InventoryPlayer for Player {
                 ClientPlatform::Java(java) => {
                     java.enqueue_packet(packet).await;
                 }
-                ClientPlatform::Bedrock(bedrock) => {
-                    use pumpkin_protocol::bedrock::{
-                        client::inventory_content::CInventoryContent,
-                        network_item::{
-                            ContainerName, FullContainerName, NetworkItemStackDescriptor,
-                        },
-                    };
-                    use pumpkin_protocol::codec::var_uint::VarUInt;
-
-                    let item_desc = NetworkItemStackDescriptor::from(&*packet.stack.0);
-                    let bedrock_packet = CInventoryContent {
-                        container_id: VarUInt(59),
-                        slots: vec![item_desc],
-                        full_container_name: FullContainerName {
-                            container_name: ContainerName::Cursor,
-                            dynamic_id: None,
-                        },
-                        storage_item: NetworkItemStackDescriptor::default(),
-                    };
-                    bedrock.enqueue_packet(&bedrock_packet).await;
-                }
+                // Bedrock represents the cursor in item stack responses. Cursor is a
+                // container slot type, not an addressable runtime inventory container.
+                ClientPlatform::Bedrock(_) => {}
             }
         })
     }

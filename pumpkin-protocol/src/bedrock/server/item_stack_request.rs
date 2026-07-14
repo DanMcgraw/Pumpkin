@@ -300,7 +300,7 @@ mod tests {
             1, // action count
             3, // Drop
             1, // item count
-            29, // Inventory FullContainerName
+            32, // Inventory FullContainerName
             0, // no dynamic container id
             0, // hotbar slot 0
             246, 1, // stack id 123, zig-zag encoded

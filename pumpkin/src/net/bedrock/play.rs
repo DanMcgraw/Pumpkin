@@ -258,7 +258,7 @@ impl BedrockClient {
         chunker::update_position(player).await;
     }
 
-    pub async fn handle_set_local_player_as_initialized(
+    pub fn handle_set_local_player_as_initialized(
         &self,
         player: &Arc<Player>,
         packet: &SSetLocalPlayerAsInitialized,
@@ -276,7 +276,6 @@ impl BedrockClient {
         }
         player.set_client_loaded(true);
         player.reset_bedrock_input_state();
-        player.send_bedrock_player_snapshot().await;
     }
 
     #[expect(clippy::too_many_lines)]
@@ -1077,18 +1076,6 @@ impl BedrockClient {
             container_id: packet.container_id,
             container_type: packet.container_type,
             server_initiated: false,
-        })
-        .await;
-
-        // Sync the cursor (make it empty) to Bedrock client
-        self.enqueue_packet(&CInventoryContent {
-            container_id: VarUInt(59), // Cursor container ID
-            slots: vec![NetworkItemStackDescriptor::default()],
-            full_container_name: FullContainerName {
-                container_name: ContainerName::Cursor,
-                dynamic_id: None,
-            },
-            storage_item: NetworkItemStackDescriptor::default(),
         })
         .await;
 
