@@ -1,7 +1,7 @@
 use std::io::{Error, Write};
 
 use crate::{
-    bedrock::client::gamerules_changed::GameRules,
+    bedrock::client::gamerules_changed::StartGameRules,
     codec::{var_int::VarInt, var_long::VarLong, var_uint::VarUInt, var_ulong::VarULong},
     serial::PacketWrite,
 };
@@ -136,7 +136,7 @@ pub struct LevelSettings {
     pub commands_enabled: bool,
     pub is_texture_packs_required: bool,
 
-    pub rule_data: GameRules,
+    pub rule_data: StartGameRules,
     pub experiments: Experiments,
 
     pub bonus_chest: bool,

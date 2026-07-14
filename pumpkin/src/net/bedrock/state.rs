@@ -5,7 +5,7 @@ use pumpkin_data::{
     },
 };
 use pumpkin_protocol::bedrock::client::gamerules_changed::{
-    GameRule as BedrockGameRule, GameRuleValue as BedrockGameRuleValue, GameRules,
+    GameRule as BedrockGameRule, GameRuleValue as BedrockGameRuleValue, StartGameRules,
 };
 
 /// Maps Pumpkin's Java-style dimension registry entries to Bedrock's fixed
@@ -24,8 +24,8 @@ pub fn dimension_id(dimension: &Dimension) -> i32 {
 
 /// Returns the Bedrock-visible subset of Pumpkin's gamerules.
 #[must_use]
-pub fn game_rules(registry: &GameRuleRegistry) -> GameRules {
-    GameRules::new(
+pub fn game_rules(registry: &GameRuleRegistry) -> StartGameRules {
+    StartGameRules::new(
         PumpkinGameRule::all()
             .iter()
             .filter_map(|rule| game_rule(rule, registry.get(rule)))
