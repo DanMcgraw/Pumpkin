@@ -235,14 +235,85 @@ Plan:
 3. Add packet decode/golden tests and a smoke test covering biome changes,
    non-player actors, and component-based inventory items.
 
-## Suggested implementation order
+## Three-phase implementation plan
 
-1. Fix dimension-aware chunk packets and Bedrock chunk invalidation.
-2. Implement typed gamerules and clock-freeze propagation.
-3. Centralise live player attribute snapshots and runtime deltas.
-4. Introduce movement reconciliation and input-tick tracking.
-5. Add initial inventory/scoreboard snapshots, then cache support and any
-   protocol-version registry work.
+### Phase 1 — world-state correctness
+
+**Goal:** make the world the client sees unambiguously match the world the
+server has selected.
+
+Work:
+
+1. Replace the literal `dimension: 0` on `CLevelChunk` with the active
+   Bedrock dimension and introduce one shared Pumpkin-to-Bedrock dimension
+   mapper.
+2. Send a Bedrock empty/unload chunk for every `unloading_chunks` entry, in
+   the correct order relative to newly loaded/replacement chunks.
+3. Implement typed Bedrock gamerules and send their initial state in
+   `StartGame`.
+4. Send gamerule deltas for `dodaylightcycle` and the initially supported
+   gameplay rules; coordinate time and daylight-cycle updates.
+
+Exit criteria:
+
+- Overworld -> nether/end -> overworld sends chunks with the matching
+  dimension field and leaves no stale chunks after a view-distance reduction.
+- A frozen clock stays frozen on a Bedrock client; a rule change produces a
+  decodable typed gamerule packet.
+- Unit/golden tests cover gamerule encoding and chunk dimension/unload
+  packets, plus a Bedrock-client smoke test covers the two scenarios above.
+
+### Phase 2 — player-state convergence
+
+**Goal:** ensure spawn, routine updates, and recovery all report the same
+player state to Bedrock.
+
+Work:
+
+1. Replace hard-coded initial attributes with a shared live player-attribute
+   builder.
+2. Emit health, max-health, hunger, saturation, air, and supported movement
+   attribute deltas together when their authoritative values change.
+3. Add initial armour/offhand, selected-slot, and cursor inventory sync.
+4. Establish input-tick tracking and server-side movement validation; send
+   `CCorrectPlayerMove` for rejected/adjusted predictions.
+5. Recheck respawn and dimension-transition ordering against this consolidated
+   player snapshot path.
+
+Exit criteria:
+
+- Join, eating, damage/healing, drowning, a max-health change, death/respawn,
+  and a dimension transition display the correct Bedrock HUD and inventory.
+- Collision, knockback, and invalid/stale `PlayerAuthInput` packets converge
+  on the server position without persistent client drift.
+- Packet tests assert the field values and a real Bedrock smoke test exercises
+  the full state sequence.
+
+### Phase 3 — session completeness and protocol hardening
+
+**Goal:** finish state replay and protocol features that improve robustness,
+performance, and future-version safety.
+
+Work:
+
+1. Add `Scoreboard::send_snapshot_to(player)` for objectives, scores, and
+   teams, replacing pointer-derived scoreboard IDs with stable allocations.
+2. Record `SClientCacheStatus` capability. Keep chunk caching disabled until
+   blob tracking, misses, and invalidation are implemented and tested.
+3. Capture a version-pinned vanilla Bedrock bootstrap trace and close only the
+   required registry gaps (biomes, entity identifiers, item components, or
+   other negotiated-version definitions).
+4. Expand packet capture/golden coverage and maintain the compatibility matrix
+   for each supported Bedrock version.
+
+Exit criteria:
+
+- A player joining an already populated world receives a complete scoreboard
+  and inventory/UI snapshot before interaction.
+- Cache negotiation has an explicit safe fallback, and cache support is only
+  enabled after reconnect, invalidation, and dimension-change tests pass.
+- Bootstrap packets and representative entity/biome/component-item traffic are
+  validated against the selected Bedrock protocol version.
 
 ## Verification gate
 
