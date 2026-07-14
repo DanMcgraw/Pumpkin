@@ -300,7 +300,7 @@ mod tests {
             1, // action count
             3, // Drop
             1, // item count
-            32, // Inventory FullContainerName
+            29, // Inventory FullContainerName
             0, // no dynamic container id
             0, // hotbar slot 0
             246, 1, // stack id 123, zig-zag encoded
@@ -323,5 +323,44 @@ mod tests {
         assert_eq!(source.slot_id, 0);
         assert_eq!(source.stack_id.0, 123);
         assert!(!randomly);
+    }
+
+    #[test]
+    fn reads_hotbar_to_cursor_take_request() {
+        let packet = SItemStackRequest::read(&mut Cursor::new([
+            1,  // request count
+            2,  // request id 1, zig-zag encoded
+            1,  // action count
+            0,  // Take
+            4,  // item count
+            28, // HotBar FullContainerName
+            0,  // no dynamic container id
+            0,  // hotbar slot 0
+            10, // stack id 5, zig-zag encoded
+            59, // Cursor FullContainerName
+            0,  // no dynamic container id
+            0,  // cursor slot 0
+            0,  // empty cursor stack id
+            0,  // no filter strings
+            0, 0, 0, 0, // filter cause
+        ]))
+        .unwrap();
+
+        let ItemStackRequestAction::Take {
+            count,
+            source,
+            destination,
+        } = &packet.requests[0].actions[0]
+        else {
+            panic!("expected take action");
+        };
+        assert_eq!(*count, 4);
+        assert_eq!(source.container_name.container_name, ContainerName::HotBar);
+        assert_eq!(source.stack_id.0, 5);
+        assert_eq!(
+            destination.container_name.container_name,
+            ContainerName::Cursor
+        );
+        assert_eq!(destination.stack_id.0, 0);
     }
 }
