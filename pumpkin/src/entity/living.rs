@@ -234,9 +234,9 @@ impl LivingEntity {
         for player in recipients {
             match player.client.as_ref() {
                 crate::net::ClientPlatform::Java(client) => {
-                    // Pickup removes an entity from the client's world and must
-                    // not be dropped behind chunk/entity traffic.
-                    client.send_packet_now(&java_packet).await;
+                    // Keep pickup behind the entity's reliable spawn in the
+                    // gameplay FIFO. The separate bulk lane keeps this prompt.
+                    client.enqueue_packet(&java_packet).await;
                 }
                 crate::net::ClientPlatform::Bedrock(client) if take_entire_actor => {
                     // Bedrock's packet has no amount field and removes the whole

@@ -4504,7 +4504,9 @@ impl World {
 
     pub fn spawn_entity_non_save(&self, entity: &Arc<dyn EntityBase>) {
         let _base_entity = entity.get_entity();
-        self.broadcast_entity_spawn(entity);
+        // This synchronous path is used while generating a chunk. Runtime
+        // spawns use the reliable async path below.
+        self.broadcast_entity_spawn_best_effort(entity);
         self.spawn_state.load().add_entity(self, entity.as_ref());
         self.insert_entity_into_chunk_index(entity);
 
@@ -4524,21 +4526,38 @@ impl World {
         entity: Arc<dyn EntityBase>,
         spawn_reason: impl Into<String>,
     ) {
-        self.broadcast_entity_spawn(&entity);
+        self.broadcast_entity_spawn(&entity).await;
         entity.init_data_tracker().await;
         self.add_entity_silent_with_reason(entity, spawn_reason)
             .await;
     }
 
-    pub fn broadcast_entity_spawn(&self, entity: &Arc<dyn EntityBase>) {
+    pub async fn broadcast_entity_spawn(&self, entity: &Arc<dyn EntityBase>) {
         let base_entity = entity.get_entity();
         let chunk_pos = base_entity.chunk_pos.load();
 
-        let players = self.players.load();
-        for player in players.iter() {
+        let recipients: Vec<_> = self
+            .players
+            .load()
+            .iter()
+            .filter(|player| {
+                let center = player.get_entity().chunk_pos.load();
+                let view_distance = get_view_distance(player).get() as i32;
+                is_within_view_distance(chunk_pos, center, view_distance)
+            })
+            .cloned()
+            .collect();
+
+        for player in recipients {
+            player.client.enqueue_spawn_packet(entity).await;
+        }
+    }
+
+    fn broadcast_entity_spawn_best_effort(&self, entity: &Arc<dyn EntityBase>) {
+        let chunk_pos = entity.get_entity().chunk_pos.load();
+        for player in self.players.load().iter() {
             let center = player.get_entity().chunk_pos.load();
             let view_distance = get_view_distance(player).get() as i32;
-
             if is_within_view_distance(chunk_pos, center, view_distance) {
                 player.client.try_enqueue_spawn_packet(entity);
             }
@@ -4623,11 +4642,12 @@ impl World {
         });
 
         let chunk_pos = base_entity.chunk_pos.load();
-        self.broadcast_to_chunk_editioned_sync(
+        self.broadcast_to_chunk_editioned(
             chunk_pos,
             &CRemoveEntities::new(&[base_entity.entity_id.into()]),
             &CRemoveActor::new(VarLong(base_entity.entity_id as i64)),
-        );
+        )
+        .await;
     }
 
     pub async fn remove_entities_in_chunks(self: &Arc<Self>, chunks: &[Vector2<i32>]) {
@@ -5926,6 +5946,33 @@ impl World {
         let recipients_by_version =
             Self::collect_java_recipients_by_version(java_recipients.into_iter());
         Self::broadcast_java_grouped(je_packet, recipients_by_version);
+    }
+
+    /// Reliably broadcasts lifecycle packets to players tracking a chunk.
+    pub async fn broadcast_to_chunk_editioned<J: ClientPacket, B: BClientPacket>(
+        &self,
+        chunk_pos: Vector2<i32>,
+        je_packet: &J,
+        be_packet: &B,
+    ) {
+        let recipients: Vec<_> = self
+            .players
+            .load()
+            .iter()
+            .filter(|player| {
+                let center = player.get_entity().chunk_pos.load();
+                let view_distance = get_view_distance(player).get() as i32;
+                is_within_view_distance(chunk_pos, center, view_distance)
+            })
+            .cloned()
+            .collect();
+
+        for player in recipients {
+            match player.client.as_ref() {
+                ClientPlatform::Java(client) => client.enqueue_packet(je_packet).await,
+                ClientPlatform::Bedrock(client) => client.enqueue_packet(be_packet).await,
+            }
+        }
     }
 
     /// Broadcasts a Bedrock-only entity correction to players tracking a chunk.

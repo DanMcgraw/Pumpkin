@@ -3,7 +3,7 @@ use pumpkin_protocol::java::client::play::{
 };
 use pumpkin_world::level::SyncChunk;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::{io::Write, sync::Arc};
 
@@ -106,6 +106,12 @@ pub struct JavaClient {
     outgoing_packet_priority_send: Sender<OutgoingPacket>,
     /// A high-priority queue of serialized packets to send to the network.
     outgoing_packet_priority_recv: Option<Receiver<OutgoingPacket>>,
+    /// A bulk queue for complete, ordered chunk batches.
+    outgoing_packet_bulk_send: Sender<OutgoingPacket>,
+    /// The receiving side of the bulk chunk queue.
+    outgoing_packet_bulk_recv: Option<Receiver<OutgoingPacket>>,
+    /// Number of transient packets discarded because the normal queue was full.
+    dropped_transient_packets: AtomicU64,
     /// The packet encoder for outgoing packets.
     network_writer: Arc<Mutex<TCPNetworkEncoder<BufWriter<OwnedWriteHalf>>>>,
     /// The packet decoder for incoming packets.
@@ -128,26 +134,28 @@ pub enum OutgoingPacketType {
 }
 
 struct OutgoingPacket {
-    data: Bytes,
+    /// One logical outbound unit. Chunk batches contain all of their framing and
+    /// data packets so gameplay traffic cannot split a Start/Data/End sequence.
+    data: Vec<Bytes>,
     completion: Option<oneshot::Sender<()>>,
 }
 
 impl OutgoingPacket {
-    const fn normal(data: Bytes) -> Self {
+    fn normal(data: Bytes) -> Self {
         Self {
-            data,
+            data: vec![data],
             completion: None,
         }
     }
 
-    const fn high_priority(data: Bytes, completion: oneshot::Sender<()>) -> Self {
+    fn high_priority(data: Bytes, completion: oneshot::Sender<()>) -> Self {
         Self {
-            data,
+            data: vec![data],
             completion: Some(completion),
         }
     }
 
-    const fn normal_with_completion(data: Bytes, completion: oneshot::Sender<()>) -> Self {
+    fn chunk_batch(data: Vec<Bytes>, completion: oneshot::Sender<()>) -> Self {
         Self {
             data,
             completion: Some(completion),
@@ -161,6 +169,10 @@ impl JavaClient {
         let (read, write) = tcp_stream.into_split();
         let (send, recv) = tokio::sync::mpsc::channel(4096);
         let (priority_send, priority_recv) = tokio::sync::mpsc::channel(4096);
+        // A chunk batch is one queue entry regardless of how many chunks it
+        // contains, so a small queue provides ample buffering and hard memory
+        // backpressure for bulk traffic.
+        let (bulk_send, bulk_recv) = tokio::sync::mpsc::channel(32);
         Self {
             id,
             gameprofile: Mutex::new(None),
@@ -174,6 +186,9 @@ impl JavaClient {
             outgoing_packet_queue_recv: Some(recv),
             outgoing_packet_priority_send: priority_send,
             outgoing_packet_priority_recv: Some(priority_recv),
+            outgoing_packet_bulk_send: bulk_send,
+            outgoing_packet_bulk_recv: Some(bulk_recv),
+            dropped_transient_packets: AtomicU64::new(0),
             version: AtomicCell::new(CURRENT_MC_VERSION),
             network_writer: Arc::new(Mutex::new(TCPNetworkEncoder::new(BufWriter::new(write)))),
             network_reader: Mutex::new(TCPNetworkDecoder::new(BufReader::new(read))),
@@ -376,23 +391,15 @@ impl JavaClient {
             chunk_packets.push(Bytes::from(buf));
         }
 
-        // Chunk batches must remain in the same ordered stream as the initial
-        // play-state packets. Sending every chunk through the priority queue can
-        // overtake login packets and starve the normal queue while chunks load.
-        self.enqueue_packet(&CChunkBatchStart).await;
         let sent_chunks = chunk_packets.len() as u16;
-        for packet in chunk_packets {
-            self.enqueue_packet_data(packet).await;
-        }
-        self.enqueue_packet_and_wait(&CChunkBatchEnd::new(sent_chunks))
+        self.enqueue_chunk_batch_and_wait(chunk_packets, sent_chunks)
             .await;
     }
 
-    async fn enqueue_packet_and_wait<P: ClientPacket>(&self, packet: &P) {
-        let mut buf = Vec::new();
-        self.write_packet(packet, &mut buf).unwrap();
-        let payload = Bytes::from(buf);
-
+    async fn packet_after_event<P: ClientPacket>(&self, packet: &P) -> Option<Bytes> {
+        let mut packet_buf = Vec::new();
+        self.write_packet(packet, &mut packet_buf).unwrap();
+        let payload = Bytes::from(packet_buf);
         let player = self.player.lock().await.clone();
         let cancelled = if let Some(player) = player.as_ref() {
             player
@@ -401,23 +408,33 @@ impl JavaClient {
         } else {
             false
         };
+        (!cancelled).then_some(payload)
+    }
 
-        if cancelled {
+    async fn enqueue_chunk_batch_and_wait(&self, chunk_packets: Vec<Bytes>, sent_chunks: u16) {
+        let Some(start) = self.packet_after_event(&CChunkBatchStart).await else {
             return;
-        }
+        };
+        let Some(end) = self
+            .packet_after_event(&CChunkBatchEnd::new(sent_chunks))
+            .await
+        else {
+            return;
+        };
 
+        let mut batch = Vec::with_capacity(chunk_packets.len() + 2);
+        batch.push(start);
+        batch.extend(chunk_packets);
+        batch.push(end);
         let (completion_tx, completion_rx) = oneshot::channel();
         if let Err(err) = self
-            .outgoing_packet_queue_send
-            .send(OutgoingPacket::normal_with_completion(
-                payload,
-                completion_tx,
-            ))
+            .outgoing_packet_bulk_send
+            .send(OutgoingPacket::chunk_batch(batch, completion_tx))
             .await
         {
             if !self.close_token.is_cancelled() {
                 error!(
-                    "Failed to add packet to the outgoing packet queue for client {}: {}",
+                    "Failed to add chunk batch to the bulk packet queue for client {}: {}",
                     self.id, err
                 );
             }
@@ -485,10 +502,20 @@ impl JavaClient {
         {
             match err {
                 tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                    let dropped = self
+                        .dropped_transient_packets
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
                     trace!(
-                        "Failed to add packet to the outgoing packet queue for client {}: channel full",
+                        "Dropped transient packet for client {} because the normal queue is full",
                         self.id
                     );
+                    if dropped == 1 || dropped.is_power_of_two() {
+                        warn!(
+                            "Client {} has dropped {} transient outgoing packets because the normal queue is full",
+                            self.id, dropped
+                        );
+                    }
                 }
                 tokio::sync::mpsc::error::TrySendError::Closed(_) => {
                     if !self.close_token.is_cancelled() {
@@ -728,6 +755,10 @@ impl JavaClient {
             .outgoing_packet_priority_recv
             .take()
             .expect("This was set in the new fn");
+        let mut bulk_packet_receiver = self
+            .outgoing_packet_bulk_recv
+            .take()
+            .expect("This was set in the new fn");
         let close_token = self.close_token.clone();
         let writer = self.network_writer.clone();
         let id = self.id;
@@ -738,6 +769,7 @@ impl JavaClient {
                     () = close_token.cancelled() => None,
                     res = priority_packet_receiver.recv() => res,
                     res = packet_receiver.recv() => res,
+                    res = bulk_packet_receiver.recv() => res,
                 };
 
                 let Some(packet_data) = recv_result else {
@@ -748,17 +780,52 @@ impl JavaClient {
                 packet_batch.push(packet_data);
 
                 while packet_batch.len() < MAX_BATCH_SIZE {
-                    match priority_packet_receiver.try_recv() {
-                        Ok(packet_data) => {
-                            packet_batch.push(packet_data);
-                            continue;
+                    let mut added = false;
+
+                    // Bound every lane's contribution per pass. This retains
+                    // low latency without allowing a continuously busy priority
+                    // lane to starve reliable gameplay or bulk chunk progress.
+                    for _ in 0..8 {
+                        match priority_packet_receiver.try_recv() {
+                            Ok(packet_data) => {
+                                packet_batch.push(packet_data);
+                                added = true;
+                            }
+                            Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
                         }
-                        Err(TryRecvError::Disconnected | TryRecvError::Empty) => {}
+                        if packet_batch.len() == MAX_BATCH_SIZE {
+                            break;
+                        }
                     }
 
-                    match packet_receiver.try_recv() {
-                        Ok(packet_data) => packet_batch.push(packet_data),
-                        Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
+                    for _ in 0..32 {
+                        if packet_batch.len() == MAX_BATCH_SIZE {
+                            break;
+                        }
+                        match packet_receiver.try_recv() {
+                            Ok(packet_data) => {
+                                packet_batch.push(packet_data);
+                                added = true;
+                            }
+                            Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
+                        }
+                    }
+
+                    for _ in 0..4 {
+                        if packet_batch.len() == MAX_BATCH_SIZE {
+                            break;
+                        }
+                        match bulk_packet_receiver.try_recv() {
+                            Ok(packet_data) => {
+                                packet_batch.push(packet_data);
+                                added = true;
+                            }
+                            Err(TryRecvError::Disconnected | TryRecvError::Empty) => break,
+                        }
+                    }
+
+                    if !added {
+                        break;
                     }
                 }
 
@@ -766,12 +833,17 @@ impl JavaClient {
                     let mut writer = writer.lock().await;
                     let mut failed = false;
                     for packet in &packet_batch {
-                        if let Err(err) = writer.write_packet(packet.data.clone()).await {
-                            failed = true;
-                            // It is expected that the packet will fail if we are closed
-                            if !close_token.is_cancelled() {
-                                warn!("Failed to send packet to client {id}: {err}");
+                        for packet_data in &packet.data {
+                            if let Err(err) = writer.write_packet(packet_data.clone()).await {
+                                failed = true;
+                                // It is expected that the packet will fail if we are closed
+                                if !close_token.is_cancelled() {
+                                    warn!("Failed to send packet to client {id}: {err}");
+                                }
+                                break;
                             }
+                        }
+                        if failed {
                             break;
                         }
                     }

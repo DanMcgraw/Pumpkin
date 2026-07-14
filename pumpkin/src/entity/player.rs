@@ -178,6 +178,7 @@ pub struct ChunkManager {
 
 impl ChunkManager {
     pub const NOTCHIAN_BATCHES_WITHOUT_ACK_UNTIL_PAUSE: u8 = 10;
+    const MAX_CHUNKS_PER_TICK: usize = 16;
     const ACK_STALL_FALLBACK_DELAY: Duration = Duration::from_millis(250);
 
     #[must_use]
@@ -353,9 +354,17 @@ impl ChunkManager {
         self.last_chunk_batch_sent_at = Instant::now();
     }
 
-    pub const fn handle_acknowledge(&mut self, chunks_per_tick: f32) {
+    pub fn handle_acknowledge(&mut self, chunks_per_tick: f32) {
         self.batches_sent_since_ack = 0;
-        self.chunks_per_tick = chunks_per_tick.ceil() as usize;
+        self.chunks_per_tick = Self::validated_chunks_per_tick(chunks_per_tick);
+    }
+
+    fn validated_chunks_per_tick(chunks_per_tick: f32) -> usize {
+        if chunks_per_tick.is_finite() {
+            (chunks_per_tick.ceil() as usize).clamp(1, Self::MAX_CHUNKS_PER_TICK)
+        } else {
+            1
+        }
     }
 
     pub fn push_chunk(&mut self, position: Vector2<i32>, chunk: &SyncChunk) {
@@ -419,6 +428,22 @@ impl ChunkManager {
         self.last_chunk_batch_sent_at = Instant::now();
 
         chunks.into_boxed_slice()
+    }
+}
+
+#[cfg(test)]
+mod chunk_manager_tests {
+    use super::ChunkManager;
+
+    #[test]
+    fn chunk_acknowledgement_rate_is_bounded() {
+        assert_eq!(ChunkManager::validated_chunks_per_tick(-5.0), 1);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(0.0), 1);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(4.2), 5);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(16.0), 16);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(100.0), 16);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(f32::NAN), 1);
+        assert_eq!(ChunkManager::validated_chunks_per_tick(f32::INFINITY), 1);
     }
 }
 

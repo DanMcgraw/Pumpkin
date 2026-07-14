@@ -249,6 +249,18 @@ impl ClientPlatform {
         }
     }
 
+    /// Reliably queues an entity spawn. Java spawns share the gameplay FIFO so
+    /// later metadata, pickup, and removal packets cannot overtake them.
+    pub async fn enqueue_spawn_packet(&self, entity: &Arc<dyn crate::entity::EntityBase>) {
+        match self {
+            Self::Java(java) => {
+                java.enqueue_packet(&entity.get_entity().create_spawn_packet())
+                    .await;
+            }
+            Self::Bedrock(bedrock) => bedrock.enqueue_spawn_packet(entity.clone()),
+        }
+    }
+
     pub async fn send_chunks(&self, chunks: &[SyncChunk]) {
         match self {
             Self::Java(java) => java.send_chunks(chunks).await,
