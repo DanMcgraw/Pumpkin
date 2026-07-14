@@ -2274,10 +2274,10 @@ impl World {
             })
             .await;
 
-        // Keep the initial join payload at the known-working Phase 1 boundary.
-        // Equipment and hotbar snapshots are reserved for recovery paths until
-        // each packet can be reintroduced independently.
-        player.sync_bedrock_main_inventory().await;
+        // Match Geyser's deterministic inventory bootstrap. These packets use
+        // the awaited join path so later actor and command state cannot pass
+        // the main, armor, or offhand contents in the writer queues.
+        player.send_initial_bedrock_inventory_state().await;
 
         {
             let mut abilities = player.abilities.lock().await;
@@ -2305,9 +2305,17 @@ impl World {
                 .await;
         };
 
+        // Geyser establishes movement independently from HUD state, then lets
+        // health synchronization carry health, hunger, and saturation. Keeping
+        // these groups narrow avoids an invalid blanket attribute replay at the
+        // SetLocalPlayerAsInitialized boundary.
         client
-            .enqueue_packet_internal(&player.bedrock_initial_attribute_packet())
+            .send_game_packet(&player.bedrock_movement_attribute_packet())
             .await;
+        client
+            .send_game_packet(&player.bedrock_vitals_attribute_packet())
+            .await;
+        player.mark_bedrock_join_state_sent();
 
         // --- MULTIPLAYER BROADCASTING ---
 

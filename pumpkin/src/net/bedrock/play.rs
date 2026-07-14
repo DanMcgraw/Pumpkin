@@ -1323,7 +1323,7 @@ impl BedrockClient {
                 }
                 player.set_client_loaded(true);
                 player.reset_bedrock_input_state();
-                player.send_bedrock_player_snapshot().await;
+                player.send_bedrock_recovery_state().await;
             }
             // TODO
             _ => {}
@@ -1355,7 +1355,7 @@ impl BedrockClient {
             network_position = ?network_position,
             "Completing Bedrock respawn handshake"
         );
-        self.enqueue_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
+        self.send_game_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
             network_position,
             pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ReadyToSpawn,
             VarULong(player.entity_id() as u64),
@@ -1363,7 +1363,7 @@ impl BedrockClient {
         .await;
         player.set_client_loaded(true);
         player.reset_bedrock_input_state();
-        player.send_bedrock_player_snapshot().await;
+        player.send_bedrock_recovery_state().await;
     }
 
     pub async fn handle_chat_command(

@@ -121,8 +121,6 @@ pub async fn send_attribute_updates_for_living(
             }
         }
 
-        let modifiers_count = modifiers.len();
-
         // Move modifiers into the property
         je_properties.push(JeProperty::new(
             VarInt(i32::from(attribute.id)),
@@ -130,29 +128,99 @@ pub async fn send_attribute_updates_for_living(
             modifiers,
         ));
 
-        let name = match attribute.id {
-            22 => "minecraft:movement".to_string(),
-            19 => "minecraft:health".to_string(),
-            18 => "minecraft:absorption".to_string(),
-            2 => "minecraft:attack_damage".to_string(),
-            0 => "minecraft:armor".to_string(),
-            16 => "minecraft:knockback_resistance".to_string(),
-            17 => "minecraft:luck".to_string(),
-            13 => "minecraft:follow_range".to_string(),
-            15 => "minecraft:horse.jump_strength".to_string(),
+        let (name, min_value, max_value, current_value, default_value) = match attribute.id {
+            22 => (
+                "minecraft:movement".to_string(),
+                0.0,
+                1024.0,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            // Java exposes maximum health as an attribute. Bedrock's health
+            // attribute combines that bound with the entity's current health.
+            19 => {
+                let max_health = living.get_max_health().max(1.0);
+                (
+                    "minecraft:health".to_string(),
+                    0.0,
+                    max_health,
+                    living.health.load().clamp(0.0, max_health),
+                    max_health,
+                )
+            }
+            // Absorption amount is live entity state; MAX_ABSORPTION is only
+            // the Java-side attribute that caused this delta to be emitted.
+            18 => (
+                "minecraft:absorption".to_string(),
+                0.0,
+                1024.0,
+                living.get_absorption().clamp(0.0, 1024.0),
+                0.0,
+            ),
+            2 => (
+                "minecraft:attack_damage".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            0 => (
+                "minecraft:armor".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            16 => (
+                "minecraft:knockback_resistance".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            17 => (
+                "minecraft:luck".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            13 => (
+                "minecraft:follow_range".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
+            15 => (
+                "minecraft:horse.jump_strength".to_string(),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
             // Fallback for others
-            _ => format!("minecraft:attribute.{}", attribute.id),
+            _ => (
+                format!("minecraft:attribute.{}", attribute.id),
+                0.0,
+                f32::MAX,
+                effective_value as f32,
+                base_value as f32,
+            ),
         };
 
         let be_attribute = BeAttribute {
-            min_value: 0.0,
-            max_value: 3.402_823_5E38,
-            current_value: effective_value as f32,
-            default_min_value: 0.0,
-            default_max_value: 3.402_823_5E38,
-            default_value: base_value as f32,
+            min_value,
+            max_value,
+            current_value,
+            default_min_value: min_value,
+            default_max_value: max_value,
+            default_value,
             name,
-            modifiers_list_size: VarUInt(modifiers_count as u32),
+            // The current Bedrock packet model does not serialize modifier
+            // records after this count, so advertising Java modifiers here
+            // would produce a truncated packet.
+            modifiers_list_size: VarUInt(0),
         };
 
         be_attributes.push(be_attribute);
@@ -169,13 +237,6 @@ pub async fn send_attribute_updates_for_living(
 
     let world = living.entity.world.load_full();
     world.broadcast_editioned(&je_packet, &be_packet).await;
-
-    // The owning Bedrock player needs its complete dependent state (HUD,
-    // movement, and max-health bounds) correlated to the current input tick.
-    // Other observers still receive the ordinary entity attribute delta above.
-    if let Some(player) = world.get_player_by_uuid(living.entity.entity_uuid) {
-        player.send_bedrock_attribute_state().await;
-    }
 }
 
 impl Clone for AttributeInstance {
