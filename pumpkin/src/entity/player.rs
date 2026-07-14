@@ -144,6 +144,14 @@ const fn client_load_is_ready(
     explicitly_loaded || (!is_bedrock && load_grace_period_expired)
 }
 
+fn bedrock_death_info_cause(death_message: &TextComponent, locale: Locale) -> String {
+    // DeathInfo's cause is already-localized text, not a translation key plus
+    // parameters. Resolve the Java component with its minecraft namespace so
+    // positional placeholders such as %1$s are substituted before Bedrock's
+    // printf-style percent escaping is applied.
+    death_message.0.clone().get_text(locale).replace('%', "%%")
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BedrockInputTickObservation {
     First,
@@ -475,9 +483,10 @@ impl ChunkManager {
 #[cfg(test)]
 mod chunk_manager_tests {
     use super::{
-        BedrockInputTickObservation, ChunkManager, MetadataValue, Player, client_load_is_ready,
-        entity_data_flag, entity_data_key, observe_bedrock_input_tick,
+        BedrockInputTickObservation, ChunkManager, MetadataValue, Player, bedrock_death_info_cause,
+        client_load_is_ready, entity_data_flag, entity_data_key, observe_bedrock_input_tick,
     };
+    use pumpkin_util::{text::TextComponent, translation::Locale};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
@@ -530,6 +539,27 @@ mod chunk_manager_tests {
         assert_eq!(attributes[0].max_value, 20.0);
         assert_eq!(attributes[0].current_value, 20.0);
         assert_eq!(attributes[2].current_value, 5.0);
+    }
+
+    #[test]
+    fn bedrock_death_info_resolves_positional_arguments_before_escaping() {
+        let message = TextComponent::translate_cross(
+            "death.attack.player",
+            "death.attack.player",
+            [
+                TextComponent::text("KnightLegion350"),
+                TextComponent::text("Attacker"),
+            ],
+        );
+
+        assert_eq!(
+            bedrock_death_info_cause(&message, Locale::EnUs),
+            "KnightLegion350 was slain by Attacker"
+        );
+        assert_eq!(
+            bedrock_death_info_cause(&TextComponent::text("100% fatal"), Locale::EnUs),
+            "100%% fatal"
+        );
     }
 
     #[test]
@@ -3739,15 +3769,12 @@ impl Player {
                 // death message have been queued. Respawn begins only after the
                 // client sends Respawn::ClientReadyToSpawn.
                 self.send_bedrock_vitals_state().await;
-                // Geyser supplies Bedrock DeathInfo with the localized message,
-                // escaping percent signs because Bedrock treats them as format
-                // markers. Chat still receives the translatable component.
+                // Geyser supplies Bedrock DeathInfo with the fully localized
+                // message, escaping percent signs because Bedrock treats them
+                // as format markers. Chat still receives the translatable
+                // component.
                 let locale = Locale::from_str(&self.config.load().locale).unwrap_or(Locale::EnUs);
-                let cause = death_msg
-                    .0
-                    .clone()
-                    .to_bedrock_legacy(locale)
-                    .replace('%', "%%");
+                let cause = bedrock_death_info_cause(&death_msg, locale);
                 client
                     .enqueue_packet(&CDeathInfo {
                         cause,

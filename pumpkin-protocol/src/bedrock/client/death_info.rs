@@ -4,7 +4,7 @@ use pumpkin_macros::packet;
 
 use crate::{codec::var_uint::VarUInt, serial::PacketWrite};
 
-/// Supplies the untranslated death cause shown on Bedrock's death screen.
+/// Supplies the localized death cause shown on Bedrock's death screen.
 #[packet(189)]
 pub struct CDeathInfo {
     pub cause: String,
