@@ -2274,7 +2274,10 @@ impl World {
             })
             .await;
 
-        player.send_initial_bedrock_inventory_state().await;
+        // Keep the initial join payload at the known-working Phase 1 boundary.
+        // Equipment and hotbar snapshots are reserved for recovery paths until
+        // each packet can be reintroduced independently.
+        player.sync_bedrock_main_inventory().await;
 
         {
             let mut abilities = player.abilities.lock().await;
@@ -2303,7 +2306,7 @@ impl World {
         };
 
         client
-            .enqueue_packet_internal(&player.bedrock_attribute_packet())
+            .enqueue_packet_internal(&player.bedrock_initial_attribute_packet())
             .await;
 
         // --- MULTIPLAYER BROADCASTING ---

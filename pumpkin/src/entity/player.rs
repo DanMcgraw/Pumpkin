@@ -469,6 +469,31 @@ mod chunk_manager_tests {
     }
 
     #[test]
+    fn initial_bedrock_attributes_match_phase_1_join_payload() {
+        let attributes = Player::bedrock_initial_attributes();
+        let names = attributes
+            .iter()
+            .map(|attribute| attribute.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            names,
+            [
+                "minecraft:movement",
+                "minecraft:underwater_movement",
+                "minecraft:gravity",
+                "minecraft:air",
+                "minecraft:health",
+                "minecraft:player.hunger",
+            ]
+        );
+        assert_eq!(attributes[0].max_value, f32::MAX);
+        assert_eq!(attributes[0].current_value, 0.1);
+        assert_eq!(attributes[3].current_value, 400.0);
+        assert_eq!(attributes[4].current_value, 20.0);
+    }
+
+    #[test]
     fn bedrock_readiness_requires_explicit_initialization() {
         assert!(!client_load_is_ready(false, true, true));
         assert!(client_load_is_ready(true, false, true));
@@ -3120,6 +3145,31 @@ impl Player {
             default_value: default_value.clamp(min_value, max_value),
             name: name.to_string(),
             modifiers_list_size: pumpkin_protocol::codec::var_uint::VarUInt(0),
+        }
+    }
+
+    /// Returns the minimal attribute set used by the known-working Phase 1
+    /// join sequence. Subsequent Phase 2 updates continue to use live values.
+    fn bedrock_initial_attributes()
+    -> Vec<pumpkin_protocol::bedrock::client::update_attributes::Attribute> {
+        vec![
+            Self::bedrock_attribute("minecraft:movement", 0.0, f32::MAX, 0.1, 0.1),
+            Self::bedrock_attribute("minecraft:underwater_movement", 0.0, f32::MAX, 0.02, 0.02),
+            Self::bedrock_attribute("minecraft:gravity", 0.0, 1.0, 0.08, 0.08),
+            Self::bedrock_attribute("minecraft:air", 0.0, 400.0, 400.0, 400.0),
+            Self::bedrock_attribute("minecraft:health", 0.0, 20.0, 20.0, 20.0),
+            Self::bedrock_attribute("minecraft:player.hunger", 0.0, 20.0, 20.0, 20.0),
+        ]
+    }
+
+    #[must_use]
+    pub fn bedrock_initial_attribute_packet(
+        &self,
+    ) -> pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
+        pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
+            runtime_id: VarULong(self.entity_id() as u64),
+            attributes: Self::bedrock_initial_attributes(),
+            player_tick: VarULong(0),
         }
     }
 
