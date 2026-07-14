@@ -169,3 +169,10 @@ android-wrapper/app/src/main/jniLibs/*
 !android-wrapper/app/src/main/jniLibs/arm64-v8a/
 android-wrapper/app/src/main/jniLibs/arm64-v8a/*
 !android-wrapper/app/src/main/jniLibs/arm64-v8a/.gitkeep
+
+# Local evidence captured by the interactive Bedrock compatibility test runner
+/bedrock_test_evidence/
+
+# Python cache files produced by the test runner and its unit tests
+__pycache__/
+*.py[cod]
