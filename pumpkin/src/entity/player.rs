@@ -133,6 +133,14 @@ use pumpkin_world::chunk_system::ChunkLoading;
 const MAX_CACHED_SIGNATURES: u8 = 128; // Vanilla: 128
 const MAX_PREVIOUS_MESSAGES: u8 = 20; // Vanilla: 20
 
+const fn client_load_is_ready(
+    explicitly_loaded: bool,
+    load_grace_period_expired: bool,
+    is_bedrock: bool,
+) -> bool {
+    explicitly_loaded || (!is_bedrock && load_grace_period_expired)
+}
+
 /// The block a player is actively mining and the outward face selected at start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiningTarget {
@@ -435,7 +443,7 @@ impl ChunkManager {
 
 #[cfg(test)]
 mod chunk_manager_tests {
-    use super::{ChunkManager, Player};
+    use super::{ChunkManager, Player, client_load_is_ready};
 
     #[test]
     fn chunk_acknowledgement_rate_is_bounded() {
@@ -458,6 +466,13 @@ mod chunk_manager_tests {
         assert_eq!(attribute.current_value, 20.0);
         assert_eq!(attribute.default_value, 0.0);
         assert_eq!(attribute.modifiers_list_size.0, 0);
+    }
+
+    #[test]
+    fn bedrock_readiness_requires_explicit_initialization() {
+        assert!(!client_load_is_ready(false, true, true));
+        assert!(client_load_is_ready(true, false, true));
+        assert!(client_load_is_ready(false, true, false));
     }
 }
 
@@ -542,7 +557,8 @@ pub struct Player {
     /// Whether the client has reported that it has loaded.
     pub client_loaded: AtomicBool,
     pub bedrock_spawned: AtomicBool,
-    /// The amount of time (in ticks) the client has to report having finished loading before being timed out.
+    /// Java compatibility grace period before gameplay resumes without an explicit load acknowledgement.
+    /// Bedrock must always complete its initialization handshake.
     pub client_loaded_timeout: AtomicU32,
     /// Whether a Bedrock death/respawn exchange is waiting for final client readiness.
     pub bedrock_respawn_pending: AtomicBool,
@@ -2303,8 +2319,17 @@ impl Player {
     }
 
     pub fn has_client_loaded(&self) -> bool {
-        self.client_loaded.load(Ordering::Relaxed)
-            || self.client_loaded_timeout.load(Ordering::Relaxed) == 0
+        let explicitly_loaded = self.client_loaded.load(Ordering::Relaxed);
+        let is_bedrock = matches!(self.client.as_ref(), ClientPlatform::Bedrock(_));
+        // Bedrock sends PlayerAuthInput while it is still rendering the initial
+        // world. Treating those packets as proof of readiness can emit gameplay
+        // corrections before SetLocalPlayerAsInitialized, which the client
+        // rejects as an invalid initial connection packet sequence.
+        client_load_is_ready(
+            explicitly_loaded,
+            self.client_loaded_timeout.load(Ordering::Relaxed) == 0,
+            is_bedrock,
+        )
     }
 
     pub fn set_client_loaded(&self, loaded: bool) {
