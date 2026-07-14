@@ -268,6 +268,14 @@ Exit criteria:
 **Goal:** ensure spawn, routine updates, and recovery all report the same
 player state to Bedrock.
 
+**Current implementation note (2026-07-14):** the join, inventory, attribute,
+air, death-screen, and respawn paths are stable at the
+`bedrock-phase-2-very-much-working` checkpoint. The attempted automatic
+`CCorrectPlayerMove` policy was rolled back because it could correct an
+otherwise valid client immediately after initialisation. Phase 2 therefore
+keeps the known-good client-predicted movement path; authoritative movement
+reconciliation is staged in Phase 3 instead of being treated as complete.
+
 Work:
 
 1. Replace hard-coded initial attributes with a shared live player-attribute
@@ -275,45 +283,86 @@ Work:
 2. Emit health, max-health, hunger, saturation, air, and supported movement
    attribute deltas together when their authoritative values change.
 3. Add initial armour/offhand, selected-slot, and cursor inventory sync.
-4. Establish input-tick tracking and server-side movement validation; send
-   `CCorrectPlayerMove` for rejected/adjusted predictions.
+4. Preserve the stable `PlayerAuthInput` path while retaining explicit reset
+   points at join, respawn, teleport, and dimension boundaries. Do not emit
+   automatic movement corrections until Phase 3's staged validation proves
+   their wire semantics and timing against a real client.
 5. Recheck respawn and dimension-transition ordering against this consolidated
    player snapshot path.
+6. Generate a player's death message once, select a valid translation key for
+   each edition, and reuse the result for chat broadcast, the Bedrock
+   `DeathInfo` packet, and a formatted server-console log entry.
 
 Exit criteria:
 
 - Join, eating, damage/healing, drowning, a max-health change, death/respawn,
   and a dimension transition display the correct Bedrock HUD and inventory.
-- Collision, knockback, and invalid/stale `PlayerAuthInput` packets converge
-  on the server position without persistent client drift.
+- Death produces correctly localised chat and death-screen text, writes the
+  same event to the server console, and never exposes a raw translation key.
+- The stable movement baseline handles normal walking, collision, and
+  knockback without unsolicited corrections or persistent client drift.
 - Packet tests assert the field values and a real Bedrock smoke test exercises
   the full state sequence.
 
 ### Phase 3 — session completeness and protocol hardening
 
-**Goal:** finish state replay and protocol features that improve robustness,
-performance, and future-version safety.
+**Goal:** make every Bedrock session boundary use an ordered, repeatable state
+replay before adding protocol features that improve performance and
+future-version safety.
 
 Work:
 
-1. Add `Scoreboard::send_snapshot_to(player)` for objectives, scores, and
+1. Define explicit Bedrock session states for initialising, playing, changing
+   dimensions, dead, respawning, and disconnected. Document which packet
+   groups may be emitted in each state and gate asynchronous updates against
+   the current state.
+2. Make the player snapshot replay ordered and idempotent across fresh join,
+   reconnect, dimension change, and respawn. Include actor metadata,
+   attributes, abilities, inventory/equipment, selected slot, cursor, and
+   persistent UI state without sending duplicate or premature packets.
+3. Add `Scoreboard::send_snapshot_to(player)` for objectives, scores, and
    teams, replacing pointer-derived scoreboard IDs with stable allocations.
-2. Record `SClientCacheStatus` capability. Keep chunk caching disabled until
-   blob tracking, misses, and invalidation are implemented and tested.
-3. Capture a version-pinned vanilla Bedrock bootstrap trace and close only the
-   required registry gaps (biomes, entity identifiers, item components, or
-   other negotiated-version definitions).
-4. Expand packet capture/golden coverage and maintain the compatibility matrix
-   for each supported Bedrock version.
+   Send it only after the session is ready for persistent UI packets.
+4. Reintroduce movement reconciliation incrementally. First record input ticks
+   and server results without changing client movement; then reject demonstrably
+   stale or impossible inputs; finally enable `CCorrectPlayerMove` only after
+   captured packet comparison and real-client tests prove its fields and
+   post-initialisation timing. Keep the correction stage disabled by default
+   until that gate passes.
+5. Capture a version-pinned vanilla Bedrock bootstrap trace before adding more
+   bootstrap data. Compare packet ordering, runtime IDs, container wire IDs,
+   metadata-versus-attribute ownership, and required registries. Close only the
+   required gaps (biomes, entity identifiers, item components, or other
+   negotiated-version definitions).
+6. Record `SClientCacheStatus` capability but keep chunk caching disabled.
+   Treat blob tracking, misses, invalidation, reconnect, and dimension changes
+   as a separate enablement gate; do not enable caching as part of capability
+   recording.
+7. Expand packet capture/golden coverage and maintain a compatibility matrix
+   for each supported Bedrock version. Include payload decoding, lifecycle
+   ordering, compatibility gamerule overrides, and stable identifier reuse in
+   addition to individual packet codecs.
 
 Exit criteria:
 
+- Fresh join, reconnect, dimension change, delayed death-screen respawn, and
+  normal respawn all produce the same authoritative snapshot without a crash,
+  stale HUD field, duplicate actor, or invalid lifecycle packet.
+- Inventory remains interactive after every snapshot replay, and air, health,
+  hunger, saturation, metadata, abilities, equipment, and selected-slot state
+  survive respawn and dimension transitions.
 - A player joining an already populated world receives a complete scoreboard
-  and inventory/UI snapshot before interaction.
-- Cache negotiation has an explicit safe fallback, and cache support is only
-  enabled after reconnect, invalidation, and dimension-change tests pass.
+  and persistent UI snapshot with stable IDs before interaction.
 - Bootstrap packets and representative entity/biome/component-item traffic are
-  validated against the selected Bedrock protocol version.
+  validated against the selected Bedrock protocol version, including ordering
+  and identifier semantics rather than only successful encoding.
+- Cache negotiation records the client capability and always has an explicit
+  cache-disabled fallback. Cache support is not enabled until its separate
+  reconnect, invalidation, and dimension-change gate passes.
+- Movement observation and validation do not alter known-good play. Movement
+  correction remains disabled unless stale input, collision, knockback, and
+  post-initialisation real-client tests all pass without unsolicited
+  corrections.
 
 ## Verification gate
 
@@ -321,6 +370,10 @@ For each completed item, capture both Pumpkin's decoded outgoing packet stream
 and a Bedrock-client smoke test. Cover at least: fresh join, reconnect,
 inventory/armour changes, damage/eating, frozen and advancing time, scoreboard
 created before join, render-distance reduction, overworld/nether/end round
-trip, death/respawn, and collision/knockback. Keep golden codec tests close to
-the packet implementations so protocol field changes cannot silently regress
-state synchronisation.
+trip, drowning and air recovery, a delayed death-screen respawn, inventory
+interaction after respawn, correctly localised death broadcast/console output,
+and collision/knockback. Assert that no packet group is emitted outside its
+allowed lifecycle state and that replaying a snapshot does not duplicate
+actors, scoreboard IDs, or inventory state. Keep golden codec tests close to
+the packet implementations so protocol field, wire-ID, and ordering changes
+cannot silently regress state synchronisation.
