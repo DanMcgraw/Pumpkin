@@ -62,6 +62,7 @@ use pumpkin_data::BlockDirection;
 use tracing::{debug, info};
 
 const MAX_BEDROCK_MOVEMENT_PER_TICK: f64 = 4.0;
+const MAX_INITIAL_BEDROCK_FALL_DISTANCE: f64 = 512.0;
 const MAX_BEDROCK_TICK_GAP: u64 = 20;
 const MAX_WORLD_COORDINATE: f64 = 3.0e7;
 
@@ -106,14 +107,30 @@ fn validate_bedrock_movement(
         return Err(BedrockMovementRejection::OutOfRange);
     }
 
-    let elapsed_ticks = if !has_last_tick {
-        1
-    } else {
-        tick.saturating_sub(last_tick)
-            .clamp(1, MAX_BEDROCK_TICK_GAP)
-    };
+    let predicted_movement = new_position.sub(&old_position);
+    if !has_last_tick {
+        // Bedrock simulates gravity while rendering the initial world, before it
+        // sends SetLocalPlayerAsInitialized. Pumpkin deliberately ignores those
+        // loading-time inputs, so the first gameplay frame can contain the whole
+        // spawn fall rather than one tick of movement. Allow only that downward
+        // convergence; horizontal and upward movement retain the normal limit.
+        let horizontal_distance_squared = predicted_movement.x * predicted_movement.x
+            + predicted_movement.z * predicted_movement.z;
+        if horizontal_distance_squared
+            > MAX_BEDROCK_MOVEMENT_PER_TICK * MAX_BEDROCK_MOVEMENT_PER_TICK
+            || predicted_movement.y > MAX_BEDROCK_MOVEMENT_PER_TICK
+            || predicted_movement.y < -MAX_INITIAL_BEDROCK_FALL_DISTANCE
+        {
+            return Err(BedrockMovementRejection::OutOfRange);
+        }
+        return Ok(());
+    }
+
+    let elapsed_ticks = tick
+        .saturating_sub(last_tick)
+        .clamp(1, MAX_BEDROCK_TICK_GAP);
     let allowed_distance = MAX_BEDROCK_MOVEMENT_PER_TICK * elapsed_ticks as f64;
-    if new_position.sub(&old_position).length_squared() > allowed_distance * allowed_distance {
+    if predicted_movement.length_squared() > allowed_distance * allowed_distance {
         return Err(BedrockMovementRejection::OutOfRange);
     }
     Ok(())
@@ -299,20 +316,25 @@ impl BedrockClient {
             new_pos,
             packet.delta,
         );
-        if movement_validation.is_err() || !packet.pitch.is_finite() || !packet.yaw.is_finite() {
+        let rejection = movement_validation.err().or_else(|| {
+            (!packet.pitch.is_finite() || !packet.yaw.is_finite())
+                .then_some(BedrockMovementRejection::NonFinite)
+        });
+        if let Some(rejection) = rejection {
             debug!(
-                player = %player.gameprofile.name,
-                tick = input_tick,
-                last_tick = last_input_tick,
-                rejection = ?movement_validation.err().unwrap_or(BedrockMovementRejection::NonFinite),
-                "Rejecting Bedrock movement prediction"
+                "Rejecting Bedrock movement prediction: player={}, tick={}, last_tick={}, \
+                 rejection={rejection:?}, old_position={old_pos:?}, new_position={new_pos:?}",
+                player.gameprofile.name, input_tick, last_input_tick
             );
             self.enqueue_packet(&pumpkin_protocol::bedrock::client::CCorrectPlayerMove {
                 prediction_type: 0,
                 pos: player.bedrock_network_position(),
                 pos_delta: entity.velocity.load().to_f32_lossy(),
                 on_ground: entity.on_ground.load(std::sync::atomic::Ordering::Relaxed),
-                tick: VarULong(last_input_tick),
+                // Correct the frame that supplied this prediction. In particular,
+                // the first rejected frame has no previously accepted tick and
+                // must not be correlated with the reset sentinel tick zero.
+                tick: VarULong(input_tick),
             })
             .await;
             return;
@@ -2507,6 +2529,58 @@ mod tests {
                 Vector3::new(0.25, 0.0, 0.0),
             ),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn accepts_initial_loading_fall_without_allowing_horizontal_teleport() {
+        assert_eq!(
+            validate_bedrock_movement(
+                false,
+                0,
+                200,
+                Vector3::new(0.0, 100.0, 0.0),
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(0.0, -0.08, 0.0),
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bedrock_movement(
+                false,
+                0,
+                200,
+                Vector3::new(0.0, 100.0, 0.0),
+                Vector3::new(20.0, 64.0, 0.0),
+                Vector3::new(0.0, -0.08, 0.0),
+            ),
+            Err(BedrockMovementRejection::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn rejects_initial_upward_or_excessive_downward_displacement() {
+        assert_eq!(
+            validate_bedrock_movement(
+                false,
+                0,
+                200,
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(0.0, 69.0, 0.0),
+                Vector3::new(0.0, 0.0, 0.0),
+            ),
+            Err(BedrockMovementRejection::OutOfRange)
+        );
+        assert_eq!(
+            validate_bedrock_movement(
+                false,
+                0,
+                200,
+                Vector3::new(0.0, 600.0, 0.0),
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(0.0, -0.08, 0.0),
+            ),
+            Err(BedrockMovementRejection::OutOfRange)
         );
     }
 
