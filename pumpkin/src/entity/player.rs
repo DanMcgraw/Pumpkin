@@ -180,6 +180,13 @@ fn observe_bedrock_input_tick(
     }
 }
 
+pub(crate) fn bedrock_initial_position_matches(
+    expected: Vector3<f64>,
+    received: Vector3<f64>,
+) -> bool {
+    expected.squared_distance_to_vec(&received) <= 0.25
+}
+
 /// The block a player is actively mining and the outward face selected at start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiningTarget {
@@ -484,9 +491,10 @@ impl ChunkManager {
 mod chunk_manager_tests {
     use super::{
         BedrockInputTickObservation, ChunkManager, MetadataValue, Player, bedrock_death_info_cause,
-        client_load_is_ready, entity_data_flag, entity_data_key, observe_bedrock_input_tick,
+        bedrock_initial_position_matches, client_load_is_ready, entity_data_flag, entity_data_key,
+        observe_bedrock_input_tick,
     };
-    use pumpkin_util::{text::TextComponent, translation::Locale};
+    use pumpkin_util::{math::vector3::Vector3, text::TextComponent, translation::Locale};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
@@ -510,6 +518,20 @@ mod chunk_manager_tests {
         assert_eq!(attribute.current_value, 20.0);
         assert_eq!(attribute.default_value, 0.0);
         assert_eq!(attribute.modifiers_list_size.0, 0);
+    }
+
+    #[test]
+    fn bedrock_login_position_requires_client_convergence() {
+        let restored = Vector3::new(-44.95, 63.0, -53.54);
+
+        assert!(bedrock_initial_position_matches(
+            restored,
+            Vector3::new(-44.9, 63.1, -53.5)
+        ));
+        assert!(!bedrock_initial_position_matches(
+            restored,
+            Vector3::new(0.5, 80.0, 0.5)
+        ));
     }
 
     #[test]
@@ -710,6 +732,7 @@ pub struct Player {
     pub bedrock_last_input_tick: AtomicU64,
     pub bedrock_input_tick_initialized: AtomicBool,
     pub bedrock_last_input_position: AtomicCell<Vector3<f64>>,
+    pub bedrock_initial_position_pending: AtomicBool,
     /// Item usage tracking for bows, crossbows, etc.
     pub using_item: AtomicBool,
     pub item_use_start_time: AtomicI32,
@@ -918,6 +941,7 @@ impl Player {
             bedrock_last_input_tick: AtomicU64::new(0),
             bedrock_input_tick_initialized: AtomicBool::new(false),
             bedrock_last_input_position: AtomicCell::new(Vector3::new(0.0, 100.0, 0.0)),
+            bedrock_initial_position_pending: AtomicBool::new(false),
             // Item usage tracking
             using_item: AtomicBool::new(false),
             item_use_start_time: AtomicI32::new(0),
@@ -3067,9 +3091,36 @@ impl Player {
         self.bedrock_last_input_position.store(self.position());
     }
 
-    /// Records prediction ticks and resulting positions for diagnostics. Phase
-    /// 3 intentionally does not reject or correct movement from this observer;
-    /// a correction policy remains behind real-client validation.
+    /// Sends the restored feet position using Bedrock's eye-position wire
+    /// convention and gates normal input until the client has applied it.
+    pub async fn begin_bedrock_initial_position_sync(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        let entity = self.get_entity();
+        self.bedrock_initial_position_pending
+            .store(true, Ordering::Release);
+        client
+            .enqueue_packet(&pumpkin_protocol::bedrock::client::CMovePlayer::new(
+                VarULong(entity.entity_id as u64),
+                self.bedrock_network_position(),
+                entity.pitch.load(),
+                entity.yaw.load(),
+                entity.yaw.load(),
+                pumpkin_protocol::bedrock::client::CMovePlayer::MODE_TELEPORT,
+                entity.on_ground.load(Ordering::Relaxed),
+                VarULong(0),
+                0,
+                0,
+                VarULong(0),
+            ))
+            .await;
+    }
+
+    /// Records prediction ticks and resulting positions for diagnostics after
+    /// the login-position boundary has completed. Phase 3 intentionally does
+    /// not reject or correct ordinary gameplay movement from this observer; a
+    /// broader correction policy remains behind real-client validation.
     pub fn observe_bedrock_input(
         &self,
         tick: u64,

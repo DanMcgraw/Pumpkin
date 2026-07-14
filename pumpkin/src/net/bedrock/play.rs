@@ -229,6 +229,7 @@ impl BedrockClient {
         }
         player.set_client_loaded(true);
         player.reset_bedrock_input_state();
+        player.begin_bedrock_initial_position_sync().await;
         player
             .world()
             .scoreboard
@@ -263,6 +264,32 @@ impl BedrockClient {
             .position
             .add_raw(0.0, -entity.get_eye_height() as f32, 0.0)
             .to_f64();
+        if player
+            .bedrock_initial_position_pending
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let expected = player.position();
+            if crate::entity::player::bedrock_initial_position_matches(expected, new_pos) {
+                player
+                    .bedrock_initial_position_pending
+                    .store(false, std::sync::atomic::Ordering::Release);
+                debug!(
+                    player = %player.gameprofile.name,
+                    position = ?new_pos,
+                    "Bedrock client accepted its restored login position"
+                );
+            } else {
+                debug!(
+                    player = %player.gameprofile.name,
+                    expected = ?expected,
+                    received = ?new_pos,
+                    handled_teleport = packet.input_data.get(InputData::HandledTeleport as usize),
+                    "Ignoring Bedrock input until the restored login position is applied"
+                );
+                player.begin_bedrock_initial_position_sync().await;
+                return;
+            }
+        }
         let input_tick_observation = player.observe_bedrock_input(packet.tick.0, new_pos);
         if input_tick_observation == crate::entity::player::BedrockInputTickObservation::Stale {
             debug!(

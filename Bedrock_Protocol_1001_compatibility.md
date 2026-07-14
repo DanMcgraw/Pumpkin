@@ -33,6 +33,7 @@ generation.
 | Area | Protocol 1001 behavior | Validation |
 | --- | --- | --- |
 | Runtime IDs | StartGame uses the player's runtime ID. Server-ready Respawn uses Bedrock's local-player sentinel `0`. | Respawn codec tests and real-client respawn |
+| Reconnect position | A replacement RakNet session snapshots the old player before loading the new session. After initialization, `MovePlayer` anchors the restored position and spawn-position input is ignored until the client converges. | Login-position convergence test and rapid reconnect smoke test |
 | Air | `AIR_SUPPLY`, `AIR_SUPPLY_MAX`, and `BREATHING` actor metadata; no synthetic `minecraft:air` attribute | Player metadata tests and drowning smoke test |
 | Vitals | Health, hunger, and saturation are one authoritative attribute group; natural regeneration is disabled client-side | Bedrock attribute tests |
 | Inventory content IDs | main `0`, armor `120`, offhand `119` | Initial inventory replay and inventory interaction smoke test |

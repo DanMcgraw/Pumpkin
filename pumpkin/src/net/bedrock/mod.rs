@@ -168,6 +168,7 @@ pub struct BedrockClient {
     recovery_epoch: AtomicU64,
     replayed_recovery_epoch: AtomicU64,
     recovery_replay_in_progress: AtomicBool,
+    replacement_player_snapshot_claimed: AtomicBool,
     /// An notifier that is triggered when this client is closed.
     close_token: CancellationToken,
     last_seen: Arc<AtomicCell<std::time::Instant>>,
@@ -225,6 +226,7 @@ impl BedrockClient {
             recovery_epoch: AtomicU64::new(0),
             replayed_recovery_epoch: AtomicU64::new(0),
             recovery_replay_in_progress: AtomicBool::new(false),
+            replacement_player_snapshot_claimed: AtomicBool::new(false),
             compounds: Arc::new(Mutex::new(HashMap::new())),
             close_token: CancellationToken::new(),
             last_seen: Arc::new(AtomicCell::new(std::time::Instant::now())),
@@ -869,6 +871,25 @@ impl BedrockClient {
         self.close_token.is_cancelled()
     }
 
+    /// Claims responsibility for persisting the connected player while this
+    /// RakNet session is being replaced. The normal connection teardown checks
+    /// this flag so both paths cannot truncate and rewrite the same player file.
+    pub fn claim_replacement_player_snapshot(&self) {
+        self.replacement_player_snapshot_claimed
+            .store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn replacement_player_snapshot_claimed(&self) -> bool {
+        self.replacement_player_snapshot_claimed
+            .load(Ordering::Acquire)
+    }
+
+    pub fn release_replacement_player_snapshot(&self) {
+        self.replacement_player_snapshot_claimed
+            .store(false, Ordering::Release);
+    }
+
     pub fn enqueue_spawn_packet(self: &Arc<Self>, entity: Arc<dyn crate::entity::EntityBase>) {
         let client = self.clone();
         self.spawn_task(async move {
@@ -1482,7 +1503,37 @@ impl BedrockClient {
                     "Closing old Bedrock client connection for {} due to new connection request",
                     addr
                 );
+                let player = client.player.lock().await.clone();
+                if player.is_some() {
+                    client.claim_replacement_player_snapshot();
+                }
                 client.close().await;
+                if let Some(player) = player {
+                    // A replacement connection can complete login before the
+                    // old connection finishes unwatching chunks. Persist the
+                    // frozen player now so the new session cannot load the
+                    // previous periodic snapshot (commonly the world spawn).
+                    server
+                        .player_data_storage
+                        .close_player_screen(&player)
+                        .await;
+                    if let Err(err) = server
+                        .player_data_storage
+                        .save_player(player.as_ref())
+                        .await
+                    {
+                        client.release_replacement_player_snapshot();
+                        error!(
+                            "Failed to save Bedrock player data before replacing connection: {err}"
+                        );
+                    } else {
+                        debug!(
+                            player = %player.gameprofile.name,
+                            position = ?player.position(),
+                            "Saved Bedrock player snapshot before replacement login"
+                        );
+                    }
+                }
             }
         }
 
