@@ -63,18 +63,27 @@ pub fn game_rule(
         _ => return None,
     };
 
-    let value = match value {
-        PumpkinGameRuleValue::Int(value) => BedrockGameRuleValue::Int(
-            (*value).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-        ),
-        PumpkinGameRuleValue::Bool(value) => {
-            let value = if matches!(rule, PumpkinGameRule::ReducedDebugInfo) {
-                !*value
-            } else {
-                *value
-            };
-            BedrockGameRuleValue::Bool(value)
-        }
+    let value = match rule {
+        // Match Geyser's server-authoritative HUD and death handling. The
+        // Pumpkin values still control gameplay; these client-visible values
+        // prevent Bedrock from regenerating health or clearing inventory on
+        // its own before Pumpkin sends the resulting state.
+        PumpkinGameRule::NaturalHealthRegeneration => BedrockGameRuleValue::Bool(false),
+        PumpkinGameRule::KeepInventory => BedrockGameRuleValue::Bool(true),
+        PumpkinGameRule::RespawnRadius => BedrockGameRuleValue::Int(0),
+        _ => match value {
+            PumpkinGameRuleValue::Int(value) => BedrockGameRuleValue::Int(
+                (*value).clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+            ),
+            PumpkinGameRuleValue::Bool(value) => {
+                let value = if matches!(rule, PumpkinGameRule::ReducedDebugInfo) {
+                    !*value
+                } else {
+                    *value
+                };
+                BedrockGameRuleValue::Bool(value)
+            }
+        },
     };
 
     Some(BedrockGameRule::new(name, value))
@@ -107,8 +116,7 @@ mod tests {
             rule.name == "dodaylightcycle" && rule.value == GameRuleValue::Bool(true)
         }));
         assert!(rules.rules.iter().any(|rule| {
-            rule.name == "spawnradius"
-                && rule.value == GameRuleValue::Int(registry.respawn_radius as i32)
+            rule.name == "spawnradius" && rule.value == GameRuleValue::Int(0)
         }));
     }
 
@@ -123,5 +131,22 @@ mod tests {
             mapped.value,
             GameRuleValue::Bool(!registry.reduced_debug_info)
         );
+    }
+
+    #[test]
+    fn forces_server_authoritative_bedrock_player_rules() {
+        let registry = GameRuleRegistry::default();
+
+        for (rule, expected) in [
+            (
+                PumpkinGameRule::NaturalHealthRegeneration,
+                GameRuleValue::Bool(false),
+            ),
+            (PumpkinGameRule::KeepInventory, GameRuleValue::Bool(true)),
+            (PumpkinGameRule::RespawnRadius, GameRuleValue::Int(0)),
+        ] {
+            let mapped = game_rule(&rule, registry.get(&rule)).unwrap();
+            assert_eq!(mapped.value, expected);
+        }
     }
 }

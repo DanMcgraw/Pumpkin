@@ -2745,9 +2745,12 @@ impl EntityBase for LivingEntity {
             }
             if self.health.load() <= 0.0 {
                 let time = self.death_time.fetch_add(1, Relaxed);
-                // Only send death particles once (on the exact tick death_time reaches 20)
-                // and then remove the entity, preventing entity_event spam.
-                if time == 20 && !self.entity.removed.swap(true, Ordering::Relaxed) {
+                // Non-player living entities finish their death animation at
+                // tick 20 and are removed once. Session players must remain in
+                // the world while their client is on the death screen.
+                if should_remove_after_death(self.entity.entity_type, time)
+                    && !self.entity.removed.swap(true, Ordering::Relaxed)
+                {
                     self.entity
                         .world
                         .load()
@@ -2777,6 +2780,10 @@ impl EntityBase for LivingEntity {
     fn as_nbt_storage(&self) -> &dyn NBTStorage {
         self
     }
+}
+
+fn should_remove_after_death(entity_type: &EntityType, death_time: u8) -> bool {
+    death_time == 20 && entity_type != &EntityType::PLAYER
 }
 
 /// Returns `true` if `damage_type` is in `#minecraft:bypasses_armor` (1.21.11).
@@ -2833,6 +2840,13 @@ pub(crate) const fn bypasses_armor_durability(damage_type: &DamageType) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn death_animation_does_not_remove_the_session_player() {
+        assert!(!should_remove_after_death(&EntityType::PLAYER, 20));
+        assert!(should_remove_after_death(&EntityType::ZOMBIE, 20));
+        assert!(!should_remove_after_death(&EntityType::ZOMBIE, 19));
+    }
 
     // ── bypasses_armor_durability ─────────────────────────────────────
 

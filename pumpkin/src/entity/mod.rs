@@ -1006,6 +1006,7 @@ impl Entity {
             entity_data_key::FLAGS_TWO,
             MetadataValue::Long(self.bedrock_flags_two.load(Ordering::Relaxed)),
         );
+        insert_bedrock_air_metadata(&mut metadata, breath::MAX_AIR);
 
         if let Some(name) = &**self.custom_name.load() {
             metadata.set(
@@ -3584,4 +3585,30 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn initial_bedrock_metadata_declares_air_supply() {
+        let mut metadata = EntityMetadata(std::collections::HashMap::new());
+        insert_bedrock_air_metadata(&mut metadata, breath::MAX_AIR);
+
+        assert!(matches!(
+            metadata.0.get(&entity_data_key::AIR_SUPPLY),
+            Some(MetadataValue::Short(value)) if *value == breath::MAX_AIR as i16
+        ));
+        assert!(matches!(
+            metadata.0.get(&entity_data_key::AIR_SUPPLY_MAX),
+            Some(MetadataValue::Short(value)) if *value == breath::MAX_AIR as i16
+        ));
+    }
+}
+
+fn insert_bedrock_air_metadata(metadata: &mut EntityMetadata, air: i32) {
+    metadata.set(
+        entity_data_key::AIR_SUPPLY,
+        MetadataValue::Short(air.clamp(0, breath::MAX_AIR) as i16),
+    );
+    metadata.set(
+        entity_data_key::AIR_SUPPLY_MAX,
+        MetadataValue::Short(breath::MAX_AIR as i16),
+    );
 }

@@ -21,11 +21,14 @@ use pumpkin_data::meta_data_type::MetaDataType;
 use pumpkin_data::tracked_data::TrackedData;
 use pumpkin_inventory::player::ender_chest_inventory::EnderChestInventory;
 use pumpkin_protocol::bedrock::client::AbilityLayer;
+use pumpkin_protocol::bedrock::client::CDeathInfo;
 use pumpkin_protocol::bedrock::client::play_status::CPlayStatus;
+use pumpkin_protocol::bedrock::client::set_actor_data::{
+    CSetActorData, EntityMetadata, MetadataValue, PropertySyncData, entity_data_flag,
+    entity_data_key,
+};
 use pumpkin_protocol::bedrock::client::set_time::CSetTime;
 use pumpkin_protocol::bedrock::client::update_abilities::{Ability, CUpdateAbilities};
-use pumpkin_protocol::bedrock::client::{CDeathInfo, CRespawn as CBedrockRespawn};
-use pumpkin_protocol::bedrock::respawn::PlayerRespawnState;
 use pumpkin_protocol::bedrock::server::text::SText;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_util::translation::Locale;
@@ -443,7 +446,10 @@ impl ChunkManager {
 
 #[cfg(test)]
 mod chunk_manager_tests {
-    use super::{ChunkManager, Player, client_load_is_ready};
+    use super::{
+        ChunkManager, MetadataValue, Player, client_load_is_ready, entity_data_flag,
+        entity_data_key,
+    };
 
     #[test]
     fn chunk_acknowledgement_rate_is_bounded() {
@@ -499,15 +505,32 @@ mod chunk_manager_tests {
 
     #[test]
     fn bedrock_auxiliary_attributes_are_independent() {
-        let air = Player::bedrock_air_attributes(123);
         let absorption = Player::bedrock_absorption_attributes(4.0);
 
-        assert_eq!(air.len(), 1);
-        assert_eq!(air[0].name, "minecraft:air");
-        assert_eq!(air[0].current_value, 123.0);
         assert_eq!(absorption.len(), 1);
         assert_eq!(absorption[0].name, "minecraft:absorption");
         assert_eq!(absorption[0].current_value, 4.0);
+    }
+
+    #[test]
+    fn bedrock_air_uses_actor_metadata_and_breathing_direction() {
+        assert!(!Player::bedrock_is_breathing(299, 300));
+        assert!(Player::bedrock_is_breathing(4, 0));
+
+        let metadata = Player::bedrock_air_metadata(123, 1i64 << entity_data_flag::BREATHING);
+        assert!(matches!(
+            metadata.0.get(&entity_data_key::AIR_SUPPLY),
+            Some(MetadataValue::Short(123))
+        ));
+        assert!(matches!(
+            metadata.0.get(&entity_data_key::AIR_SUPPLY_MAX),
+            Some(MetadataValue::Short(value)) if *value == super::super::breath::MAX_AIR as i16
+        ));
+        assert!(matches!(
+            metadata.0.get(&entity_data_key::FLAGS),
+            Some(MetadataValue::Long(flags))
+                if flags & (1i64 << entity_data_flag::BREATHING) != 0
+        ));
     }
 
     #[test]
@@ -3185,16 +3208,22 @@ impl Player {
         ]
     }
 
-    fn bedrock_air_attributes(
-        air: i32,
-    ) -> Vec<pumpkin_protocol::bedrock::client::update_attributes::Attribute> {
-        vec![Self::bedrock_attribute(
-            "minecraft:air",
-            0.0,
-            super::breath::MAX_AIR as f32,
-            air as f32,
-            super::breath::MAX_AIR as f32,
-        )]
+    const fn bedrock_is_breathing(air: i32, last_air: i32) -> bool {
+        air >= last_air
+    }
+
+    fn bedrock_air_metadata(air: i32, flags: i64) -> EntityMetadata {
+        let mut metadata = EntityMetadata(HashMap::new());
+        metadata.set(
+            entity_data_key::AIR_SUPPLY,
+            MetadataValue::Short(air.clamp(0, super::breath::MAX_AIR) as i16),
+        );
+        metadata.set(
+            entity_data_key::AIR_SUPPLY_MAX,
+            MetadataValue::Short(super::breath::MAX_AIR as i16),
+        );
+        metadata.set(entity_data_key::FLAGS, MetadataValue::Long(flags));
+        metadata
     }
 
     #[cfg(test)]
@@ -3249,12 +3278,35 @@ impl Player {
     }
 
     #[must_use]
-    fn bedrock_air_attribute_packet(
-        &self,
-    ) -> pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
-        self.bedrock_attribute_packet(Self::bedrock_air_attributes(
-            self.breath_manager.air_supply.load(Ordering::Relaxed),
-        ))
+    fn bedrock_air_metadata_packet(&self, include_full_metadata: bool) -> CSetActorData {
+        let air = self.breath_manager.air_supply.load(Ordering::Relaxed);
+        let last_air = self.last_sent_air.load(Ordering::Relaxed);
+        let breathing = Self::bedrock_is_breathing(air, last_air);
+        let mask = 1i64 << entity_data_flag::BREATHING;
+        let entity = self.get_entity();
+        if breathing {
+            entity.bedrock_flags.fetch_or(mask, Ordering::Relaxed);
+        } else {
+            entity.bedrock_flags.fetch_and(!mask, Ordering::Relaxed);
+        }
+        let flags = entity.bedrock_flags.load(Ordering::Relaxed);
+        let air_metadata = Self::bedrock_air_metadata(air, flags);
+        let mut metadata = if include_full_metadata {
+            entity.bedrock_metadata()
+        } else {
+            EntityMetadata(HashMap::new())
+        };
+        metadata.0.extend(air_metadata.0);
+
+        CSetActorData {
+            actor_runtime_id: VarULong(self.entity_id() as u64),
+            metadata,
+            synced_properties: PropertySyncData {
+                int_properties: HashMap::new(),
+                float_properties: HashMap::new(),
+            },
+            tick: VarULong(0),
+        }
     }
 
     fn mark_vitals_sent(&self) {
@@ -3294,7 +3346,7 @@ impl Player {
         }
         if let ClientPlatform::Bedrock(client) = self.client.as_ref() {
             client
-                .enqueue_packet(&self.bedrock_air_attribute_packet())
+                .enqueue_packet(&self.bedrock_air_metadata_packet(false))
                 .await;
             self.last_sent_air.store(
                 self.breath_manager.air_supply.load(Ordering::Relaxed),
@@ -3315,6 +3367,9 @@ impl Player {
             .await;
         client
             .send_game_packet(&self.bedrock_vitals_attribute_packet())
+            .await;
+        client
+            .send_game_packet(&self.bedrock_air_metadata_packet(true))
             .await;
         self.send_initial_bedrock_inventory_state().await;
         self.mark_bedrock_join_state_sent();
@@ -3516,7 +3571,6 @@ impl Player {
     }
 
     async fn handle_killed(&self, death_msg: TextComponent) {
-        self.set_client_loaded(false);
         let block_pos = self.position().to_block_pos();
 
         let keep_inventory = self.world().level_info.load().game_rules.keep_inventory
@@ -3539,17 +3593,20 @@ impl Player {
             self.set_experience(0, 0.0, 0).await;
         }
 
-        // Reset air supply & drowning ticks on death
-        self.breath_manager.reset(self);
-
         match self.client.as_ref() {
             ClientPlatform::Java(client) => {
+                self.set_client_loaded(false);
                 client
                     .send_packet_now(&CCombatDeath::new(self.entity_id().into(), &death_msg))
                     .await;
             }
             ClientPlatform::Bedrock(client) => {
                 self.bedrock_respawn_pending.store(true, Ordering::Relaxed);
+                // Bedrock enters the death screen from a zero health attribute.
+                // Keep the initialized session active until this update and the
+                // death message have been queued. Respawn begins only after the
+                // client sends Respawn::ClientReadyToSpawn.
+                self.send_bedrock_vitals_state().await;
                 let (cause, messages) = match &*death_msg.0.content {
                     pumpkin_util::text::TextContent::Translate {
                         translate,
@@ -3570,13 +3627,6 @@ impl Player {
                     ),
                 };
 
-                client
-                    .enqueue_packet(&CBedrockRespawn::new(
-                        self.bedrock_network_position(),
-                        PlayerRespawnState::SearchingForSpawn,
-                        VarULong(self.entity_id() as u64),
-                    ))
-                    .await;
                 client.enqueue_packet(&CDeathInfo { cause, messages }).await;
             }
         }

@@ -27,3 +27,27 @@ impl CRespawn {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        bedrock::respawn::PlayerRespawnState, codec::var_ulong::VarULong, serial::PacketWrite,
+    };
+    use pumpkin_util::math::vector3::Vector3;
+
+    use super::CRespawn;
+
+    #[test]
+    fn server_ready_uses_zero_local_player_runtime_id() {
+        let packet = CRespawn::new(
+            Vector3::new(1.0, 2.0, 3.0),
+            PlayerRespawnState::ReadyToSpawn,
+            VarULong(0),
+        );
+        let mut bytes = Vec::new();
+        packet.write(&mut bytes).unwrap();
+
+        assert_eq!(bytes[12], PlayerRespawnState::ReadyToSpawn as u8);
+        assert_eq!(bytes[13], 0);
+    }
+}

@@ -35,7 +35,8 @@ pub enum ActorEventType {
     SquidFleeing = 15,
     ZombieConverting = 16,
     PlayAmbient = 17,
-    SpawnAlive = 18,
+    /// Signals that a player has completed the death/respawn handshake.
+    Respawn = 18,
     StartOfferFlower = 19,
     StopOfferFlower = 20,
     LoveHearts = 21,
@@ -109,5 +110,19 @@ mod tests {
         packet.write(&mut bytes).unwrap();
 
         assert_eq!(bytes, [126, 2, 0, 0]);
+    }
+
+    #[test]
+    fn respawn_event_uses_bedrock_event_id_eighteen() {
+        let packet = SActorEvent {
+            entity_runtime_id: VarULong(126),
+            event_type: ActorEventType::Respawn,
+            event_data: VarInt(0),
+            fire_at_position: None,
+        };
+        let mut bytes = Vec::new();
+        packet.write(&mut bytes).unwrap();
+
+        assert_eq!(bytes, [126, 18, 0, 0]);
     }
 }

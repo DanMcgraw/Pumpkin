@@ -3517,6 +3517,7 @@ impl World {
             .await;
 
         player.living_entity.reset_state().await;
+        player.breath_manager.reset(player);
 
         player.send_permission_lvl_update();
 
@@ -3565,9 +3566,18 @@ impl World {
                     .send_packet_now(&CChunkBatchEnd::new(1u16))
                     .await;
             }
-            crate::net::ClientPlatform::Bedrock(_) => {
-                // Bedrock becomes ready in the ClientReadyToSpawn handshake;
-                // keep gameplay input paused until the final snapshot is sent.
+            crate::net::ClientPlatform::Bedrock(client) => {
+                // Match Bedrock/Geyser's three-step respawn handshake. A runtime
+                // ID of zero is the vanilla server sentinel for the local player.
+                // The client will finish with PlayerAction::Respawn, at which
+                // point attributes, metadata, and inventory can be replayed.
+                client
+                    .send_game_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
+                        player.bedrock_network_position(),
+                        pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ReadyToSpawn,
+                        VarULong(0),
+                    ))
+                    .await;
             }
         }
     }

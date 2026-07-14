@@ -19,6 +19,7 @@ use pumpkin_protocol::{
             player_hotbar::CPlayerHotbar,
         },
         server::{
+            actor_event::{ActorEventType, SActorEvent},
             animate::{AnimateAction, SAnimate},
             block_pick_request::SBlockPickRequest,
             command_request::SCommandRequest,
@@ -60,6 +61,20 @@ use crate::{
 };
 use pumpkin_data::BlockDirection;
 use tracing::{debug, info};
+
+fn should_begin_bedrock_respawn(
+    state: pumpkin_protocol::bedrock::respawn::PlayerRespawnState,
+    pending: bool,
+    dead: bool,
+) -> bool {
+    state == pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
+        && pending
+        && dead
+}
+
+const fn should_complete_bedrock_respawn(pending: bool, dead: bool) -> bool {
+    pending && !dead
+}
 
 fn descriptor_to_stack(desc: &NetworkItemDescriptor, is_creative: bool) -> ItemStack {
     if desc.id.0 == 0 || desc.stack_size == 0 {
@@ -992,10 +1007,24 @@ impl BedrockClient {
                 dead = player.living_entity.dead.load(Ordering::Relaxed),
                 "Received Bedrock respawn action"
             );
-            if player.bedrock_respawn_pending.load(Ordering::Relaxed)
-                && player.living_entity.dead.load(Ordering::Relaxed)
+            if should_complete_bedrock_respawn(
+                player.bedrock_respawn_pending.load(Ordering::Relaxed),
+                player.living_entity.dead.load(Ordering::Relaxed),
+            ) && player
+                .bedrock_respawn_pending
+                .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
             {
-                player.respawn().await;
+                self.send_game_packet(&SActorEvent {
+                    entity_runtime_id: VarULong(player.entity_id() as u64),
+                    event_type: ActorEventType::Respawn,
+                    event_data: VarInt(0),
+                    fire_at_position: None,
+                })
+                .await;
+                player.set_client_loaded(true);
+                player.reset_bedrock_input_state();
+                player.send_bedrock_recovery_state().await;
             }
             return;
         }
@@ -1175,31 +1204,15 @@ impl BedrockClient {
             pending = player.bedrock_respawn_pending.load(Ordering::Relaxed),
             "Received Bedrock respawn handshake"
         );
-        if packet.state
-            != pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ClientReadyToSpawn
-            || player
-                .bedrock_respawn_pending
-                .compare_exchange(true, false, Ordering::Relaxed, Ordering::Relaxed)
-                .is_err()
-        {
+        if !should_begin_bedrock_respawn(
+            packet.state,
+            player.bedrock_respawn_pending.load(Ordering::Relaxed),
+            player.living_entity.dead.load(Ordering::Relaxed),
+        ) {
             return;
         }
-        let network_position = player.bedrock_network_position();
-        debug!(
-            player = %player.gameprofile.name,
-            feet_position = ?player.position(),
-            network_position = ?network_position,
-            "Completing Bedrock respawn handshake"
-        );
-        self.send_game_packet(&pumpkin_protocol::bedrock::client::CRespawn::new(
-            network_position,
-            pumpkin_protocol::bedrock::respawn::PlayerRespawnState::ReadyToSpawn,
-            VarULong(player.entity_id() as u64),
-        ))
-        .await;
-        player.set_client_loaded(true);
-        player.reset_bedrock_input_state();
-        player.send_bedrock_recovery_state().await;
+        player.set_client_loaded(false);
+        player.respawn().await;
     }
 
     pub async fn handle_chat_command(
@@ -2185,9 +2198,31 @@ fn record_update(
 #[cfg(test)]
 mod inventory_stack_response_tests {
     use pumpkin_data::{item::Item, item_stack::ItemStack};
-    use pumpkin_protocol::bedrock::network_item::{ContainerName, FullContainerName};
+    use pumpkin_protocol::bedrock::{
+        network_item::{ContainerName, FullContainerName},
+        respawn::PlayerRespawnState,
+    };
 
-    use super::{bedrock_crafting_input_slot_id, record_update};
+    use super::{
+        bedrock_crafting_input_slot_id, record_update, should_begin_bedrock_respawn,
+        should_complete_bedrock_respawn,
+    };
+
+    #[test]
+    fn respawn_state_machine_follows_client_ready_then_final_action() {
+        assert!(should_begin_bedrock_respawn(
+            PlayerRespawnState::ClientReadyToSpawn,
+            true,
+            true
+        ));
+        assert!(!should_begin_bedrock_respawn(
+            PlayerRespawnState::SearchingForSpawn,
+            true,
+            true
+        ));
+        assert!(!should_complete_bedrock_respawn(true, true));
+        assert!(should_complete_bedrock_respawn(true, false));
+    }
 
     #[test]
     fn crafting_response_uses_bedrock_ui_slot_ids() {
