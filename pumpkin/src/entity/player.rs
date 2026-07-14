@@ -667,6 +667,10 @@ impl Player {
             Vector3::new(0.0, 100.0, 0.0),
             &EntityType::PLAYER,
         ));
+        // Player is absent from the generated mob attribute table, but its
+        // Bedrock walking speed is still authoritative live state rather than
+        // a spawn-packet-only constant.
+        living_entity.set_attribute_base(&Attributes::MOVEMENT_SPEED, 0.1);
         living_entity.entity.invulnerable.store(
             matches!(gamemode, GameMode::Creative | GameMode::Spectator),
             Ordering::Relaxed,

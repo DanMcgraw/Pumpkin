@@ -422,6 +422,17 @@ impl LivingEntity {
             .map_or(attribute.default_value, AttributeInstance::value)
     }
 
+    fn entity_type_attribute_base(
+        entity_type: &'static EntityType,
+        attribute: &Attributes,
+    ) -> f64 {
+        entity_type
+            .attributes
+            .iter()
+            .find(|(candidate, _)| candidate.id == attribute.id)
+            .map_or(attribute.default_value, |(_, value)| *value)
+    }
+
     /// Returns the base attribute value for `attribute` for this entity's type.
     pub fn get_attribute_base(&self, attribute: &Attributes) -> f64 {
         // Check the local base value first (could be modified)
@@ -431,13 +442,7 @@ impl LivingEntity {
         }
 
         // Fall back to registry base value if no local instance exists
-        self.entity
-            .entity_type
-            .attributes
-            .iter()
-            .find(|a| a.0.id == attribute.id)
-            .unwrap()
-            .1
+        Self::entity_type_attribute_base(self.entity.entity_type, attribute)
     }
 
     /// Update or insert the base value for an attribute on this entity.
@@ -2937,6 +2942,18 @@ mod tests {
         assert_eq!(
             LivingEntity::hurt_sound_for_entity(&EntityType::CREEPER),
             Sound::EntityGenericHurt
+        );
+    }
+
+    #[test]
+    fn missing_entity_attribute_base_falls_back_to_global_default() {
+        let missing_attribute = Attributes {
+            id: u8::MAX,
+            default_value: 0.125,
+        };
+        assert_eq!(
+            LivingEntity::entity_type_attribute_base(&EntityType::PLAYER, &missing_attribute),
+            missing_attribute.default_value
         );
     }
 }
