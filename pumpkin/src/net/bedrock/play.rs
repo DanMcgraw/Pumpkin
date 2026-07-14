@@ -60,7 +60,7 @@ use crate::{
     world::chunker::{self},
 };
 use pumpkin_data::BlockDirection;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 fn should_begin_bedrock_respawn(
     state: pumpkin_protocol::bedrock::respawn::PlayerRespawnState,
@@ -198,7 +198,7 @@ impl BedrockClient {
         chunker::update_position(player).await;
     }
 
-    pub fn handle_set_local_player_as_initialized(
+    pub async fn handle_set_local_player_as_initialized(
         &self,
         player: &Arc<Player>,
         packet: &SSetLocalPlayerAsInitialized,
@@ -207,6 +207,15 @@ impl BedrockClient {
             "Player {} initialized (Runtime ID: {})",
             player.gameprofile.name, packet.runtime_entity_id.0
         );
+        if packet.runtime_entity_id.0 != player.entity_id() as u64 {
+            warn!(
+                player = %player.gameprofile.name,
+                expected = player.entity_id(),
+                received = packet.runtime_entity_id.0,
+                "Ignoring Bedrock initialization for the wrong runtime ID"
+            );
+            return;
+        }
         // This is sent when the client has finished loading and rendering the world.
         if player
             .client_loaded
@@ -214,8 +223,19 @@ impl BedrockClient {
         {
             return;
         }
+        if !self.transition_session_state(crate::net::bedrock::state::BedrockSessionState::Playing)
+        {
+            return;
+        }
         player.set_client_loaded(true);
         player.reset_bedrock_input_state();
+        player
+            .world()
+            .scoreboard
+            .lock()
+            .await
+            .send_snapshot_to(player)
+            .await;
     }
 
     #[expect(clippy::too_many_lines)]
@@ -243,6 +263,15 @@ impl BedrockClient {
             .position
             .add_raw(0.0, -entity.get_eye_height() as f32, 0.0)
             .to_f64();
+        let input_tick_observation = player.observe_bedrock_input(packet.tick.0, new_pos);
+        if input_tick_observation == crate::entity::player::BedrockInputTickObservation::Stale {
+            debug!(
+                player = %player.gameprofile.name,
+                received_tick = packet.tick.0,
+                latest_tick = player.bedrock_last_input_tick.load(Ordering::Relaxed),
+                "Observed stale Bedrock input tick; preserving known-good movement behavior"
+            );
+        }
         let old_pos = player.position();
 
         let new_pitch = packet.pitch;
@@ -1022,10 +1051,32 @@ impl BedrockClient {
                     fire_at_position: None,
                 })
                 .await;
+                if !self.transition_session_state(
+                    crate::net::bedrock::state::BedrockSessionState::Playing,
+                ) {
+                    return;
+                }
                 player.set_client_loaded(true);
                 player.reset_bedrock_input_state();
                 player.send_bedrock_recovery_state().await;
             }
+            return;
+        }
+        if matches!(packet.action, PlayerAction::DimensionChangeAck) {
+            if player
+                .client_loaded
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return;
+            }
+            if !self
+                .transition_session_state(crate::net::bedrock::state::BedrockSessionState::Playing)
+            {
+                return;
+            }
+            player.set_client_loaded(true);
+            player.reset_bedrock_input_state();
+            player.send_bedrock_recovery_state().await;
             return;
         }
         if !player.has_client_loaded() {
@@ -1179,17 +1230,6 @@ impl BedrockClient {
             PlayerAction::DropItem => {
                 player.drop_held_item(false).await;
             }
-            PlayerAction::DimensionChangeAck => {
-                if player
-                    .client_loaded
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    return;
-                }
-                player.set_client_loaded(true);
-                player.reset_bedrock_input_state();
-                player.send_bedrock_recovery_state().await;
-            }
             // TODO
             _ => {}
         }
@@ -1209,6 +1249,11 @@ impl BedrockClient {
             player.bedrock_respawn_pending.load(Ordering::Relaxed),
             player.living_entity.dead.load(Ordering::Relaxed),
         ) {
+            return;
+        }
+        if !self
+            .begin_recovery_boundary(crate::net::bedrock::state::BedrockSessionState::Respawning)
+        {
             return;
         }
         player.set_client_loaded(false);

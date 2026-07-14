@@ -34,3 +34,29 @@ impl PacketWrite for CInventorySlot {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        bedrock::network_item::NetworkItemStackDescriptor, codec::var_uint::VarUInt,
+        serial::PacketWrite,
+    };
+
+    use super::CInventorySlot;
+
+    #[test]
+    fn cursor_snapshot_uses_ui_window_without_stack_request_container_name() {
+        let mut bytes = Vec::new();
+        CInventorySlot {
+            window_id: VarUInt(124),
+            inventory_slot: VarUInt(0),
+            container_name: None,
+            storage: None,
+            item: NetworkItemStackDescriptor::default(),
+        }
+        .write(&mut bytes)
+        .unwrap();
+
+        assert!(bytes.starts_with(&[124, 0, 0, 0]));
+    }
+}

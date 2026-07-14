@@ -20,7 +20,7 @@ use std::sync::atomic::{
     Ordering::{Relaxed, SeqCst},
 };
 use std::{collections::HashMap, sync::atomic::AtomicI32};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::experience_orb::ExperienceOrbEntity;
 use super::{Entity, EntityBase, NBTStorage, NBTStorageInit};
@@ -90,6 +90,10 @@ pub struct LivingEntity {
     pub death_time: AtomicU8,
     /// Indicates whether the entity is dead. (`on_death` called)
     pub dead: AtomicBool,
+    /// The one authoritative component produced for the current death. Player
+    /// chat, console logging, and edition-specific death screens consume this
+    /// same value instead of independently rebuilding translation keys.
+    last_death_message: Mutex<Option<TextComponent>>,
     /// The distance the entity has been falling.
     pub fall_distance: AtomicCell<f32>,
     pub active_effects: Mutex<HashMap<&'static StatusEffect, Effect>>,
@@ -136,6 +140,10 @@ impl LivingEntity {
         &Block::SLIME_BLOCK,
     ];
 
+    fn default_death_translation_key(damage_type: DamageType) -> String {
+        format!("death.attack.{}", damage_type.message_id)
+    }
+
     fn hurt_sound_for_entity(entity_type: &'static EntityType) -> Sound {
         entity_type.hurt_sound.unwrap_or(Sound::EntityGenericHurt)
     }
@@ -170,6 +178,7 @@ impl LivingEntity {
             fall_distance: AtomicCell::new(0.0),
             death_time: AtomicU8::new(0),
             dead: AtomicBool::new(false),
+            last_death_message: Mutex::new(None),
             item_use_time: AtomicI32::new(0),
             item_in_use: Mutex::new(None),
             active_hand: Mutex::new(None),
@@ -1288,17 +1297,16 @@ impl LivingEntity {
     pub async fn get_death_message(
         dyn_self: &dyn EntityBase,
         damage_type: DamageType,
-        source: Option<&dyn EntityBase>,
+        _source: Option<&dyn EntityBase>,
         cause: Option<&dyn EntityBase>,
     ) -> TextComponent {
         match damage_type.death_message_type {
             DeathMessageType::Default => {
-                if let Some(cause) = cause
-                    && source.is_some()
-                {
+                let key = Self::default_death_translation_key(damage_type);
+                if let Some(cause) = cause {
                     TextComponent::translate_cross(
-                        format!("death.attack.{}.player", damage_type.message_id),
-                        format!("death.attack.{}.player", damage_type.message_id),
+                        key.clone(),
+                        key,
                         [
                             dyn_self.get_display_name().await,
                             cause.get_display_name().await,
@@ -1306,8 +1314,8 @@ impl LivingEntity {
                     )
                 } else {
                     TextComponent::translate_cross(
-                        format!("death.attack.{}", damage_type.message_id),
-                        format!("death.attack.{}", damage_type.message_id),
+                        key.clone(),
+                        key,
                         [dyn_self.get_display_name().await],
                     )
                 }
@@ -1479,7 +1487,7 @@ impl LivingEntity {
             self.drop_equipment().await;
 
             // Broadcast death message if it's a player and the gamerule is enabled
-            self.broadcast_death_message(&*dyn_self, damage_type, source, cause)
+            self.record_and_broadcast_death_message(&*dyn_self, damage_type, source, cause)
                 .await;
 
             self.reset_effects_and_attributes().await;
@@ -1507,24 +1515,33 @@ impl LivingEntity {
         }
     }
 
-    async fn broadcast_death_message(
+    async fn record_and_broadcast_death_message(
         &self,
         dyn_self: &dyn EntityBase,
         damage_type: DamageType,
         source: Option<&dyn EntityBase>,
         cause: Option<&dyn EntityBase>,
     ) {
-        let world = self.entity.world.load();
-        let show_death_messages = { world.level_info.load().game_rules.show_death_messages };
-        if self.entity.entity_type == &EntityType::PLAYER && show_death_messages {
-            //TODO: KillCredit
+        if self.entity.entity_type == &EntityType::PLAYER {
+            // TODO: KillCredit and named-item variants.
             let death_message = Self::get_death_message(dyn_self, damage_type, source, cause).await;
-            if let Some(server) = world.server.upgrade() {
+            *self.last_death_message.lock().await = Some(death_message.clone());
+            info!("{}", death_message.clone().to_pretty_console());
+
+            let world = self.entity.world.load();
+            let show_death_messages = { world.level_info.load().game_rules.show_death_messages };
+            if show_death_messages && let Some(server) = world.server.upgrade() {
                 for player in server.get_all_players() {
                     player.send_system_message(&death_message).await;
                 }
             }
         }
+    }
+
+    /// Takes the component recorded by `on_death` for the edition-specific
+    /// death screen. A successful player death should yield exactly once.
+    pub async fn take_death_message(&self) -> Option<TextComponent> {
+        self.last_death_message.lock().await.take()
     }
 
     async fn update_death_stats(&self, dyn_self: &dyn EntityBase, cause: Option<&dyn EntityBase>) {
@@ -1885,6 +1902,7 @@ impl LivingEntity {
 
     pub async fn reset_state(&self) {
         self.entity.reset_state().await;
+        *self.last_death_message.lock().await = None;
 
         // Restore to maximum health for this entity type
         let max_health = self.get_max_health();
@@ -2846,6 +2864,18 @@ mod tests {
         assert!(!should_remove_after_death(&EntityType::PLAYER, 20));
         assert!(should_remove_after_death(&EntityType::ZOMBIE, 20));
         assert!(!should_remove_after_death(&EntityType::ZOMBIE, 19));
+    }
+
+    #[test]
+    fn player_attack_uses_the_valid_base_translation_key() {
+        assert_eq!(
+            LivingEntity::default_death_translation_key(DamageType::PLAYER_ATTACK),
+            "death.attack.player"
+        );
+        assert_ne!(
+            LivingEntity::default_death_translation_key(DamageType::PLAYER_ATTACK),
+            "death.attack.player.player"
+        );
     }
 
     // ── bypasses_armor_durability ─────────────────────────────────────

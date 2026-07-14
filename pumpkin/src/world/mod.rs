@@ -3519,7 +3519,9 @@ impl World {
         player.living_entity.reset_state().await;
         player.breath_manager.reset(player);
 
-        player.send_permission_lvl_update();
+        if matches!(player.client.as_ref(), crate::net::ClientPlatform::Java(_)) {
+            player.send_permission_lvl_update();
+        }
 
         player.hunger_manager.restart();
 

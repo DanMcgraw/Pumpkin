@@ -8,6 +8,90 @@ use pumpkin_protocol::bedrock::client::gamerules_changed::{
     GameRule as BedrockGameRule, GameRuleValue as BedrockGameRuleValue, StartGameRules,
 };
 
+/// Server-owned lifecycle for a Bedrock play session.
+///
+/// Bedrock accepts different packet families at different points in the
+/// connection. Keeping this state separate from Java's load timeout prevents
+/// gameplay, UI, and recovery packets from leaking across join, dimension, or
+/// death boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BedrockSessionState {
+    Initializing = 0,
+    Playing = 1,
+    ChangingDimension = 2,
+    Dead = 3,
+    Respawning = 4,
+    Disconnected = 5,
+}
+
+impl BedrockSessionState {
+    #[must_use]
+    pub const fn from_wire(value: u8) -> Self {
+        match value {
+            0 => Self::Initializing,
+            1 => Self::Playing,
+            2 => Self::ChangingDimension,
+            3 => Self::Dead,
+            4 => Self::Respawning,
+            _ => Self::Disconnected,
+        }
+    }
+
+    #[must_use]
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        self as u8 == next as u8
+            || matches!(
+                (self, next),
+                (Self::Initializing, Self::Playing)
+                    | (Self::Playing, Self::ChangingDimension | Self::Dead)
+                    | (Self::ChangingDimension, Self::Playing)
+                    | (Self::Dead, Self::Respawning)
+                    | (Self::Respawning, Self::Playing | Self::ChangingDimension)
+                    | (_, Self::Disconnected)
+            )
+    }
+
+    #[must_use]
+    pub const fn allows(self, group: BedrockPacketGroup) -> bool {
+        matches!(
+            (self, group),
+            (Self::Initializing, BedrockPacketGroup::Bootstrap)
+                | (
+                    Self::Playing,
+                    BedrockPacketGroup::Gameplay | BedrockPacketGroup::PersistentUi
+                )
+                | (
+                    Self::ChangingDimension | Self::Respawning,
+                    BedrockPacketGroup::WorldTransition
+                )
+                | (Self::Dead, BedrockPacketGroup::Death)
+        )
+    }
+}
+
+/// Packet families used to test and document lifecycle gates. Individual
+/// packet codecs stay unaware of session policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedrockPacketGroup {
+    Bootstrap,
+    Gameplay,
+    PersistentUi,
+    WorldTransition,
+    Death,
+}
+
+#[must_use]
+pub const fn recovery_replay_pending(
+    state: BedrockSessionState,
+    recovery_epoch: u64,
+    replayed_epoch: u64,
+) -> bool {
+    matches!(state, BedrockSessionState::Playing)
+        && recovery_epoch != 0
+        && replayed_epoch < recovery_epoch
+}
+
 /// Maps Pumpkin's Java-style dimension registry entries to Bedrock's fixed
 /// dimension IDs.
 #[must_use]
@@ -97,7 +181,43 @@ mod tests {
     };
     use pumpkin_protocol::bedrock::client::gamerules_changed::GameRuleValue;
 
-    use super::{dimension_id, game_rule, game_rules};
+    use super::{
+        BedrockPacketGroup, BedrockSessionState, dimension_id, game_rule, game_rules,
+        recovery_replay_pending,
+    };
+
+    #[test]
+    fn lifecycle_rejects_packets_outside_their_session_boundary() {
+        assert!(BedrockSessionState::Initializing.allows(BedrockPacketGroup::Bootstrap));
+        assert!(!BedrockSessionState::Initializing.allows(BedrockPacketGroup::Gameplay));
+        assert!(BedrockSessionState::Playing.allows(BedrockPacketGroup::Gameplay));
+        assert!(BedrockSessionState::Playing.allows(BedrockPacketGroup::PersistentUi));
+        assert!(BedrockSessionState::ChangingDimension.allows(BedrockPacketGroup::WorldTransition));
+        assert!(BedrockSessionState::Dead.allows(BedrockPacketGroup::Death));
+        assert!(!BedrockSessionState::Disconnected.allows(BedrockPacketGroup::Gameplay));
+    }
+
+    #[test]
+    fn lifecycle_only_accepts_defined_transitions() {
+        assert!(BedrockSessionState::Initializing.can_transition_to(BedrockSessionState::Playing));
+        assert!(BedrockSessionState::Playing.can_transition_to(BedrockSessionState::Dead));
+        assert!(BedrockSessionState::Dead.can_transition_to(BedrockSessionState::Respawning));
+        assert!(BedrockSessionState::Respawning.can_transition_to(BedrockSessionState::Playing));
+        assert!(!BedrockSessionState::Initializing.can_transition_to(BedrockSessionState::Dead));
+        assert!(!BedrockSessionState::Dead.can_transition_to(BedrockSessionState::Playing));
+    }
+
+    #[test]
+    fn recovery_generation_is_replayed_only_once_while_playing() {
+        assert!(recovery_replay_pending(BedrockSessionState::Playing, 2, 1));
+        assert!(!recovery_replay_pending(BedrockSessionState::Playing, 2, 2));
+        assert!(!recovery_replay_pending(
+            BedrockSessionState::Respawning,
+            2,
+            1
+        ));
+        assert!(!recovery_replay_pending(BedrockSessionState::Playing, 0, 0));
+    }
 
     #[test]
     fn maps_vanilla_dimensions_to_bedrock_ids() {
@@ -115,9 +235,12 @@ mod tests {
         assert!(rules.rules.iter().any(|rule| {
             rule.name == "dodaylightcycle" && rule.value == GameRuleValue::Bool(true)
         }));
-        assert!(rules.rules.iter().any(|rule| {
-            rule.name == "spawnradius" && rule.value == GameRuleValue::Int(0)
-        }));
+        assert!(
+            rules
+                .rules
+                .iter()
+                .any(|rule| { rule.name == "spawnradius" && rule.value == GameRuleValue::Int(0) })
+        );
     }
 
     #[test]

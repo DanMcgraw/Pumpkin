@@ -144,6 +144,34 @@ const fn client_load_is_ready(
     explicitly_loaded || (!is_bedrock && load_grace_period_expired)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedrockInputTickObservation {
+    First,
+    Advanced,
+    Stale,
+}
+
+fn observe_bedrock_input_tick(
+    initialized: &AtomicBool,
+    last_tick: &AtomicU64,
+    tick: u64,
+) -> BedrockInputTickObservation {
+    if initialized
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
+    {
+        last_tick.store(tick, Ordering::Release);
+        return BedrockInputTickObservation::First;
+    }
+
+    let previous = last_tick.fetch_max(tick, Ordering::AcqRel);
+    if tick > previous {
+        BedrockInputTickObservation::Advanced
+    } else {
+        BedrockInputTickObservation::Stale
+    }
+}
+
 /// The block a player is actively mining and the outward face selected at start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MiningTarget {
@@ -447,9 +475,10 @@ impl ChunkManager {
 #[cfg(test)]
 mod chunk_manager_tests {
     use super::{
-        ChunkManager, MetadataValue, Player, client_load_is_ready, entity_data_flag,
-        entity_data_key,
+        BedrockInputTickObservation, ChunkManager, MetadataValue, Player, client_load_is_ready,
+        entity_data_flag, entity_data_key, observe_bedrock_input_tick,
     };
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
     fn chunk_acknowledgement_rate_is_bounded() {
@@ -538,6 +567,26 @@ mod chunk_manager_tests {
         assert!(!client_load_is_ready(false, true, true));
         assert!(client_load_is_ready(true, false, true));
         assert!(client_load_is_ready(false, true, false));
+    }
+
+    #[test]
+    fn bedrock_input_ticks_are_observed_without_enabling_corrections() {
+        let initialized = AtomicBool::new(false);
+        let last_tick = AtomicU64::new(0);
+
+        assert_eq!(
+            observe_bedrock_input_tick(&initialized, &last_tick, 40),
+            BedrockInputTickObservation::First
+        );
+        assert_eq!(
+            observe_bedrock_input_tick(&initialized, &last_tick, 41),
+            BedrockInputTickObservation::Advanced
+        );
+        assert_eq!(
+            observe_bedrock_input_tick(&initialized, &last_tick, 39),
+            BedrockInputTickObservation::Stale
+        );
+        assert_eq!(last_tick.load(Ordering::Acquire), 41);
     }
 }
 
@@ -2394,7 +2443,9 @@ impl Player {
             explicitly_loaded,
             self.client_loaded_timeout.load(Ordering::Relaxed) == 0,
             is_bedrock,
-        )
+        ) && self.client.bedrock().is_none_or(|client| {
+            client.session_state() == crate::net::bedrock::state::BedrockSessionState::Playing
+        })
     }
 
     pub fn set_client_loaded(&self, loaded: bool) {
@@ -2807,6 +2858,13 @@ impl Player {
                 let pitch = event.pitch;
                 let new_world = event.new_world;
 
+                if let Some(client) = self.client.bedrock()
+                    && !client.begin_recovery_boundary(
+                        crate::net::bedrock::state::BedrockSessionState::ChangingDimension,
+                    )
+                {
+                    return;
+                }
                 self.set_client_loaded(false);
                 let player = current_world.remove_player(self, false).await.unwrap();
                new_world.players.rcu(|current_list| {
@@ -2858,18 +2916,20 @@ impl Player {
                     }
                 }
 
-                self.send_permission_lvl_update();
+                if matches!(self.client.as_ref(), ClientPlatform::Java(_)) {
+                    self.send_permission_lvl_update();
+                }
 
                 player.clone().request_teleport(position, yaw, pitch).await;
                 player.get_entity().last_pos.store(position);
 
-                self.send_abilities_update().await;
-
-                self.enqueue_set_held_item_packet(&CSetSelectedSlot::new(
-                   self.get_inventory().get_selected_slot() as i8,
-                )).await;
-
-                self.on_screen_handler_opened(self.player_screen_handler.clone()).await;
+                if matches!(self.client.as_ref(), ClientPlatform::Java(_)) {
+                    self.send_abilities_update().await;
+                    self.enqueue_set_held_item_packet(&CSetSelectedSlot::new(
+                        self.get_inventory().get_selected_slot() as i8,
+                    )).await;
+                    self.on_screen_handler_opened(self.player_screen_handler.clone()).await;
+                }
 
                 new_world.send_world_info(&player, position, yaw, pitch).await;
             }
@@ -2977,6 +3037,23 @@ impl Player {
         self.bedrock_last_input_position.store(self.position());
     }
 
+    /// Records prediction ticks and resulting positions for diagnostics. Phase
+    /// 3 intentionally does not reject or correct movement from this observer;
+    /// a correction policy remains behind real-client validation.
+    pub fn observe_bedrock_input(
+        &self,
+        tick: u64,
+        resulting_position: Vector3<f64>,
+    ) -> BedrockInputTickObservation {
+        let observation = observe_bedrock_input_tick(
+            &self.bedrock_input_tick_initialized,
+            &self.bedrock_last_input_tick,
+            tick,
+        );
+        self.bedrock_last_input_position.store(resulting_position);
+        observation
+    }
+
     /// Keeps prediction position aligned after an explicit server teleport
     /// without accepting an older client input tick again.
     pub fn sync_bedrock_input_position(&self) {
@@ -3018,13 +3095,21 @@ impl Player {
         health > 0.0 && health < max_health
     }
 
-    /// Sends Geyser's ordered player inventory bootstrap: main, armor, then
-    /// offhand. Join and recovery traffic uses the awaited priority path so
-    /// actor, ability, and command packets cannot overtake inventory state.
+    /// Sends Geyser's ordered player inventory bootstrap: main, armor,
+    /// offhand, cursor, then selected hotbar slot. Join and recovery traffic
+    /// uses the awaited priority path so actor, ability, and command packets
+    /// cannot overtake inventory state.
     pub async fn send_initial_bedrock_inventory_state(&self) {
         let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
             return;
         };
+        if !client
+            .allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Bootstrap)
+            && !client
+                .allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Gameplay)
+        {
+            return;
+        }
         use pumpkin_protocol::bedrock::{
             client::inventory_content::CInventoryContent,
             network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
@@ -3079,6 +3164,7 @@ impl Player {
                 storage_item: NetworkItemStackDescriptor::default(),
             })
             .await;
+
         client
             .send_game_packet(&CInventoryContent {
                 container_id: VarUInt(119),
@@ -3090,6 +3176,38 @@ impl Player {
                 storage_item: NetworkItemStackDescriptor::default(),
             })
             .await;
+
+        // Bedrock represents the carried cursor in UI container slot zero,
+        // not as a fourth InventoryContent container.
+        let cursor = {
+            let screen_handler = self.player_screen_handler.lock().await;
+            let behaviour = screen_handler.get_behaviour();
+            let cursor_stack = behaviour.cursor_stack.lock().await;
+            NetworkItemStackDescriptor::from(&*cursor_stack)
+        };
+        client
+            .send_game_packet(
+                &pumpkin_protocol::bedrock::client::inventory_slot::CInventorySlot {
+                    window_id: VarUInt(124),
+                    inventory_slot: VarUInt(0),
+                    // Geyser's clientbound cursor update leaves the optional
+                    // FullContainerName unset. Cursor=59 is used by the
+                    // serverbound item-stack request, not this UI slot packet.
+                    container_name: None,
+                    storage: None,
+                    item: cursor,
+                },
+            )
+            .await;
+        client
+            .send_game_packet(
+                &pumpkin_protocol::bedrock::client::player_hotbar::CPlayerHotbar {
+                    selected_slot: VarUInt(self.inventory.get_selected_slot().into()),
+                    container_id: 0,
+                    should_select_block: false,
+                },
+            )
+            .await;
     }
 
     /// Sends the authoritative 36-slot player inventory after an ordinary
@@ -3098,6 +3216,9 @@ impl Player {
         let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
             return;
         };
+        if !client.allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Gameplay) {
+            return;
+        }
         use pumpkin_protocol::bedrock::{
             client::inventory_content::CInventoryContent,
             network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
@@ -3355,11 +3476,14 @@ impl Player {
         }
     }
 
-    /// Re-establishes only the state invalidated by a respawn or dimension
-    /// boundary. The packets remain separate and ordered like Geyser's
-    /// translator output instead of replaying one blanket snapshot.
+    /// Re-establishes the state invalidated by one respawn or dimension
+    /// boundary. The client claims each recovery generation once, so duplicate
+    /// acknowledgements cannot duplicate UI or inventory state.
     pub async fn send_bedrock_recovery_state(&self) {
         let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        let Some(epoch) = client.claim_recovery_replay() else {
             return;
         };
         client
@@ -3371,8 +3495,16 @@ impl Player {
         client
             .send_game_packet(&self.bedrock_air_metadata_packet(true))
             .await;
+        self.send_abilities_update().await;
         self.send_initial_bedrock_inventory_state().await;
+        self.world()
+            .scoreboard
+            .lock()
+            .await
+            .send_snapshot_to(self)
+            .await;
         self.mark_bedrock_join_state_sent();
+        client.finish_recovery_replay(epoch);
     }
 
     pub async fn send_health(&self) {
@@ -3607,27 +3739,24 @@ impl Player {
                 // death message have been queued. Respawn begins only after the
                 // client sends Respawn::ClientReadyToSpawn.
                 self.send_bedrock_vitals_state().await;
-                let (cause, messages) = match &*death_msg.0.content {
-                    pumpkin_util::text::TextContent::Translate {
-                        translate,
-                        bedrock_translate,
-                        with,
-                    } => (
-                        bedrock_translate
-                            .as_deref()
-                            .unwrap_or(translate.as_ref())
-                            .to_string(),
-                        with.iter()
-                            .map(pumpkin_util::text::TextComponentBase::to_bedrock_string)
-                            .collect(),
-                    ),
-                    _ => (
-                        "death.attack.generic".to_string(),
-                        vec![death_msg.0.to_bedrock_string()],
-                    ),
-                };
-
-                client.enqueue_packet(&CDeathInfo { cause, messages }).await;
+                // Geyser supplies Bedrock DeathInfo with the localized message,
+                // escaping percent signs because Bedrock treats them as format
+                // markers. Chat still receives the translatable component.
+                let locale = Locale::from_str(&self.config.load().locale).unwrap_or(Locale::EnUs);
+                let cause = death_msg
+                    .0
+                    .clone()
+                    .to_bedrock_legacy(locale)
+                    .replace('%', "%%");
+                client
+                    .enqueue_packet(&CDeathInfo {
+                        cause,
+                        messages: Vec::new(),
+                    })
+                    .await;
+                client.transition_session_state(
+                    crate::net::bedrock::state::BedrockSessionState::Dead,
+                );
             }
         }
     }
@@ -5306,8 +5435,13 @@ impl EntityBase for Player {
             if result {
                 let health = self.living_entity.health.load();
                 if health <= 0.0 {
-                    let death_message =
-                        LivingEntity::get_death_message(caller, damage_type, source, cause).await;
+                    let death_message = if let Some(message) =
+                        self.living_entity.take_death_message().await
+                    {
+                        message
+                    } else {
+                        LivingEntity::get_death_message(caller, damage_type, source, cause).await
+                    };
                     self.handle_killed(death_message).await;
                 }
             }
@@ -5770,6 +5904,11 @@ impl InventoryPlayer for Player {
                     java.enqueue_packet(packet).await;
                 }
                 ClientPlatform::Bedrock(bedrock) => {
+                    if !bedrock.allows_packet_group(
+                        crate::net::bedrock::state::BedrockPacketGroup::Gameplay,
+                    ) {
+                        return;
+                    }
                     use pumpkin_protocol::bedrock::{
                         client::inventory_content::CInventoryContent,
                         network_item::{
@@ -5984,6 +6123,11 @@ impl InventoryPlayer for Player {
                     java.enqueue_packet(packet).await;
                 }
                 ClientPlatform::Bedrock(bedrock) => {
+                    if !bedrock.allows_packet_group(
+                        crate::net::bedrock::state::BedrockPacketGroup::Gameplay,
+                    ) {
+                        return;
+                    }
                     use pumpkin_protocol::bedrock::{
                         client::inventory_slot::CInventorySlot,
                         network_item::{

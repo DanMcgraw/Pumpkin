@@ -7,7 +7,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -163,6 +163,11 @@ pub struct BedrockClient {
     /// The next form ID to use for custom forms.
     pub next_form_id: AtomicU32,
     pub inventory_opened: AtomicBool,
+    session_state: AtomicU8,
+    client_cache_supported: AtomicBool,
+    recovery_epoch: AtomicU64,
+    replayed_recovery_epoch: AtomicU64,
+    recovery_replay_in_progress: AtomicBool,
     /// An notifier that is triggered when this client is closed.
     close_token: CancellationToken,
     last_seen: Arc<AtomicCell<std::time::Instant>>,
@@ -215,6 +220,11 @@ impl BedrockClient {
             output_ordered_index: AtomicU32::new(0),
             next_form_id: AtomicU32::new(0),
             inventory_opened: AtomicBool::new(false),
+            session_state: AtomicU8::new(state::BedrockSessionState::Initializing as u8),
+            client_cache_supported: AtomicBool::new(false),
+            recovery_epoch: AtomicU64::new(0),
+            replayed_recovery_epoch: AtomicU64::new(0),
+            recovery_replay_in_progress: AtomicBool::new(false),
             compounds: Arc::new(Mutex::new(HashMap::new())),
             close_token: CancellationToken::new(),
             last_seen: Arc::new(AtomicCell::new(std::time::Instant::now())),
@@ -437,6 +447,96 @@ impl BedrockClient {
         for packet_buf in packets_to_enqueue {
             self.enqueue_packet_data(packet_buf.into()).await;
         }
+    }
+
+    #[must_use]
+    pub fn session_state(&self) -> state::BedrockSessionState {
+        state::BedrockSessionState::from_wire(self.session_state.load(Ordering::Acquire))
+    }
+
+    #[must_use]
+    pub fn allows_packet_group(&self, group: state::BedrockPacketGroup) -> bool {
+        self.session_state().allows(group)
+    }
+
+    pub fn transition_session_state(&self, next: state::BedrockSessionState) -> bool {
+        loop {
+            let current_raw = self.session_state.load(Ordering::Acquire);
+            let current = state::BedrockSessionState::from_wire(current_raw);
+            if !current.can_transition_to(next) {
+                warn!(
+                    client = %self.address,
+                    ?current,
+                    ?next,
+                    "Rejected invalid Bedrock session-state transition"
+                );
+                return false;
+            }
+            if current == next {
+                return true;
+            }
+            if self
+                .session_state
+                .compare_exchange(current_raw, next as u8, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                debug!(client = %self.address, ?current, ?next, "Bedrock session-state transition");
+                return true;
+            }
+        }
+    }
+
+    /// Opens one recovery snapshot generation for a dimension or respawn
+    /// boundary. Repeated acknowledgements can claim the generation only once.
+    pub fn begin_recovery_boundary(&self, state: state::BedrockSessionState) -> bool {
+        if !matches!(
+            state,
+            state::BedrockSessionState::ChangingDimension | state::BedrockSessionState::Respawning
+        ) || !self.transition_session_state(state)
+        {
+            return false;
+        }
+        self.recovery_epoch.fetch_add(1, Ordering::AcqRel);
+        true
+    }
+
+    #[must_use]
+    pub fn claim_recovery_replay(&self) -> Option<u64> {
+        if self
+            .recovery_replay_in_progress
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return None;
+        }
+        let epoch = self.recovery_epoch.load(Ordering::Acquire);
+        if !state::recovery_replay_pending(
+            self.session_state(),
+            epoch,
+            self.replayed_recovery_epoch.load(Ordering::Acquire),
+        ) {
+            self.recovery_replay_in_progress
+                .store(false, Ordering::Release);
+            return None;
+        }
+        Some(epoch)
+    }
+
+    pub fn finish_recovery_replay(&self, epoch: u64) {
+        self.replayed_recovery_epoch
+            .fetch_max(epoch, Ordering::AcqRel);
+        self.recovery_replay_in_progress
+            .store(false, Ordering::Release);
+    }
+
+    pub fn record_client_cache_status(&self, supported: bool) {
+        self.client_cache_supported
+            .store(supported, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn client_cache_supported(&self) -> bool {
+        self.client_cache_supported.load(Ordering::Acquire)
     }
 
     pub async fn send_empty_chunks(&self, chunks: &[pumpkin_util::math::vector2::Vector2<i32>]) {
@@ -745,6 +845,10 @@ impl BedrockClient {
 
     pub async fn close(&self) {
         let was_open = !self.is_closed();
+        self.session_state.store(
+            state::BedrockSessionState::Disconnected as u8,
+            Ordering::Release,
+        );
         self.close_token.cancel();
 
         if was_open {
@@ -1186,7 +1290,13 @@ impl BedrockClient {
         let reader = &mut &payload[..];
         match packet.id {
             SClientCacheStatus::PACKET_ID => {
-                // TODO
+                let status = SClientCacheStatus::read(reader)?;
+                self.record_client_cache_status(status.cache_supported);
+                debug!(
+                    client = %self.address,
+                    supported = status.cache_supported,
+                    "Recorded Bedrock client-cache capability; chunk caching remains disabled"
+                );
             }
             SResourcePackResponse::PACKET_ID => {
                 self.handle_resource_pack_response(SResourcePackResponse::read(reader)?, server)
@@ -1226,7 +1336,8 @@ impl BedrockClient {
                 self.handle_set_local_player_as_initialized(
                     player,
                     &SSetLocalPlayerAsInitialized::read(reader)?,
-                );
+                )
+                .await;
             }
             SSetPlayerInventoryOptions::PACKET_ID => {
                 let _ = SSetPlayerInventoryOptions::read(reader)?;

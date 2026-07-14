@@ -310,6 +310,19 @@ Exit criteria:
 replay before adding protocol features that improve performance and
 future-version safety.
 
+**Implementation baseline:** protocol ownership and wire decisions for the
+current supported client are recorded in
+`Bedrock_Protocol_1001_compatibility.md`. Phase 3 keeps movement correction and
+chunk caching disabled by default; their observation/capability state is
+implemented without opting the client into either unsafe path.
+
+**Implementation status (2026-07-14):** the lifecycle state machine,
+generation-claimed recovery replay, cursor/selected-slot snapshot, stable
+scoreboard identities and team decoration, cache-capability tracking, movement
+observation, compatibility matrix, and packet regressions are implemented.
+The real-client smoke sequence in the verification gate remains the release
+check before enabling movement correction or chunk caching.
+
 Work:
 
 1. Define explicit Bedrock session states for initialising, playing, changing
