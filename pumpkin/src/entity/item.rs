@@ -742,7 +742,7 @@ impl EntityBase for ItemEntity {
             let packet = CAddItemActor {
                 entity_unique_id: VarLong(runtime_id as i64),
                 entity_runtime_id: VarULong(runtime_id),
-                item: ItemStackWrapper::from(&*item_stack),
+                item: ItemStackWrapper::from_world_item(&item_stack),
                 position,
                 velocity,
                 metadata: entity.bedrock_metadata(),

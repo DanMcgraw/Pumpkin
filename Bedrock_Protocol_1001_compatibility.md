@@ -39,6 +39,7 @@ generation.
 | Cursor snapshot | `InventorySlot`, UI window `124`, slot `0`; the optional full-container name is omitted like Geyser | InventorySlot golden-prefix test |
 | Selected slot | `PlayerHotbar`, inventory container `0` | PlayerHotbar golden test |
 | Stack request names | HotBar `28`, Inventory `29`, Offhand `34`, Cursor `59`, Dynamic `63` | Captured request fixture and container-name tests |
+| Dropped items | `AddItemActor` uses the mapped Bedrock runtime item and omits inventory network-stack IDs, matching Geyser | Dropped-apple wire test and real-client item-entity smoke test |
 | Score identities | Positive monotonically allocated IDs keyed by objective and entry; IDs survive score updates and snapshot replay | Scoreboard allocation test |
 | Gamerules | Typed values with explicit server-authoritative overrides for regeneration, inventory retention, and spawn radius | Gamerule codec/state tests |
 | Client cache | Capability is recorded; `LevelChunk.cache_enabled` remains `false` | Cache-status decode test and source assertion |

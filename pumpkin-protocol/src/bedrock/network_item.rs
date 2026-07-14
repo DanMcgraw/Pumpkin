@@ -258,6 +258,20 @@ impl PacketRead for ItemStackWrapper {
     }
 }
 
+impl ItemStackWrapper {
+    /// Builds the item carried by an AddItemActor packet.
+    ///
+    /// Network stack IDs belong to a session's inventory transaction state.
+    /// Geyser omits them for item actors, so a dropped item must not inherit the
+    /// server-side stack UID used by inventory snapshots.
+    #[must_use]
+    pub fn from_world_item(stack: &ItemStack) -> Self {
+        let mut item = Self::from(stack);
+        item.net_id = None;
+        item
+    }
+}
+
 impl From<&ItemStack> for ItemStackWrapper {
     fn from(stack: &ItemStack) -> Self {
         if stack.is_empty() {
@@ -386,7 +400,11 @@ mod tests {
 
     use pumpkin_data::{item::Item, item_stack::ItemStack};
 
-    use super::{ContainerName, NetworkItemDescriptor, NetworkItemStackDescriptor};
+    use crate::serial::PacketWrite;
+
+    use super::{
+        ContainerName, ItemStackWrapper, NetworkItemDescriptor, NetworkItemStackDescriptor,
+    };
 
     #[test]
     fn cereal_empty_item_consumes_the_complete_descriptor() {
@@ -409,6 +427,33 @@ mod tests {
         let item = NetworkItemStackDescriptor::from(&stack);
 
         assert_eq!(item.extra_data, vec![0; 10]);
+    }
+
+    #[test]
+    fn dropped_apple_uses_runtime_mapping_without_inventory_network_id() {
+        let stack = ItemStack::new(1, &Item::APPLE);
+        let item = ItemStackWrapper::from_world_item(&stack);
+
+        assert_eq!(item.id, 285);
+        assert_eq!(item.stack_size, 1);
+        assert!(item.net_id.is_none());
+
+        let mut bytes = Vec::new();
+        item.write(&mut bytes).unwrap();
+        assert_eq!(
+            bytes,
+            [
+                0xba, 0x04, // signed VarInt runtime ID 285
+                0x01, 0x00, // stack size
+                0x00, // aux value
+                0x00, // no inventory network-stack ID
+                0x00, // no block runtime ID
+                0x0a, // ten-byte empty user-data payload
+                0x00, 0x00, // no NBT
+                0x00, 0x00, 0x00, 0x00, // empty can-place list
+                0x00, 0x00, 0x00, 0x00, // empty can-destroy list
+            ]
+        );
     }
 
     #[test]
