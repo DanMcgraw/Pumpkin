@@ -167,12 +167,15 @@ pub async fn send_attribute_updates_for_living(
         player_tick: VarULong(0),
     };
 
-    living
-        .entity
-        .world
-        .load()
-        .broadcast_editioned(&je_packet, &be_packet)
-        .await;
+    let world = living.entity.world.load_full();
+    world.broadcast_editioned(&je_packet, &be_packet).await;
+
+    // The owning Bedrock player needs its complete dependent state (HUD,
+    // movement, and max-health bounds) correlated to the current input tick.
+    // Other observers still receive the ordinary entity attribute delta above.
+    if let Some(player) = world.get_player_by_uuid(living.entity.entity_uuid) {
+        player.send_bedrock_attribute_state().await;
+    }
 }
 
 impl Clone for AttributeInstance {

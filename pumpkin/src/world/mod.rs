@@ -3,12 +3,10 @@ use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
 use pumpkin_data::item::{BedrockItem, BedrockItemVersion};
+use pumpkin_protocol::bedrock::client::EntityProperties;
 use pumpkin_protocol::bedrock::client::item_registry::{CItemRegistry, ItemDefinition};
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
-use pumpkin_protocol::bedrock::client::{CInventoryContent, EntityProperties};
-use pumpkin_protocol::bedrock::network_item::{
-    ContainerName, FullContainerName, NetworkItemDescriptor, NetworkItemStackDescriptor,
-};
+use pumpkin_protocol::bedrock::network_item::NetworkItemDescriptor;
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
 use pumpkin_world::generation::proto_chunk::GenerationCache;
 use std::sync::atomic::Ordering::Relaxed;
@@ -103,7 +101,6 @@ use pumpkin_protocol::{
             player_list::{CPlayerList, PlayerListEntry, Skin},
             remove_actor::CRemoveActor,
             start_game::{Experiments, GamePublishSetting, LevelSettings},
-            update_attributes::{Attribute, CUpdateAttributes},
         },
         server::text::SText,
     },
@@ -2277,24 +2274,7 @@ impl World {
             })
             .await;
 
-        client
-            .send_game_packet(&CInventoryContent {
-                container_id: VarUInt(0), // player inventory,
-                slots: futures::future::join_all(player.inventory.main_inventory.iter().map(
-                    async |s| {
-                        let stack = s.lock().await;
-
-                        NetworkItemStackDescriptor::from(&*stack)
-                    },
-                ))
-                .await,
-                full_container_name: FullContainerName {
-                    container_name: ContainerName::Inventory,
-                    dynamic_id: None,
-                },
-                storage_item: NetworkItemStackDescriptor::default(),
-            })
-            .await;
+        player.send_initial_bedrock_inventory_state().await;
 
         {
             let mut abilities = player.abilities.lock().await;
@@ -2323,72 +2303,7 @@ impl World {
         };
 
         client
-            .enqueue_packet_internal(&CUpdateAttributes {
-                runtime_id: VarULong(runtime_id),
-                attributes: vec![
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 3.402_823_5E38,
-                        current_value: 0.1,
-                        default_min_value: 0.0,
-                        default_max_value: 3.402_823_5E38,
-                        default_value: 0.1,
-                        name: "minecraft:movement".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 3.402_823_5E38,
-                        current_value: 0.02,
-                        default_min_value: 0.0,
-                        default_max_value: 3.402_823_5E38,
-                        default_value: 0.02,
-                        name: "minecraft:underwater_movement".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 1.0,
-                        current_value: 0.08,
-                        default_min_value: 0.0,
-                        default_max_value: 1.0,
-                        default_value: 0.08,
-                        name: "minecraft:gravity".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 400.0,
-                        current_value: 400.0,
-                        default_min_value: 0.0,
-                        default_max_value: 400.0,
-                        default_value: 400.0,
-                        name: "minecraft:air".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 20.0,
-                        current_value: 20.0,
-                        default_min_value: 0.0,
-                        default_max_value: 20.0,
-                        default_value: 20.0,
-                        name: "minecraft:health".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                    Attribute {
-                        min_value: 0.0,
-                        max_value: 20.0,
-                        current_value: 20.0,
-                        default_min_value: 0.0,
-                        default_max_value: 20.0,
-                        default_value: 20.0,
-                        name: "minecraft:player.hunger".to_string(),
-                        modifiers_list_size: VarUInt(0),
-                    },
-                ],
-                player_tick: VarULong(0),
-            })
+            .enqueue_packet_internal(&player.bedrock_attribute_packet())
             .await;
 
         // --- MULTIPLAYER BROADCASTING ---
@@ -2700,6 +2615,7 @@ impl World {
         player.living_entity.entity.set_pos(position);
         player.living_entity.entity.set_rotation(yaw, pitch);
         player.living_entity.entity.last_pos.store(position);
+        player.reset_bedrock_input_state();
 
         let center_chunk = player.living_entity.entity.chunk_pos.load();
         let chunk = self
@@ -3340,8 +3256,6 @@ impl World {
 
         chunker::update_position(player).await;
         // Update commands
-
-        player.set_health(20.0).await;
     }
 
     pub async fn explode(
@@ -3607,6 +3521,7 @@ impl World {
         player.get_entity().set_pos(position);
         player.get_entity().set_rotation(yaw, pitch);
         player.get_entity().last_pos.store(position);
+        player.reset_bedrock_input_state();
 
         // TODO: difficulty, exp bar, status effect
 
@@ -3640,7 +3555,8 @@ impl World {
                     .await;
             }
             crate::net::ClientPlatform::Bedrock(_) => {
-                player.set_client_loaded(true);
+                // Bedrock becomes ready in the ClientReadyToSpawn handshake;
+                // keep gameplay input paused until the final snapshot is sent.
             }
         }
     }

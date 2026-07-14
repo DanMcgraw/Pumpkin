@@ -61,6 +61,64 @@ use crate::{
 use pumpkin_data::BlockDirection;
 use tracing::{debug, info};
 
+const MAX_BEDROCK_MOVEMENT_PER_TICK: f64 = 4.0;
+const MAX_BEDROCK_TICK_GAP: u64 = 20;
+const MAX_WORLD_COORDINATE: f64 = 3.0e7;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BedrockMovementRejection {
+    NonFinite,
+    StaleTick,
+    OutOfRange,
+}
+
+fn validate_bedrock_movement(
+    has_last_tick: bool,
+    last_tick: u64,
+    tick: u64,
+    old_position: pumpkin_util::math::vector3::Vector3<f64>,
+    new_position: pumpkin_util::math::vector3::Vector3<f64>,
+    client_delta: pumpkin_util::math::vector3::Vector3<f32>,
+) -> Result<(), BedrockMovementRejection> {
+    let all_finite = [
+        old_position.x,
+        old_position.y,
+        old_position.z,
+        new_position.x,
+        new_position.y,
+        new_position.z,
+        f64::from(client_delta.x),
+        f64::from(client_delta.y),
+        f64::from(client_delta.z),
+    ]
+    .into_iter()
+    .all(f64::is_finite);
+    if !all_finite {
+        return Err(BedrockMovementRejection::NonFinite);
+    }
+    if has_last_tick && tick <= last_tick {
+        return Err(BedrockMovementRejection::StaleTick);
+    }
+    if new_position.x.abs() > MAX_WORLD_COORDINATE
+        || new_position.y.abs() > MAX_WORLD_COORDINATE
+        || new_position.z.abs() > MAX_WORLD_COORDINATE
+    {
+        return Err(BedrockMovementRejection::OutOfRange);
+    }
+
+    let elapsed_ticks = if !has_last_tick {
+        1
+    } else {
+        tick.saturating_sub(last_tick)
+            .clamp(1, MAX_BEDROCK_TICK_GAP)
+    };
+    let allowed_distance = MAX_BEDROCK_MOVEMENT_PER_TICK * elapsed_ticks as f64;
+    if new_position.sub(&old_position).length_squared() > allowed_distance * allowed_distance {
+        return Err(BedrockMovementRejection::OutOfRange);
+    }
+    Ok(())
+}
+
 fn descriptor_to_stack(desc: &NetworkItemDescriptor, is_creative: bool) -> ItemStack {
     if desc.id.0 == 0 || desc.stack_size == 0 {
         ItemStack::EMPTY.clone()
@@ -183,7 +241,7 @@ impl BedrockClient {
         chunker::update_position(player).await;
     }
 
-    pub fn handle_set_local_player_as_initialized(
+    pub async fn handle_set_local_player_as_initialized(
         &self,
         player: &Arc<Player>,
         packet: &SSetLocalPlayerAsInitialized,
@@ -193,7 +251,15 @@ impl BedrockClient {
             player.gameprofile.name, packet.runtime_entity_id.0
         );
         // This is sent when the client has finished loading and rendering the world.
+        if player
+            .client_loaded
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         player.set_client_loaded(true);
+        player.reset_bedrock_input_state();
+        player.send_bedrock_player_snapshot().await;
     }
 
     #[expect(clippy::too_many_lines)]
@@ -207,13 +273,6 @@ impl BedrockClient {
             return;
         }
         let entity = player.get_entity();
-        let on_ground = packet
-            .input_data
-            .get(InputData::VerticalCollision as usize)
-            && packet.delta.y <= 0.0;
-        entity
-            .on_ground
-            .store(on_ground, std::sync::atomic::Ordering::Relaxed);
 
         // Bedrock reports the local player's eye position in PlayerAuthInput,
         // while Pumpkin stores entity positions at their feet (as Java does).
@@ -224,6 +283,94 @@ impl BedrockClient {
             .add_raw(0.0, -entity.get_eye_height() as f32, 0.0)
             .to_f64();
         let old_pos = player.position();
+        let input_tick = packet.tick.0;
+        let last_input_tick = player
+            .bedrock_last_input_tick
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let has_last_input_tick = player
+            .bedrock_input_tick_initialized
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        let movement_validation = validate_bedrock_movement(
+            has_last_input_tick,
+            last_input_tick,
+            input_tick,
+            old_pos,
+            new_pos,
+            packet.delta,
+        );
+        if movement_validation.is_err() || !packet.pitch.is_finite() || !packet.yaw.is_finite() {
+            debug!(
+                player = %player.gameprofile.name,
+                tick = input_tick,
+                last_tick = last_input_tick,
+                rejection = ?movement_validation.err().unwrap_or(BedrockMovementRejection::NonFinite),
+                "Rejecting Bedrock movement prediction"
+            );
+            self.enqueue_packet(&pumpkin_protocol::bedrock::client::CCorrectPlayerMove {
+                prediction_type: 0,
+                pos: player.bedrock_network_position(),
+                pos_delta: entity.velocity.load().to_f32_lossy(),
+                on_ground: entity.on_ground.load(std::sync::atomic::Ordering::Relaxed),
+                tick: VarULong(last_input_tick),
+            })
+            .await;
+            return;
+        }
+
+        let requested_delta = new_pos.sub(&old_pos);
+        let adjusted_delta = if entity.no_clip.load(std::sync::atomic::Ordering::Relaxed) {
+            requested_delta
+        } else {
+            entity
+                .adjust_player_movement_for_collisions(requested_delta, player.as_ref())
+                .await
+        };
+        let authoritative_pos = old_pos.add(&adjusted_delta);
+        let prediction_adjusted = authoritative_pos.sub(&new_pos).length_squared() > 1.0e-10;
+        let mut corrected_velocity = packet.delta;
+        if (adjusted_delta.x - requested_delta.x).abs() > 1.0e-10 {
+            corrected_velocity.x = 0.0;
+        }
+        if (adjusted_delta.y - requested_delta.y).abs() > 1.0e-10 {
+            corrected_velocity.y = 0.0;
+        }
+        if (adjusted_delta.z - requested_delta.z).abs() > 1.0e-10 {
+            corrected_velocity.z = 0.0;
+        }
+
+        let on_ground = if requested_delta.length_squared() == 0.0
+            || entity.no_clip.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            packet.input_data.get(InputData::VerticalCollision as usize) && packet.delta.y <= 0.0
+        } else {
+            entity.on_ground.load(std::sync::atomic::Ordering::Relaxed)
+        };
+        entity
+            .on_ground
+            .store(on_ground, std::sync::atomic::Ordering::Relaxed);
+        player
+            .bedrock_last_input_tick
+            .store(input_tick, std::sync::atomic::Ordering::Relaxed);
+        player
+            .bedrock_input_tick_initialized
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        player.bedrock_last_input_position.store(authoritative_pos);
+
+        if prediction_adjusted {
+            self.enqueue_packet(&pumpkin_protocol::bedrock::client::CCorrectPlayerMove {
+                prediction_type: 0,
+                pos: authoritative_pos
+                    .add_raw(0.0, entity.get_eye_height(), 0.0)
+                    .to_f32_lossy(),
+                // CorrectPlayerMove's delta field is velocity at the end of
+                // the tick, not the displacement from the previous position.
+                pos_delta: corrected_velocity,
+                on_ground,
+                tick: VarULong(input_tick),
+            })
+            .await;
+        }
 
         let new_pitch = packet.pitch;
         let new_yaw = packet.yaw;
@@ -231,13 +378,13 @@ impl BedrockClient {
         let old_pitch = entity.pitch.load();
         let old_yaw = entity.yaw.load();
 
-        let pos_changed = new_pos != old_pos;
+        let pos_changed = authoritative_pos != old_pos;
         let rot_changed = new_pitch != old_pitch || new_yaw != old_yaw;
 
         if pos_changed || rot_changed {
             let world = player.world();
             if pos_changed {
-                player.get_entity().set_pos(new_pos);
+                player.get_entity().set_pos(authoritative_pos);
             }
             if rot_changed {
                 entity.pitch.store(new_pitch);
@@ -246,18 +393,12 @@ impl BedrockClient {
 
             let je_yaw = (new_yaw * 256.0 / 360.0).rem_euclid(256.0);
 
-            let delta = pumpkin_util::math::vector3::Vector3::new(
-                new_pos.x - old_pos.x,
-                new_pos.y - old_pos.y,
-                new_pos.z - old_pos.z,
-            );
-
             let bedrock_move_packet = pumpkin_protocol::bedrock::client::CMovePlayer::new(
                 pumpkin_protocol::codec::var_ulong::VarULong(player.entity_id() as u64),
                 pumpkin_util::math::vector3::Vector3::new(
-                    new_pos.x as f32,
-                    new_pos.y as f32 + entity.get_eye_height() as f32,
-                    new_pos.z as f32,
+                    authoritative_pos.x as f32,
+                    authoritative_pos.y as f32 + entity.get_eye_height() as f32,
+                    authoritative_pos.z as f32,
                 ),
                 new_pitch,
                 new_yaw,
@@ -267,7 +408,7 @@ impl BedrockClient {
                 pumpkin_protocol::codec::var_ulong::VarULong(0),
                 0,
                 0,
-                pumpkin_protocol::codec::var_ulong::VarULong(0),
+                pumpkin_protocol::codec::var_ulong::VarULong(input_tick),
             );
 
             // Bedrock positions arrive as absolute predictions. Keep Java
@@ -277,7 +418,7 @@ impl BedrockClient {
                 &[player.gameprofile.id],
                 &pumpkin_protocol::java::client::play::CEntityPositionSync::new(
                     player.entity_id().into(),
-                    new_pos,
+                    authoritative_pos,
                     pumpkin_util::math::vector3::Vector3::new(0.0, 0.0, 0.0),
                     // EntityPositionSync stores rotations as degrees. Do not use
                     // the legacy byte-angle representation used by the relative
@@ -304,7 +445,14 @@ impl BedrockClient {
 
             if pos_changed {
                 chunker::update_position(player).await;
-                player.progress_motion(delta).await;
+                player.progress_motion(adjusted_delta).await;
+                let caller: Arc<dyn EntityBase> = player.clone();
+                let prevent_fall_damage = player.is_flying().await
+                    || entity.no_clip.load(std::sync::atomic::Ordering::Relaxed);
+                player
+                    .living_entity
+                    .fall(caller, adjusted_delta.y, on_ground, prevent_fall_damage)
+                    .await;
             }
         }
 
@@ -1157,6 +1305,17 @@ impl BedrockClient {
             PlayerAction::DropItem => {
                 player.drop_held_item(false).await;
             }
+            PlayerAction::DimensionChangeAck => {
+                if player
+                    .client_loaded
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    return;
+                }
+                player.set_client_loaded(true);
+                player.reset_bedrock_input_state();
+                player.send_bedrock_player_snapshot().await;
+            }
             // TODO
             _ => {}
         }
@@ -1193,6 +1352,9 @@ impl BedrockClient {
             VarULong(player.entity_id() as u64),
         ))
         .await;
+        player.set_client_loaded(true);
+        player.reset_bedrock_input_state();
+        player.send_bedrock_player_snapshot().await;
     }
 
     pub async fn handle_chat_command(
@@ -2325,5 +2487,71 @@ async fn update_slot_stack(
             .set_stack(new_stack.clone())
             .await;
         screen_handler.set_received_stack(screen_slot, new_stack);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BedrockMovementRejection, validate_bedrock_movement};
+    use pumpkin_util::math::vector3::Vector3;
+
+    #[test]
+    fn accepts_finite_forward_prediction_with_new_tick() {
+        assert_eq!(
+            validate_bedrock_movement(
+                true,
+                40,
+                41,
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(0.25, 64.0, 0.0),
+                Vector3::new(0.25, 0.0, 0.0),
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn rejects_replayed_or_stale_input_tick() {
+        assert_eq!(
+            validate_bedrock_movement(
+                true,
+                40,
+                40,
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(0.1, 64.0, 0.0),
+                Vector3::new(0.1, 0.0, 0.0),
+            ),
+            Err(BedrockMovementRejection::StaleTick)
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_prediction() {
+        assert_eq!(
+            validate_bedrock_movement(
+                true,
+                40,
+                41,
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(20.0, 64.0, 0.0),
+                Vector3::new(20.0, 0.0, 0.0),
+            ),
+            Err(BedrockMovementRejection::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn rejects_non_finite_prediction_data() {
+        assert_eq!(
+            validate_bedrock_movement(
+                true,
+                40,
+                41,
+                Vector3::new(0.0, 64.0, 0.0),
+                Vector3::new(f64::NAN, 64.0, 0.0),
+                Vector3::new(0.0, 0.0, 0.0),
+            ),
+            Err(BedrockMovementRejection::NonFinite)
+        );
     }
 }

@@ -1308,6 +1308,17 @@ impl Entity {
         adjusted_movement
     }
 
+    /// Applies the entity collision solver to a client-predicted player move.
+    /// Player movement is otherwise intentionally excluded from `move_entity`,
+    /// so Bedrock reconciliation calls this narrow authoritative entry point.
+    pub(crate) async fn adjust_player_movement_for_collisions(
+        &self,
+        movement: Vector3<f64>,
+        caller: &dyn EntityBase,
+    ) -> Vector3<f64> {
+        self.adjust_movement_for_collisions(movement, caller).await
+    }
+
     /// Applies knockback to the entity, following vanilla Minecraft's mechanics.
     /// `LivingEntity.takeKnockback()`
     /// This function calculates the entity's new velocity based on the specified knockback strength and direction.

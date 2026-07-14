@@ -7,7 +7,9 @@ use std::f64::consts::TAU;
 use std::mem;
 use std::num::NonZeroU8;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI8, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering,
+};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -433,7 +435,7 @@ impl ChunkManager {
 
 #[cfg(test)]
 mod chunk_manager_tests {
-    use super::ChunkManager;
+    use super::{ChunkManager, Player};
 
     #[test]
     fn chunk_acknowledgement_rate_is_bounded() {
@@ -444,6 +446,18 @@ mod chunk_manager_tests {
         assert_eq!(ChunkManager::validated_chunks_per_tick(100.0), 16);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::NAN), 1);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::INFINITY), 1);
+    }
+
+    #[test]
+    fn bedrock_attribute_uses_declared_bounds_and_clamps_values() {
+        let attribute = Player::bedrock_attribute("minecraft:test", 0.0, 20.0, 25.0, -1.0);
+
+        assert_eq!(attribute.name, "minecraft:test");
+        assert_eq!(attribute.min_value, 0.0);
+        assert_eq!(attribute.max_value, 20.0);
+        assert_eq!(attribute.current_value, 20.0);
+        assert_eq!(attribute.default_value, 0.0);
+        assert_eq!(attribute.modifiers_list_size.0, 0);
     }
 }
 
@@ -521,7 +535,8 @@ pub struct Player {
     pub last_sent_xp: AtomicI32,
     pub last_sent_health: AtomicI32,
     pub last_sent_food: AtomicU8,
-    pub last_food_saturation: AtomicBool,
+    pub last_sent_saturation: AtomicU32,
+    pub last_sent_air: AtomicI32,
     /// The player's permission level.
     pub permission_lvl: AtomicCell<PermissionLvl>,
     /// Whether the client has reported that it has loaded.
@@ -531,6 +546,10 @@ pub struct Player {
     pub client_loaded_timeout: AtomicU32,
     /// Whether a Bedrock death/respawn exchange is waiting for final client readiness.
     pub bedrock_respawn_pending: AtomicBool,
+    /// Last Bedrock client prediction accepted by the authoritative movement path.
+    pub bedrock_last_input_tick: AtomicU64,
+    pub bedrock_input_tick_initialized: AtomicBool,
+    pub bedrock_last_input_position: AtomicCell<Vector3<f64>>,
     /// Item usage tracking for bows, crossbows, etc.
     pub using_item: AtomicBool,
     pub item_use_start_time: AtomicI32,
@@ -732,6 +751,9 @@ impl Player {
             bedrock_spawned: AtomicBool::new(false),
             client_loaded_timeout: AtomicU32::new(60),
             bedrock_respawn_pending: AtomicBool::new(false),
+            bedrock_last_input_tick: AtomicU64::new(0),
+            bedrock_input_tick_initialized: AtomicBool::new(false),
+            bedrock_last_input_position: AtomicCell::new(Vector3::new(0.0, 100.0, 0.0)),
             // Item usage tracking
             using_item: AtomicBool::new(false),
             item_use_start_time: AtomicI32::new(0),
@@ -763,7 +785,8 @@ impl Player {
             last_sent_xp: AtomicI32::new(-1),
             last_sent_health: AtomicI32::new(-1),
             last_sent_food: AtomicU8::new(0),
-            last_food_saturation: AtomicBool::new(true),
+            last_sent_saturation: AtomicU32::new(u32::MAX),
+            last_sent_air: AtomicI32::new(-1),
             has_played_before: AtomicBool::new(false),
             chat_session: Arc::new(Mutex::new(ChatSession::default())), // Placeholder value until the player actually sets their session id
             signature_cache: Mutex::new(MessageCache::default()),
@@ -2702,6 +2725,7 @@ impl Player {
                 self.chunk_manager.lock().await.change_world(&current_world.level, new_world.clone());
                 // Update the entity's world reference for correct dimension-based operations
                 self.living_entity.entity.set_world(new_world.clone());
+                self.reset_bedrock_input_state();
 
                 let last_pos = self.living_entity.entity.last_pos.load();
                 let death_dimension = ResourceLocation::from(self.world().dimension.minecraft_name);
@@ -2753,8 +2777,6 @@ impl Player {
 
                 self.on_screen_handler_opened(self.player_screen_handler.clone()).await;
 
-                self.send_health().await;
-
                 new_world.send_world_info(&player, position, yaw, pitch).await;
             }
         }}
@@ -2782,6 +2804,7 @@ impl Player {
             'after: {
                 let position = event.to;
                 self.living_entity.entity.set_pos(position);
+                self.sync_bedrock_input_position();
                 let entity = &self.living_entity.entity;
                 entity.set_rotation(yaw, pitch);
                 match self.client.as_ref() {
@@ -2852,6 +2875,20 @@ impl Player {
             .to_f32_lossy()
     }
 
+    /// Resets Bedrock prediction correlation after a world/respawn boundary.
+    pub fn reset_bedrock_input_state(&self) {
+        self.bedrock_last_input_tick.store(0, Ordering::Relaxed);
+        self.bedrock_input_tick_initialized
+            .store(false, Ordering::Relaxed);
+        self.bedrock_last_input_position.store(self.position());
+    }
+
+    /// Keeps prediction position aligned after an explicit server teleport
+    /// without accepting an older client input tick again.
+    pub fn sync_bedrock_input_position(&self) {
+        self.bedrock_last_input_position.store(self.position());
+    }
+
     pub fn block_interaction_range(&self) -> f64 {
         if self.gamemode.load() == GameMode::Creative {
             5.0
@@ -2887,9 +2924,107 @@ impl Player {
         health > 0.0 && health < max_health
     }
 
-    /// Sends the authoritative 36-slot player inventory to a Bedrock client.
-    /// Used after server-driven mutations such as item pickup, where there is
-    /// no client stack request whose response can confirm the new state.
+    /// Sends the complete authoritative inventory state required by a Bedrock
+    /// player when a session becomes ready or recovers from a world reset.
+    pub async fn send_initial_bedrock_inventory_state(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        use pumpkin_protocol::bedrock::{
+            client::inventory_content::CInventoryContent,
+            client::player_hotbar::CPlayerHotbar,
+            network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
+        };
+        use pumpkin_protocol::codec::var_uint::VarUInt;
+
+        let slots = futures::future::join_all(
+            self.inventory
+                .main_inventory
+                .iter()
+                .map(async |slot| NetworkItemStackDescriptor::from(&*slot.lock().await)),
+        )
+        .await;
+        client
+            .enqueue_packet(&CInventoryContent {
+                container_id: VarUInt(0),
+                slots,
+                full_container_name: FullContainerName {
+                    container_name: ContainerName::Inventory,
+                    dynamic_id: None,
+                },
+                storage_item: NetworkItemStackDescriptor::default(),
+            })
+            .await;
+
+        let (armor_slots, offhand_slot) = {
+            let equipment = self.inventory.entity_equipment.lock().await;
+            (
+                [
+                    equipment.get(&EquipmentSlot::HEAD),
+                    equipment.get(&EquipmentSlot::CHEST),
+                    equipment.get(&EquipmentSlot::LEGS),
+                    equipment.get(&EquipmentSlot::FEET),
+                ],
+                equipment.get(&EquipmentSlot::OFF_HAND),
+            )
+        };
+        let mut armor = Vec::with_capacity(4);
+        for slot in armor_slots {
+            armor.push(NetworkItemStackDescriptor::from(&*slot.lock().await));
+        }
+        let offhand = NetworkItemStackDescriptor::from(&*offhand_slot.lock().await);
+
+        client
+            .enqueue_packet(&CInventoryContent {
+                container_id: VarUInt(120),
+                slots: armor,
+                full_container_name: FullContainerName {
+                    container_name: ContainerName::Armor,
+                    dynamic_id: None,
+                },
+                storage_item: NetworkItemStackDescriptor::default(),
+            })
+            .await;
+        client
+            .enqueue_packet(&CInventoryContent {
+                container_id: VarUInt(119),
+                slots: vec![offhand],
+                full_container_name: FullContainerName {
+                    container_name: ContainerName::Offhand,
+                    dynamic_id: None,
+                },
+                storage_item: NetworkItemStackDescriptor::default(),
+            })
+            .await;
+        client
+            .enqueue_packet(&CPlayerHotbar {
+                selected_slot: VarUInt(self.inventory.get_selected_slot().into()),
+                container_id: 0,
+                should_select_block: true,
+            })
+            .await;
+
+        let cursor = {
+            let handler = self.player_screen_handler.lock().await;
+            let behaviour = handler.get_behaviour();
+            behaviour.cursor_stack.lock().await.clone()
+        };
+        client
+            .enqueue_packet(&CInventoryContent {
+                // Protocol 1001 uses the UI cursor container ID here.
+                container_id: VarUInt(59),
+                slots: vec![NetworkItemStackDescriptor::from(&cursor)],
+                full_container_name: FullContainerName {
+                    container_name: ContainerName::Cursor,
+                    dynamic_id: None,
+                },
+                storage_item: NetworkItemStackDescriptor::default(),
+            })
+            .await;
+    }
+
+    /// Sends the authoritative 36-slot player inventory after an ordinary
+    /// server-side mutation, without resetting equipment or cursor state.
     pub async fn sync_bedrock_main_inventory(&self) {
         let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
             return;
@@ -2958,6 +3093,123 @@ impl Player {
         self.send_health().await;
     }
 
+    fn bedrock_attribute(
+        name: &str,
+        min_value: f32,
+        max_value: f32,
+        current_value: f32,
+        default_value: f32,
+    ) -> pumpkin_protocol::bedrock::client::update_attributes::Attribute {
+        pumpkin_protocol::bedrock::client::update_attributes::Attribute {
+            min_value,
+            max_value,
+            current_value: current_value.clamp(min_value, max_value),
+            default_min_value: min_value,
+            default_max_value: max_value,
+            default_value: default_value.clamp(min_value, max_value),
+            name: name.to_string(),
+            modifiers_list_size: pumpkin_protocol::codec::var_uint::VarUInt(0),
+        }
+    }
+
+    /// Builds the Bedrock attributes from the same live state used by gameplay.
+    #[must_use]
+    pub fn bedrock_attributes(
+        &self,
+    ) -> Vec<pumpkin_protocol::bedrock::client::update_attributes::Attribute> {
+        let max_health = self.living_entity.get_max_health().max(1.0);
+        let movement = self
+            .living_entity
+            .get_attribute_value(&Attributes::MOVEMENT_SPEED) as f32;
+        let base_movement = self
+            .living_entity
+            .get_attribute_base(&Attributes::MOVEMENT_SPEED) as f32;
+
+        vec![
+            Self::bedrock_attribute("minecraft:movement", 0.0, 1024.0, movement, base_movement),
+            Self::bedrock_attribute("minecraft:underwater_movement", 0.0, 1024.0, 0.02, 0.02),
+            Self::bedrock_attribute("minecraft:gravity", 0.0, 1.0, 0.08, 0.08),
+            Self::bedrock_attribute(
+                "minecraft:air",
+                0.0,
+                super::breath::MAX_AIR as f32,
+                self.breath_manager.air_supply.load(Ordering::Relaxed) as f32,
+                super::breath::MAX_AIR as f32,
+            ),
+            Self::bedrock_attribute(
+                "minecraft:health",
+                0.0,
+                max_health,
+                self.living_entity.health.load(),
+                max_health,
+            ),
+            Self::bedrock_attribute(
+                "minecraft:player.hunger",
+                0.0,
+                20.0,
+                self.hunger_manager.level.load().into(),
+                20.0,
+            ),
+            Self::bedrock_attribute(
+                "minecraft:player.saturation",
+                0.0,
+                20.0,
+                self.hunger_manager.saturation.load(),
+                20.0,
+            ),
+            Self::bedrock_attribute(
+                "minecraft:absorption",
+                0.0,
+                1024.0,
+                self.living_entity.get_absorption(),
+                0.0,
+            ),
+        ]
+    }
+
+    #[must_use]
+    pub fn bedrock_attribute_packet(
+        &self,
+    ) -> pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
+        pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
+            runtime_id: VarULong(self.entity_id() as u64),
+            attributes: self.bedrock_attributes(),
+            player_tick: VarULong(
+                self.bedrock_input_tick_initialized
+                    .load(Ordering::Relaxed)
+                    .then(|| self.bedrock_last_input_tick.load(Ordering::Relaxed))
+                    .unwrap_or(0),
+            ),
+        }
+    }
+
+    pub async fn send_bedrock_attribute_state(&self) {
+        if !self.has_client_loaded() {
+            return;
+        }
+        if let ClientPlatform::Bedrock(client) = self.client.as_ref() {
+            client
+                .enqueue_packet(&self.bedrock_attribute_packet())
+                .await;
+        }
+    }
+
+    /// Replays state invalidated by initial spawn, respawn, or a dimension reset.
+    pub async fn send_bedrock_player_snapshot(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        self.send_bedrock_attribute_state().await;
+        client
+            .enqueue_packet(
+                &pumpkin_protocol::bedrock::client::set_health::CSetHealth::new(
+                    self.living_entity.health.load() as i32,
+                ),
+            )
+            .await;
+        self.send_initial_bedrock_inventory_state().await;
+    }
+
     pub async fn send_health(&self) {
         if !self.has_client_loaded() {
             return;
@@ -2975,31 +3227,7 @@ impl Player {
             }
             ClientPlatform::Bedrock(client) => {
                 let health = self.living_entity.health.load();
-                let max_health = self.living_entity.get_max_health();
-                client
-                    .enqueue_packet(
-                        &pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
-                            runtime_id: pumpkin_protocol::codec::var_ulong::VarULong(
-                                self.entity_id() as u64,
-                            ),
-                            attributes: vec![
-                                pumpkin_protocol::bedrock::client::update_attributes::Attribute {
-                                    min_value: 0.0,
-                                    max_value: max_health,
-                                    current_value: health,
-                                    default_min_value: 0.0,
-                                    default_max_value: max_health,
-                                    default_value: max_health,
-                                    name: "minecraft:health".to_string(),
-                                    modifiers_list_size: pumpkin_protocol::codec::var_uint::VarUInt(
-                                        0,
-                                    ),
-                                },
-                            ],
-                            player_tick: pumpkin_protocol::codec::var_ulong::VarULong(0),
-                        },
-                    )
-                    .await;
+                self.send_bedrock_attribute_state().await;
                 client
                     .enqueue_packet(
                         &pumpkin_protocol::bedrock::client::set_health::CSetHealth::new(
@@ -3019,16 +3247,25 @@ impl Player {
         let health = self.living_entity.health.load() as i32;
         let food = self.hunger_manager.level.load();
         let saturation = self.hunger_manager.saturation.load();
+        let air = self.breath_manager.air_supply.load(Ordering::Relaxed);
 
         let last_health = self.last_sent_health.load(Ordering::Relaxed);
         let last_food = self.last_sent_food.load(Ordering::Relaxed);
-        let last_saturation = self.last_food_saturation.load(Ordering::Relaxed);
+        let last_saturation = self.last_sent_saturation.load(Ordering::Relaxed);
+        let last_air = self.last_sent_air.load(Ordering::Relaxed);
+        let bedrock_air_changed = matches!(self.client.as_ref(), ClientPlatform::Bedrock(_))
+            && air != last_air;
 
-        if health != last_health || food != last_food || (saturation == 0.0) != last_saturation {
+        if health != last_health
+            || food != last_food
+            || saturation.to_bits() != last_saturation
+            || bedrock_air_changed
+        {
             self.last_sent_health.store(health, Ordering::Relaxed);
             self.last_sent_food.store(food, Ordering::Relaxed);
-            self.last_food_saturation
-                .store(saturation == 0.0, Ordering::Relaxed);
+            self.last_sent_saturation
+                .store(saturation.to_bits(), Ordering::Relaxed);
+            self.last_sent_air.store(air, Ordering::Relaxed);
             self.send_health().await;
         }
     }
@@ -3068,6 +3305,7 @@ impl Player {
 
     pub async fn set_absorption(&self, absorption: f32) {
         self.living_entity.set_absorption(absorption).await;
+        self.send_health().await;
     }
 
     pub async fn get_ip(&self) -> String {
