@@ -43,7 +43,10 @@ impl LevelTime {
         world
             .broadcast_editioned(
                 &CUpdateTime::new(self.world_age, self.time_of_day, advance_time),
-                &CSetTime::new(self.time_of_day as _), // TODO do we need to tell bedrock that time is frozen?
+                // Bedrock receives the ticking/frozen state through the typed
+                // dodaylightcycle gamerule. This packet only synchronizes the
+                // authoritative clock value.
+                &CSetTime::new(self.time_of_day as _),
             )
             .await;
     }

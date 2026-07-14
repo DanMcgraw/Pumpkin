@@ -2728,15 +2728,8 @@ impl Player {
                         )).await;
                     }
                     ClientPlatform::Bedrock(bedrock) => {
-                        let bedrock_dimension = if new_world.dimension == Dimension::OVERWORLD {
-                            0
-                        } else if new_world.dimension == Dimension::THE_NETHER {
-                            1
-                        } else if new_world.dimension == Dimension::THE_END {
-                            2
-                        } else {
-                            0
-                        };
+                        let bedrock_dimension =
+                            crate::net::bedrock::state::dimension_id(&new_world.dimension);
                         let pos_f32 = Vector3::new(position.x as f32, position.y as f32, position.z as f32);
                         let change_dim_packet = pumpkin_protocol::bedrock::client::CChangeDimension::new(
                             bedrock_dimension,

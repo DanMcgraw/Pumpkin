@@ -20,6 +20,18 @@ pub struct CLevelChunk<'a> {
     pub chunk: &'a ChunkData,
 }
 
+/// Replaces a previously sent chunk with an empty column on the Bedrock client.
+/// Bedrock has no dedicated chunk-unload packet; an empty `LevelChunk` is the
+/// protocol-compatible invalidation used when a chunk leaves the publisher
+/// radius.
+#[packet(58)]
+pub struct CEmptyLevelChunk {
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+    pub dimension: i32,
+    pub dimension_sub_chunk_count: u32,
+}
+
 impl PacketWrite for CLevelChunk<'_> {
     fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
         VarInt(self.chunk.x).write(writer)?;
@@ -110,5 +122,51 @@ impl PacketWrite for CLevelChunk<'_> {
 
         VarUInt(chunk_data.len() as u32).write(writer)?;
         writer.write_all(&chunk_data)
+    }
+}
+
+impl PacketWrite for CEmptyLevelChunk {
+    fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
+        VarInt(self.chunk_x).write(writer)?;
+        VarInt(self.chunk_z).write(writer)?;
+        VarInt(self.dimension).write(writer)?;
+        VarUInt(0).write(writer)?; // no block sub-chunks
+        false.write(writer)?; // cache disabled
+
+        // A LevelChunk with zero block sub-chunks still carries one empty biome
+        // palette, continuation markers for the remaining vertical sections,
+        // and the Education Edition border-block terminator.
+        let sub_chunk_count = self.dimension_sub_chunk_count.max(1);
+        let mut chunk_data = Vec::with_capacity(sub_chunk_count as usize + 2);
+        chunk_data.extend_from_slice(&[1, 0]); // singleton runtime biome palette: biome 0
+        chunk_data.extend(std::iter::repeat_n(
+            0xff,
+            sub_chunk_count.saturating_sub(1) as usize,
+        ));
+        chunk_data.push(0); // border blocks
+
+        VarUInt(chunk_data.len() as u32).write(writer)?;
+        writer.write_all(&chunk_data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::serial::PacketWrite;
+
+    use super::CEmptyLevelChunk;
+
+    #[test]
+    fn empty_chunk_contains_dimension_and_unload_payload() {
+        let packet = CEmptyLevelChunk {
+            chunk_x: -2,
+            chunk_z: 3,
+            dimension: 1,
+            dimension_sub_chunk_count: 2,
+        };
+        let mut bytes = Vec::new();
+        packet.write(&mut bytes).unwrap();
+
+        assert_eq!(bytes, [3, 6, 2, 0, 0, 4, 1, 0, 0xff, 0]);
     }
 }

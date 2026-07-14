@@ -100,7 +100,6 @@ use pumpkin_protocol::{
         client::{
             add_player::CAddPlayer,
             creative_content::{CCreativeContent, CreativeCategory, Entry, Group},
-            gamerules_changed::GameRules,
             player_list::{CPlayerList, PlayerListEntry, Skin},
             remove_actor::CRemoveActor,
             start_game::{Experiments, GamePublishSetting, LevelSettings},
@@ -1912,7 +1911,7 @@ impl World {
             seed: self.level.seed.0,
             spawn_biome_type: 0,
             custom_biome_name: String::new(),
-            dimension: VarInt(0),
+            dimension: VarInt(crate::net::bedrock::state::dimension_id(&self.dimension)),
             generator_type: VarInt(1),
             world_gamemode: server.defaultgamemode.lock().await.gamemode,
             hardcore: base_config.hardcore,
@@ -1939,9 +1938,7 @@ impl World {
             platform_broadcast_setting: GamePublishSetting::Public,
             commands_enabled: level_info.allow_commands,
             is_texture_packs_required: false,
-            rule_data: GameRules {
-                list_size: VarUInt(0),
-            },
+            rule_data: crate::net::bedrock::state::game_rules(&level_info.game_rules),
             experiments: Experiments {
                 names_size: 0,
                 experiments_ever_toggled: false,

@@ -1,4 +1,5 @@
 pub mod play;
+pub mod state;
 use crossbeam::atomic::AtomicCell;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -23,7 +24,7 @@ use pumpkin_protocol::{
         ack::Acknowledge,
         client::{
             disconnect_player::CDisconnectPlayer,
-            level_chunk::CLevelChunk,
+            level_chunk::{CEmptyLevelChunk, CLevelChunk},
             play_status::CPlayStatus,
             raknet::connection::{
                 CAlreadyConnected, CConnectionBanned, CConnectionRequestAccepted, CDisconnect,
@@ -391,12 +392,13 @@ impl BedrockClient {
             return;
         }
 
+        let dimension = state::dimension_id(&player.world().dimension);
         let mut serialize_tasks = Vec::with_capacity(valid_chunks.len());
         for chunk in valid_chunks {
             serialize_tasks.push(tokio::task::spawn_blocking(move || {
                 let mut packet_payload = Vec::new();
                 let packet = CLevelChunk {
-                    dimension: 0,
+                    dimension,
                     cache_enabled: false,
                     chunk: &chunk,
                 };
@@ -434,6 +436,27 @@ impl BedrockClient {
         }
         for packet_buf in packets_to_enqueue {
             self.enqueue_packet_data(packet_buf.into()).await;
+        }
+    }
+
+    pub async fn send_empty_chunks(&self, chunks: &[pumpkin_util::math::vector2::Vector2<i32>]) {
+        let player = self.player.lock().await.clone();
+        let Some(player) = player.as_ref() else {
+            return;
+        };
+        let world = player.world();
+        let dimension = &world.dimension;
+        let dimension_id = state::dimension_id(dimension);
+        let dimension_sub_chunk_count = (dimension.height / 16).max(1) as u32;
+
+        for chunk in chunks {
+            self.enqueue_packet(&CEmptyLevelChunk {
+                chunk_x: chunk.x,
+                chunk_z: chunk.y,
+                dimension: dimension_id,
+                dimension_sub_chunk_count,
+            })
+            .await;
         }
     }
 

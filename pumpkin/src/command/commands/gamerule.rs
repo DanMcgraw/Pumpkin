@@ -1,4 +1,5 @@
 use pumpkin_data::game_rules::{GameRule, GameRuleRegistry, GameRuleValue};
+use pumpkin_protocol::bedrock::client::gamerules_changed::CGamerulesChanged;
 
 use crate::command::args::FindArg;
 use crate::command::args::bool::BoolArgConsumer;
@@ -90,7 +91,24 @@ impl CommandExecutor for SetExecutor {
                 }
             }
 
+            let bedrock_rule =
+                crate::net::bedrock::state::game_rule(&self.0, new_info.game_rules.get(&self.0));
+            let synchronize_time = matches!(self.0, GameRule::AdvanceTime);
+
             server.level_info.store(std::sync::Arc::new(new_info));
+
+            if let Some(rule) = bedrock_rule {
+                server
+                    .broadcast_bedrock_packet(&CGamerulesChanged::new(vec![rule]))
+                    .await;
+            }
+
+            if synchronize_time {
+                let worlds = server.worlds.load().iter().cloned().collect::<Vec<_>>();
+                for world in worlds {
+                    world.level_time.lock().await.send_time(&world).await;
+                }
+            }
 
             let value_component = TextComponent::text(output_value);
             sender

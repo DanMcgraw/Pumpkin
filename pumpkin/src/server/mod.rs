@@ -35,7 +35,7 @@ use crate::command::CommandSender;
 use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::java::client::login::CEncryptionRequest;
 use pumpkin_protocol::java::client::play::{CChangeDifficulty, CTabList};
-use pumpkin_protocol::{ClientPacket, java::client::config::CPluginMessage};
+use pumpkin_protocol::{BClientPacket, ClientPacket, java::client::config::CPluginMessage};
 use pumpkin_util::Difficulty;
 use pumpkin_util::text::TextComponent;
 use pumpkin_world::world_info::anvil::{
@@ -629,6 +629,19 @@ impl Server {
     pub fn broadcast_packet_all<P: ClientPacket>(&self, packet: &P) {
         for world in self.worlds.load().iter() {
             world.broadcast_packet_all(packet);
+        }
+    }
+
+    /// Broadcasts a Bedrock packet to all connected Bedrock players.
+    pub async fn broadcast_bedrock_packet<P: BClientPacket>(&self, packet: &P) {
+        let clients = self
+            .get_all_players()
+            .into_iter()
+            .filter_map(|player| player.client.bedrock().cloned())
+            .collect::<Vec<_>>();
+
+        for client in clients {
+            client.enqueue_packet(packet).await;
         }
     }
 

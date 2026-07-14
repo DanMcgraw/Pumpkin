@@ -93,12 +93,20 @@ pub async fn update_position(player: &Arc<Player>) {
 
     player.watched_section.store(new_cylindrical);
 
-    if let ClientPlatform::Java(_) = player.client.as_ref() {
-        for chunk in &unloading_chunks {
-            player
-                .client
-                .enqueue_packet(&CUnloadChunk::new(chunk.x, chunk.y))
-                .await;
+    match player.client.as_ref() {
+        ClientPlatform::Java(_) => {
+            for chunk in &unloading_chunks {
+                player
+                    .client
+                    .enqueue_packet(&CUnloadChunk::new(chunk.x, chunk.y))
+                    .await;
+            }
+        }
+        ClientPlatform::Bedrock(client) => {
+            // Bedrock invalidates chunks by replacing them with an empty
+            // LevelChunk. Queue these before the next tick can enqueue newly
+            // watched replacement chunks.
+            client.send_empty_chunks(&unloading_chunks).await;
         }
     }
 
