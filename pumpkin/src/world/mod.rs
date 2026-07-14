@@ -100,7 +100,7 @@ use pumpkin_protocol::{
             creative_content::{CCreativeContent, CreativeCategory, Entry, Group},
             player_list::{CPlayerList, PlayerListEntry, Skin},
             remove_actor::CRemoveActor,
-            start_game::{Experiments, GamePublishSetting, LevelSettings},
+            start_game::{ExperimentData, Experiments, GamePublishSetting, LevelSettings},
         },
         server::text::SText,
     },
@@ -1937,7 +1937,15 @@ impl World {
             is_texture_packs_required: false,
             rule_data: crate::net::bedrock::state::game_rules(&level_info.game_rules),
             experiments: Experiments {
-                names_size: 0,
+                // These are the same compatibility toggles Geyser advertises.
+                // Bedrock will accept item runtime IDs without them, but it
+                // does not activate the data-driven definitions that provide
+                // vanilla item names, textures, and component behavior.
+                entries: vec![
+                    ExperimentData::enabled("data_driven_items"),
+                    ExperimentData::enabled("upcoming_creator_features"),
+                    ExperimentData::enabled("experimental_molang_features"),
+                ],
                 experiments_ever_toggled: false,
             },
             bonus_chest: false,

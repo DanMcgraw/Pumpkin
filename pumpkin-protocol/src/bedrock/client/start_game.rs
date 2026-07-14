@@ -168,11 +168,39 @@ pub struct LevelSettings {
     pub allow_anonymous_block_drops_in_editor_worlds: bool,
 }
 
-#[derive(Default, PacketWrite)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExperimentData {
+    pub name: String,
+    pub enabled: bool,
+}
+
+impl ExperimentData {
+    #[must_use]
+    pub fn enabled(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Experiments {
-    //TODO! https://mojang.github.io/bedrock-protocol-docs/html/Experiments.html
-    pub names_size: u32,
+    pub entries: Vec<ExperimentData>,
     pub experiments_ever_toggled: bool,
+}
+
+impl PacketWrite for Experiments {
+    fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
+        // Unlike most Bedrock arrays, the experiment count is a fixed-width
+        // unsigned little-endian integer.
+        (self.entries.len() as u32).write(writer)?;
+        for experiment in &self.entries {
+            experiment.name.write(writer)?;
+            experiment.enabled.write(writer)?;
+        }
+        self.experiments_ever_toggled.write(writer)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -187,6 +215,42 @@ pub enum GamePublishSetting {
 impl PacketWrite for GamePublishSetting {
     fn write<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
         VarInt(*self as i32).write(writer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExperimentData, Experiments};
+    use crate::serial::PacketWrite;
+
+    #[test]
+    fn experiments_use_fixed_width_count_and_named_entries() {
+        let experiments = Experiments {
+            entries: vec![ExperimentData::enabled("data_driven_items")],
+            experiments_ever_toggled: false,
+        };
+        let mut encoded = Vec::new();
+
+        experiments.write(&mut encoded).unwrap();
+
+        assert_eq!(
+            encoded,
+            [
+                1, 0, 0, 0, // fixed-width experiment count
+                17, b'd', b'a', b't', b'a', b'_', b'd', b'r', b'i', b'v', b'e', b'n', b'_', b'i',
+                b't', b'e', b'm', b's', 1, // enabled
+                0, // experiments previously toggled
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_experiments_preserve_the_existing_wire_layout() {
+        let mut encoded = Vec::new();
+
+        Experiments::default().write(&mut encoded).unwrap();
+
+        assert_eq!(encoded, [0, 0, 0, 0, 0]);
     }
 }
 

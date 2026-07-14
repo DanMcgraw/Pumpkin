@@ -341,10 +341,7 @@ impl BedrockClient {
                     br_config.force,
                     resource_packs,
                     CURRENT_BEDROCK_MC_VERSION.to_string(),
-                    Experiments {
-                        names_size: 0,
-                        experiments_ever_toggled: false,
-                    },
+                    Experiments::default(),
                     false,
                 ))
                 .await;
