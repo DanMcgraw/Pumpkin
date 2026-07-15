@@ -1856,7 +1856,11 @@ impl LivingEntity {
         }
 
         if !equipment_updates.is_empty() {
-            self.send_equipment_changes(&equipment_updates);
+            if let Some(player) = caller.get_player() {
+                player.send_equipment_changes(&equipment_updates).await;
+            } else {
+                self.send_equipment_changes(&equipment_updates);
+            }
         }
     }
 
@@ -2278,7 +2282,11 @@ impl EntityBase for LivingEntity {
                             drop(stack_arc);
                             drop(equipment_lock);
 
-                            self.send_equipment_changes(&[(slot, broken_stack)]);
+                            if let Some(player) = caller.get_player() {
+                                player.send_equipment_changes(&[(slot, broken_stack)]).await;
+                            } else {
+                                self.send_equipment_changes(&[(slot, broken_stack)]);
+                            }
                             self.clear_active_hand().await;
                         }
                     }

@@ -2452,7 +2452,7 @@ impl JavaClient {
         inv.set_selected_slot(slot);
         let stack = inv.held_item().lock().await.clone();
         let equipment = &[(EquipmentSlot::MAIN_HAND, stack)];
-        player.living_entity.send_equipment_changes(equipment);
+        player.send_equipment_changes(equipment).await;
     }
 
     pub async fn handle_set_creative_slot(
@@ -2502,8 +2502,12 @@ impl JavaClient {
                     let slot = packet.slot - 36;
                     if player.inventory().get_selected_slot() == slot as u8 {
                         let equipment = &[(EquipmentSlot::MAIN_HAND, item_stack.clone())];
-                        player.living_entity.send_equipment_changes(equipment);
+                        player.send_equipment_changes(equipment).await;
                     }
+                } else if packet.slot == 45 {
+                    player
+                        .enqueue_equipment_change(&EquipmentSlot::OFF_HAND, &item_stack)
+                        .await;
                 }
             }
 

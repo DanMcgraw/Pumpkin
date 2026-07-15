@@ -694,8 +694,12 @@ impl BedrockClient {
                             let hotbar_slot = screen_slot - 36;
                             if player.inventory().get_selected_slot() == hotbar_slot as u8 {
                                 let equipment = &[(EquipmentSlot::MAIN_HAND, item_stack.clone())];
-                                player.living_entity.send_equipment_changes(equipment);
+                                player.send_equipment_changes(equipment).await;
                             }
+                        } else if screen_slot == 45 {
+                            player
+                                .enqueue_equipment_change(&EquipmentSlot::OFF_HAND, &item_stack)
+                                .await;
                         }
                     }
 
@@ -1921,7 +1925,7 @@ impl BedrockClient {
         // Sync main hand equipment to other players
         let stack_in_hand = player.inventory().held_item().lock().await.clone();
         let equipment = &[(EquipmentSlot::MAIN_HAND, stack_in_hand)];
-        player.living_entity.send_equipment_changes(equipment);
+        player.send_equipment_changes(equipment).await;
 
         // Sync bedrock inventory updates
         self.enqueue_packet(&CInventoryContent {
@@ -1967,7 +1971,7 @@ impl BedrockClient {
         inv.set_selected_slot(slot);
         let stack = inv.held_item().lock().await.clone();
         let equipment = &[(EquipmentSlot::MAIN_HAND, stack)];
-        player.living_entity.send_equipment_changes(equipment);
+        player.send_equipment_changes(equipment).await;
     }
 
     pub async fn handle_request_ability(
@@ -2511,8 +2515,12 @@ async fn update_slot_stack(
                     let hotbar_slot = screen_slot - 36;
                     if player.inventory().get_selected_slot() == hotbar_slot as u8 {
                         let equipment = &[(EquipmentSlot::MAIN_HAND, new_stack.clone())];
-                        player.living_entity.send_equipment_changes(equipment);
+                        player.send_equipment_changes(equipment).await;
                     }
+                } else if screen_slot == 45 {
+                    player
+                        .enqueue_equipment_change(&EquipmentSlot::OFF_HAND, &new_stack)
+                        .await;
                 }
             }
         }

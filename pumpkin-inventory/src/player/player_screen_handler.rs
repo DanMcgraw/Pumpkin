@@ -110,7 +110,6 @@ impl PlayerScreenHandler {
         player_screen_handler.add_player_slots(&player_inventory);
 
         // Offhand slot (index 40 in player inventory, 45 in screen handler)
-        // TODO: onEquipStack callback for offhand
         player_screen_handler.add_slot(Arc::new(NormalSlot::new(player_inventory.clone(), 40)));
 
         player_screen_handler
@@ -214,8 +213,24 @@ impl ScreenHandler for PlayerScreenHandler {
                 {
                     // Into empty offhand slot (45)
                     let index = 45;
-                    self.insert_item(&mut slot_stack, index, index + 1, false)
-                        .await
+                    let result = self
+                        .insert_item(&mut slot_stack, index, index + 1, false)
+                        .await;
+                    if result {
+                        player
+                            .enqueue_equipment_change(&EquipmentSlot::OFF_HAND, &stack_prev)
+                            .await;
+                    }
+                    result
+                } else if slot_index == 45 {
+                    // From offhand slot (45) -> Player Inventory (9-44)
+                    let result = self.insert_item(&mut slot_stack, 9, 45, false).await;
+                    if result {
+                        player
+                            .enqueue_equipment_change(&EquipmentSlot::OFF_HAND, ItemStack::EMPTY)
+                            .await;
+                    }
+                    result
                 } else if (9..36).contains(&slot_index) {
                     // From main inventory (9-35) -> Hotbar (36-44)
                     self.insert_item(&mut slot_stack, 36, 45, false).await

@@ -29,6 +29,13 @@ use pumpkin_protocol::bedrock::client::set_actor_data::{
 };
 use pumpkin_protocol::bedrock::client::set_time::CSetTime;
 use pumpkin_protocol::bedrock::client::update_abilities::{Ability, CUpdateAbilities};
+use pumpkin_protocol::bedrock::client::{
+    CMobArmorEquipment, CMobEquipment, PersonaPiece as BedrockPersonaPiece,
+    PieceTintColor as BedrockPieceTintColor, Skin as BedrockSkin,
+    SkinAnimation as BedrockSkinAnimation,
+};
+use pumpkin_protocol::bedrock::network_item::NetworkItemStackDescriptor;
+use pumpkin_protocol::bedrock::server::login::ClientData;
 use pumpkin_protocol::bedrock::server::text::SText;
 use pumpkin_protocol::codec::item_stack_seralizer::ItemStackSerializer;
 use pumpkin_util::translation::Locale;
@@ -81,11 +88,11 @@ use pumpkin_protocol::java::client::play::{
     CCustomPayload, CDisguisedChatMessage, CEntityAnimation, CEntityPositionSync, CGameEvent,
     CItemCooldown, CMapItemData, COpenScreen, CParticle, CPlayerAbilities, CPlayerInfoUpdate,
     CPlayerPosition, CPlayerSpawnPosition, CRespawn, CSetCamera, CSetContainerContent,
-    CSetContainerProperty, CSetContainerSlot, CSetCursorItem, CSetEquipment, CSetExperience,
-    CSetHealth, CSetPlayerInventory, CSetSelectedSlot, CSoundEffect, CStopSound, CSubtitle,
-    CSystemChatMessage, CTabList, CTitleAnimation, CTitleText, CUnloadChunk, CUpdateMobEffect,
-    CUpdateTime, GameEvent, MapIcon, MapPatch, Metadata, PlayerAction, PlayerInfoFlags,
-    PlayerSpawnData, PreviousMessage, Statistic,
+    CSetContainerProperty, CSetContainerSlot, CSetCursorItem, CSetExperience, CSetHealth,
+    CSetPlayerInventory, CSetSelectedSlot, CSoundEffect, CStopSound, CSubtitle, CSystemChatMessage,
+    CTabList, CTitleAnimation, CTitleText, CUnloadChunk, CUpdateMobEffect, CUpdateTime, GameEvent,
+    MapIcon, MapPatch, Metadata, PlayerAction, PlayerInfoFlags, PlayerSpawnData, PreviousMessage,
+    Statistic,
 };
 use pumpkin_protocol::java::server::play::{
     SClickSlot, SContainerButtonClick, SRenameItem, SlotActionType,
@@ -811,6 +818,114 @@ struct SkinTexture {
 }
 
 impl Player {
+    fn skin_from_bedrock_client_data(client_data: &ClientData) -> Option<BedrockSkin> {
+        let image_width = u32::try_from(client_data.skin_image_width).ok()?;
+        let image_height = u32::try_from(client_data.skin_image_height).ok()?;
+        let expected_skin_len = image_width.checked_mul(image_height)?.checked_mul(4)? as usize;
+        let skin_data = BASE64_STANDARD.decode(&client_data.skin_data).ok()?;
+        if skin_data.len() != expected_skin_len || expected_skin_len > 128 * 128 * 4 {
+            return None;
+        }
+
+        let resource_patch = BASE64_STANDARD
+            .decode(&client_data.skin_resource_patch)
+            .ok()
+            .filter(|patch| !patch.is_empty())
+            .unwrap_or_else(|| r#"{"geometry":{"default":"geometry.humanoid"}}"#.into());
+        let geometry_data = BASE64_STANDARD
+            .decode(&client_data.skin_geometry)
+            .unwrap_or_default();
+
+        let (cape_width, cape_height, cape_data) = if client_data.cape_data.is_empty() {
+            (0, 0, Vec::new())
+        } else {
+            let width = u32::try_from(client_data.cape_image_width).ok()?;
+            let height = u32::try_from(client_data.cape_image_height).ok()?;
+            let data = BASE64_STANDARD.decode(&client_data.cape_data).ok()?;
+            if data.len() != width.checked_mul(height)?.checked_mul(4)? as usize {
+                return None;
+            }
+            (width, height, data)
+        };
+
+        let animations = client_data
+            .animated_image_data
+            .iter()
+            .filter_map(|animation| {
+                let image_width = u32::try_from(animation.image_width).ok()?;
+                let image_height = u32::try_from(animation.image_height).ok()?;
+                let image_data = BASE64_STANDARD.decode(&animation.image).ok()?;
+                (image_data.len()
+                    == image_width.checked_mul(image_height)?.checked_mul(4)? as usize)
+                    .then_some(BedrockSkinAnimation {
+                        image_width,
+                        image_height,
+                        image_data,
+                        animation_type: u32::try_from(animation.animation_type).ok()?,
+                        frames: animation.frames as f32,
+                        expression_type: u32::try_from(animation.animation_expression).ok()?,
+                    })
+            })
+            .collect();
+
+        let skin_id = if client_data.skin_id.is_empty() {
+            "Standard_Custom".to_string()
+        } else {
+            client_data.skin_id.clone()
+        };
+
+        Some(BedrockSkin {
+            skin_id: skin_id.clone(),
+            play_fab_id: client_data.play_fab_id.clone(),
+            resource_patch,
+            image_width,
+            image_height,
+            skin_data,
+            animations,
+            cape_width,
+            cape_height,
+            cape_data,
+            geometry_data,
+            animation_data: client_data.skin_animation_data.as_bytes().to_vec(),
+            geometry_data_engine_version: if client_data.skin_geometry_version.is_empty() {
+                client_data.game_version.as_bytes().to_vec()
+            } else {
+                client_data.skin_geometry_version.as_bytes().to_vec()
+            },
+            cape_id: client_data.cape_id.clone(),
+            full_id: skin_id,
+            arm_size: client_data.arm_size.clone(),
+            skin_color: client_data.skin_colour.clone(),
+            persona_pieces: client_data
+                .persona_pieces
+                .iter()
+                .map(|piece| BedrockPersonaPiece {
+                    piece_id: piece.piece_id.clone(),
+                    piece_type: piece.piece_type.clone(),
+                    pack_id: piece.pack_id.clone(),
+                    is_default: piece.is_default,
+                    product_id: piece.product_id.clone(),
+                })
+                .collect(),
+            piece_tint_colors: client_data
+                .piece_tint_colours
+                .iter()
+                .map(|tint| BedrockPieceTintColor {
+                    piece_type: tint.piece_type.clone(),
+                    colors: tint.colours.to_vec(),
+                })
+                .collect(),
+            is_premium: client_data.premium_skin,
+            is_persona: client_data.persona_skin,
+            persona_cape_on_classic: client_data.cape_on_classic_skin,
+            is_primary_user: false,
+            // The server validated and is relaying this login skin, so observers
+            // should treat it as trusted and apply it over cached appearance data.
+            override_appearance: true,
+            is_trusted: true,
+        })
+    }
+
     #[must_use]
     pub fn fetch_skin(properties: &[Property]) -> Option<pumpkin_protocol::bedrock::client::Skin> {
         let textures_prop = properties.iter().find(|p| &*p.name == "textures")?;
@@ -898,9 +1013,15 @@ impl Player {
         let mut abilities = Abilities::default();
         abilities.set_for_gamemode(gamemode);
 
+        let bedrock_client_data = client
+            .bedrock()
+            .and_then(|bedrock| bedrock.client_data.load_full().as_ref().clone());
         let properties = gameprofile.properties.load().clone();
         let bedrock_skin = tokio::task::spawn_blocking(move || {
-            Self::fetch_skin(&properties)
+            bedrock_client_data
+                .as_deref()
+                .and_then(Self::skin_from_bedrock_client_data)
+                .or_else(|| Self::fetch_skin(&properties))
                 .unwrap_or_else(pumpkin_protocol::bedrock::client::Skin::steve)
         })
         .await
@@ -1534,11 +1655,139 @@ impl Player {
         .await;
 
         if slot_index == self.inventory.get_selected_slot() as usize {
-            self.living_entity
-                .send_equipment_changes(&[(EquipmentSlot::MAIN_HAND, stack)]);
+            self.send_equipment_changes(&[(EquipmentSlot::MAIN_HAND, stack)])
+                .await;
         } else if slot_index == PlayerInventory::OFF_HAND_SLOT {
-            self.living_entity
-                .send_equipment_changes(&[(EquipmentSlot::OFF_HAND, stack)]);
+            self.send_equipment_changes(&[(EquipmentSlot::OFF_HAND, stack)])
+                .await;
+        }
+    }
+
+    pub async fn bedrock_equipment_packets(
+        &self,
+    ) -> (CMobEquipment, CMobArmorEquipment, CMobEquipment) {
+        let runtime_id = VarULong(self.entity_id() as u64);
+        let main_hand = self.inventory.held_item().lock().await.clone();
+        let armor = self.bedrock_armor_packet(&[]).await;
+        let off_hand = self.inventory.off_hand_item().await.lock().await.clone();
+
+        (
+            CMobEquipment::main_hand(runtime_id, NetworkItemStackDescriptor::from(&main_hand)),
+            armor,
+            CMobEquipment::off_hand(runtime_id, NetworkItemStackDescriptor::from(&off_hand)),
+        )
+    }
+
+    async fn bedrock_armor_packet(
+        &self,
+        updates: &[(EquipmentSlot, ItemStack)],
+    ) -> CMobArmorEquipment {
+        let helmet = if let Some((_, stack)) = updates
+            .iter()
+            .rev()
+            .find(|(slot, _)| matches!(slot, EquipmentSlot::Head(_)))
+        {
+            stack.clone()
+        } else {
+            self.inventory.get_stack(39).await.lock().await.clone()
+        };
+        let chestplate = if let Some((_, stack)) = updates
+            .iter()
+            .rev()
+            .find(|(slot, _)| matches!(slot, EquipmentSlot::Chest(_)))
+        {
+            stack.clone()
+        } else {
+            self.inventory.get_stack(38).await.lock().await.clone()
+        };
+        let leggings = if let Some((_, stack)) = updates
+            .iter()
+            .rev()
+            .find(|(slot, _)| matches!(slot, EquipmentSlot::Legs(_)))
+        {
+            stack.clone()
+        } else {
+            self.inventory.get_stack(37).await.lock().await.clone()
+        };
+        let boots = if let Some((_, stack)) = updates
+            .iter()
+            .rev()
+            .find(|(slot, _)| matches!(slot, EquipmentSlot::Feet(_)))
+        {
+            stack.clone()
+        } else {
+            self.inventory.get_stack(36).await.lock().await.clone()
+        };
+        let body = updates
+            .iter()
+            .rev()
+            .find(|(slot, _)| matches!(slot, EquipmentSlot::Body(_)))
+            .map_or_else(|| ItemStack::EMPTY.clone(), |(_, stack)| stack.clone());
+
+        CMobArmorEquipment {
+            entity_runtime_id: VarULong(self.entity_id() as u64),
+            helmet: NetworkItemStackDescriptor::from(&helmet),
+            chestplate: NetworkItemStackDescriptor::from(&chestplate),
+            leggings: NetworkItemStackDescriptor::from(&leggings),
+            boots: NetworkItemStackDescriptor::from(&boots),
+            body: NetworkItemStackDescriptor::from(&body),
+        }
+    }
+
+    pub async fn send_bedrock_equipment_to(&self, client: &crate::net::bedrock::BedrockClient) {
+        let (main_hand, armor, off_hand) = self.bedrock_equipment_packets().await;
+        client.send_game_packet(&main_hand).await;
+        client.send_game_packet(&armor).await;
+        client.send_game_packet(&off_hand).await;
+    }
+
+    pub async fn broadcast_bedrock_equipment_snapshot(&self) {
+        let (main_hand, armor, off_hand) = self.bedrock_equipment_packets().await;
+        let world = self.world();
+        let chunk_pos = self.get_entity().chunk_pos.load();
+        let except = [self.gameprofile.id];
+        world.broadcast_to_chunk_except_bedrock_sync(chunk_pos, &except, &main_hand);
+        world.broadcast_to_chunk_except_bedrock_sync(chunk_pos, &except, &armor);
+        world.broadcast_to_chunk_except_bedrock_sync(chunk_pos, &except, &off_hand);
+    }
+
+    pub async fn send_equipment_changes(&self, equipment: &[(EquipmentSlot, ItemStack)]) {
+        self.living_entity.send_equipment_changes(equipment);
+
+        let world = self.world();
+        let chunk_pos = self.get_entity().chunk_pos.load();
+        let except = [self.gameprofile.id];
+        let runtime_id = VarULong(self.entity_id() as u64);
+        let mut armor_changed = false;
+
+        for (slot, stack) in equipment {
+            let packet = match slot {
+                EquipmentSlot::MainHand(_) => Some(CMobEquipment::main_hand(
+                    runtime_id,
+                    NetworkItemStackDescriptor::from(stack),
+                )),
+                EquipmentSlot::OffHand(_) => Some(CMobEquipment::off_hand(
+                    runtime_id,
+                    NetworkItemStackDescriptor::from(stack),
+                )),
+                EquipmentSlot::Feet(_)
+                | EquipmentSlot::Legs(_)
+                | EquipmentSlot::Chest(_)
+                | EquipmentSlot::Head(_)
+                | EquipmentSlot::Body(_) => {
+                    armor_changed = true;
+                    None
+                }
+                EquipmentSlot::Saddle(_) => None,
+            };
+            if let Some(packet) = packet {
+                world.broadcast_to_chunk_except_bedrock_sync(chunk_pos, &except, &packet);
+            }
+        }
+
+        if armor_changed {
+            let armor = self.bedrock_armor_packet(equipment).await;
+            world.broadcast_to_chunk_except_bedrock_sync(chunk_pos, &except, &armor);
         }
     }
 
@@ -1596,8 +1845,8 @@ impl Player {
             ))
             .await;
 
-            self.living_entity
-                .send_equipment_changes(&[(slot.clone(), updated_stack)]);
+            self.send_equipment_changes(&[(slot.clone(), updated_stack)])
+                .await;
 
             return true;
         }
@@ -4299,7 +4548,7 @@ impl Player {
             (EquipmentSlot::MAIN_HAND, main_hand_item),
             (EquipmentSlot::OFF_HAND, off_hand_item),
         ];
-        self.living_entity.send_equipment_changes(equipment);
+        self.send_equipment_changes(equipment).await;
         // todo this.player.stopUsingItem();
     }
 
@@ -4649,8 +4898,8 @@ impl Player {
         ))
         .await;
 
-        self.living_entity
-            .send_equipment_changes(&[(equipment_slot, updated_stack)]);
+        self.send_equipment_changes(&[(equipment_slot, updated_stack)])
+            .await;
 
         xp
     }
@@ -6428,18 +6677,8 @@ impl InventoryPlayer for Player {
         stack: &'a ItemStack,
     ) -> PlayerFuture<'a, ()> {
         Box::pin(async move {
-            let chunk_pos = self.living_entity.entity.chunk_pos.load();
-            self.world().broadcast_to_chunk_except(
-                chunk_pos,
-                &[self.get_entity().entity_uuid],
-                &CSetEquipment::new(
-                    self.entity_id().into(),
-                    vec![(
-                        slot.discriminant(),
-                        ItemStackSerializer::from(stack.clone()),
-                    )],
-                ),
-            );
+            self.send_equipment_changes(&[(slot.clone(), stack.clone())])
+                .await;
 
             if let Some(equippable) = stack.get_data_component::<EquippableImpl>() {
                 self.world().play_sound_event(

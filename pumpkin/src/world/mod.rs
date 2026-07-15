@@ -2444,6 +2444,7 @@ impl World {
             ),
             &bedrock_add_player,
         );
+        player.broadcast_bedrock_equipment_snapshot().await;
 
         // Broadcast metadata to Java players so they can correctly interact with the new player
         let config = player.config.load();
@@ -2534,6 +2535,7 @@ impl World {
             };
 
             client.send_game_packet(&ex_add_player).await;
+            existing_player.send_bedrock_equipment_to(client).await;
         }
 
         // 3. Trigger Join Event and Broadcast Join Message
@@ -2885,6 +2887,7 @@ impl World {
             &spawn_entity,
             &bedrock_add_player,
         );
+        player.broadcast_bedrock_equipment_snapshot().await;
 
         // Broadcast metadata to Java players so they can correctly interact with the new player
         let config = player.config.load();
@@ -3292,6 +3295,7 @@ impl World {
             ),
             &bedrock_add_player,
         );
+        player.broadcast_bedrock_equipment_snapshot().await;
 
         player.send_client_information();
 
@@ -5951,6 +5955,28 @@ impl World {
     ) {
         let players = self.players.load();
         for player in players.iter() {
+            let center = player.get_entity().chunk_pos.load();
+            let view_distance = get_view_distance(player).get() as i32;
+            if is_within_view_distance(chunk_pos, center, view_distance)
+                && let ClientPlatform::Bedrock(client) = player.client.as_ref()
+            {
+                client.try_enqueue_packet(packet);
+            }
+        }
+    }
+
+    /// Broadcasts a Bedrock packet to chunk watchers except for the listed players.
+    pub fn broadcast_to_chunk_except_bedrock_sync<B: BClientPacket>(
+        &self,
+        chunk_pos: Vector2<i32>,
+        except: &[uuid::Uuid],
+        packet: &B,
+    ) {
+        let players = self.players.load();
+        for player in players.iter() {
+            if except.contains(&player.get_entity().entity_uuid) {
+                continue;
+            }
             let center = player.get_entity().chunk_pos.load();
             let view_distance = get_view_distance(player).get() as i32;
             if is_within_view_distance(chunk_pos, center, view_distance)

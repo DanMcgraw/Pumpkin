@@ -1156,6 +1156,13 @@ pub trait ScreenHandler: Send + Sync {
                                 player
                                     .enqueue_equipment_change(equipment_slot, &cursor_stack)
                                     .await;
+                            } else if slot_index == 45 {
+                                player
+                                    .enqueue_equipment_change(
+                                        &EquipmentSlot::OFF_HAND,
+                                        &cursor_stack,
+                                    )
+                                    .await;
                             }
 
                             let transfer_count = if click_type == MouseClick::Left {
@@ -1190,6 +1197,13 @@ pub trait ScreenHandler: Send + Sync {
                                     player
                                         .enqueue_equipment_change(equipment_slot, ItemStack::EMPTY)
                                         .await;
+                                } else if slot_index == 45 {
+                                    player
+                                        .enqueue_equipment_change(
+                                            &EquipmentSlot::OFF_HAND,
+                                            ItemStack::EMPTY,
+                                        )
+                                        .await;
                                 }
                             }
                         } else if slot.can_insert(&cursor_stack).await {
@@ -1198,6 +1212,13 @@ pub trait ScreenHandler: Send + Sync {
                             {
                                 player
                                     .enqueue_equipment_change(equipment_slot, &cursor_stack)
+                                    .await;
+                            } else if slot_index == 45 {
+                                player
+                                    .enqueue_equipment_change(
+                                        &EquipmentSlot::OFF_HAND,
+                                        &cursor_stack,
+                                    )
                                     .await;
                             }
 
