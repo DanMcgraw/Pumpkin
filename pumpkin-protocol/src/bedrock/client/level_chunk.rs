@@ -39,7 +39,6 @@ impl PacketWrite for CLevelChunk<'_> {
 
         VarInt(self.dimension).write(writer)?;
         let sub_chunk_count = self.chunk.section.count as u32;
-        debug_assert_eq!(sub_chunk_count, 24);
         VarUInt(sub_chunk_count).write(writer)?;
         self.cache_enabled.write(writer)?;
 

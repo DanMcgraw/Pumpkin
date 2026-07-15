@@ -43,6 +43,7 @@ use pumpkin_protocol::{
             command_request::SCommandRequest,
             container_close::SContainerClose,
             emote::SEmote,
+            emote_list::SEmoteList,
             interaction::SInteraction,
             inventory_transaction::SInventoryTransaction,
             loading_screen::SLoadingScreen,
@@ -1407,9 +1408,13 @@ impl BedrockClient {
             SEmote::PACKET_ID => {
                 self.handle_emote(player, server, SEmote::read(reader)?).await;
             }
-            // SEmoteList::PACKET_ID => {
-            //     self.handle_emote_list(player, server, SEmoteList::read(reader)?);
-            // }
+            SEmoteList::PACKET_ID => {
+                // The client advertises the emote pieces available to its local
+                // player. Pumpkin does not need this list until server-side emote
+                // validation is implemented, but it is still a known packet and
+                // must be decoded so it does not surface as protocol noise.
+                let _ = SEmoteList::read(reader)?;
+            }
             pumpkin_protocol::bedrock::server::modal_form_response::SModalFormResponse::PACKET_ID => {
                 self.handle_modal_form_response(
                     player,
