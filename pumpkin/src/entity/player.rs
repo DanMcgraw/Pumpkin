@@ -3582,7 +3582,7 @@ impl Player {
             .scoreboard
             .lock()
             .await
-            .send_snapshot_to(self)
+            .send_recovery_bedrock_snapshot_to(self)
             .await;
         self.mark_bedrock_join_state_sent();
         client.finish_recovery_replay(epoch);

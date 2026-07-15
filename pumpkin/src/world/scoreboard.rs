@@ -14,7 +14,7 @@ use pumpkin_protocol::{
     },
 };
 use pumpkin_util::text::{TextComponent, color::NamedColor};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::World;
 use crate::{entity::player::Player, net::bedrock::state::BedrockPacketGroup};
@@ -24,12 +24,11 @@ pub struct Scoreboard {
     teams: HashMap<String, Team>,
     scores: HashMap<String, HashMap<String, ScoreboardScore<'static>>>,
     display_slots: [Option<String>; 19],
-    /// Objective names ever exposed to Bedrock. Snapshot replay removes this
-    /// set before rebuilding current state so removals missed during death or
-    /// dimension transitions cannot survive client-side.
-    bedrock_objective_history: HashSet<String>,
+    /// Bedrock uses an opaque objective ID per display-slot instance, rather
+    /// than the Java objective name shared by every slot.
+    bedrock_display_ids: [Option<String>; 19],
     bedrock_score_ids: HashMap<(String, String), i64>,
-    next_bedrock_score_id: i64,
+    next_bedrock_id: i64,
 }
 
 impl Default for Scoreboard {
@@ -39,11 +38,11 @@ impl Default for Scoreboard {
             teams: HashMap::new(),
             scores: HashMap::new(),
             display_slots: std::array::from_fn(|_| None),
-            bedrock_objective_history: HashSet::new(),
+            bedrock_display_ids: std::array::from_fn(|_| None),
             bedrock_score_ids: HashMap::new(),
             // Zero is reserved by several Bedrock identity paths. Positive,
             // monotonically allocated IDs remain stable across score updates.
-            next_bedrock_score_id: 1,
+            next_bedrock_id: 1,
         }
     }
 }
@@ -54,9 +53,14 @@ impl Scoreboard {
         if let Some(id) = self.bedrock_score_ids.get(&key) {
             return *id;
         }
-        let id = self.next_bedrock_score_id;
-        self.next_bedrock_score_id = self.next_bedrock_score_id.saturating_add(1);
+        let id = self.allocate_bedrock_id();
         self.bedrock_score_ids.insert(key, id);
+        id
+    }
+
+    fn allocate_bedrock_id(&mut self) -> i64 {
+        let id = self.next_bedrock_id;
+        self.next_bedrock_id = self.next_bedrock_id.saturating_add(1);
         id
     }
 
@@ -140,10 +144,6 @@ impl Scoreboard {
         }
     }
 
-    fn bedrock_objective_id(index: usize, objective_name: &str) -> String {
-        format!("{objective_name}:{index}")
-    }
-
     fn displayed_instances_for(&self, objective_name: &str) -> Vec<(usize, String)> {
         self.display_slots
             .iter()
@@ -152,7 +152,11 @@ impl Scoreboard {
                 displayed
                     .as_deref()
                     .filter(|displayed| *displayed == objective_name)
-                    .map(|_| (index, Self::bedrock_objective_id(index, objective_name)))
+                    .and_then(|_| {
+                        self.bedrock_display_ids[index]
+                            .clone()
+                            .map(|id| (index, id))
+                    })
             })
             .collect()
     }
@@ -163,6 +167,34 @@ impl Scoreboard {
                 && client.allows_packet_group(BedrockPacketGroup::PersistentUi)
             {
                 client.enqueue_packet(packet).await;
+            }
+        }
+    }
+
+    async fn broadcast_bedrock_objective_add(world: &World, packet: &BSetDisplayObjective) {
+        for player in world.players.load().iter() {
+            if let Some(client) = player.client.bedrock()
+                && client.allows_packet_group(BedrockPacketGroup::PersistentUi)
+            {
+                client.enqueue_packet(packet).await;
+                client
+                    .track_scoreboard_objective(packet.objective_name.clone())
+                    .await;
+            }
+        }
+    }
+
+    async fn broadcast_bedrock_objective_remove(world: &World, objective_name: &str) {
+        for player in world.players.load().iter() {
+            if let Some(client) = player.client.bedrock()
+                && client.allows_packet_group(BedrockPacketGroup::PersistentUi)
+                && client.forget_scoreboard_objective(objective_name).await
+            {
+                client
+                    .enqueue_packet(&BRemoveObjective {
+                        objective_name: objective_name.to_string(),
+                    })
+                    .await;
             }
         }
     }
@@ -215,7 +247,9 @@ impl Scoreboard {
             let Some(scores) = self.scores.get(objective_name) else {
                 continue;
             };
-            let bedrock_objective_id = Self::bedrock_objective_id(index, objective_name);
+            let Some(bedrock_objective_id) = self.bedrock_display_ids[index].as_ref() else {
+                continue;
+            };
             for entity_name in entity_names {
                 let Some(score) = scores.get(entity_name) else {
                     continue;
@@ -301,14 +335,8 @@ impl Scoreboard {
             .insert(objective.name.to_string(), objective.clone());
 
         for (index, bedrock_objective_id) in self.displayed_instances_for(objective.name) {
-            Self::broadcast_bedrock(
-                world,
-                &BRemoveObjective {
-                    objective_name: bedrock_objective_id.clone(),
-                },
-            )
-            .await;
-            Self::broadcast_bedrock(
+            Self::broadcast_bedrock_objective_remove(world, &bedrock_objective_id).await;
+            Self::broadcast_bedrock_objective_add(
                 world,
                 &BSetDisplayObjective {
                     display_slot: Self::bedrock_slot_name(index).to_string(),
@@ -344,26 +372,22 @@ impl Scoreboard {
 
         world.broadcast_packet_all(&je_packet);
 
-        let prefix = format!("{name}:");
-        let bedrock_ids = self
-            .bedrock_objective_history
-            .iter()
-            .filter(|id| id.starts_with(&prefix))
-            .cloned()
-            .collect::<Vec<_>>();
-        for objective_name in bedrock_ids {
-            Self::broadcast_bedrock(world, &BRemoveObjective { objective_name }).await;
+        let bedrock_ids = self.displayed_instances_for(name);
+        for (_, objective_name) in &bedrock_ids {
+            Self::broadcast_bedrock_objective_remove(world, &objective_name).await;
         }
 
         self.objectives.remove(name);
         self.scores.remove(name);
-        self.bedrock_score_ids
-            .retain(|(objective_name, _), _| !objective_name.starts_with(&prefix));
-        self.bedrock_objective_history
-            .retain(|objective_name| !objective_name.starts_with(&prefix));
-        for displayed in &mut self.display_slots {
+        self.bedrock_score_ids.retain(|(objective_name, _), _| {
+            !bedrock_ids
+                .iter()
+                .any(|(_, removed_id)| removed_id == objective_name)
+        });
+        for (index, displayed) in self.display_slots.iter_mut().enumerate() {
             if displayed.as_deref() == Some(name) {
                 *displayed = None;
+                self.bedrock_display_ids[index] = None;
             }
         }
         true
@@ -502,9 +526,7 @@ impl Scoreboard {
             return false;
         }
 
-        let old_display_id = self.display_slots[index]
-            .as_deref()
-            .map(|old| Self::bedrock_objective_id(index, old));
+        let old_display_id = self.bedrock_display_ids[index].take();
         self.display_slots[index] = objective_name.map(ToOwned::to_owned);
         world.broadcast_packet_all(&CDisplayObjective::new(
             slot,
@@ -512,7 +534,9 @@ impl Scoreboard {
         ));
 
         if let Some(objective_name) = old_display_id {
-            Self::broadcast_bedrock(world, &BRemoveObjective { objective_name }).await;
+            Self::broadcast_bedrock_objective_remove(world, &objective_name).await;
+            self.bedrock_score_ids
+                .retain(|(display_id, _), _| display_id != &objective_name);
         }
         if let Some(objective_name) = objective_name {
             let objective = self
@@ -520,10 +544,9 @@ impl Scoreboard {
                 .get(objective_name)
                 .expect("objective was validated")
                 .clone();
-            let bedrock_objective_id = Self::bedrock_objective_id(index, objective_name);
-            self.bedrock_objective_history
-                .insert(bedrock_objective_id.clone());
-            Self::broadcast_bedrock(
+            let bedrock_objective_id = self.allocate_bedrock_id().to_string();
+            self.bedrock_display_ids[index] = Some(bedrock_objective_id.clone());
+            Self::broadcast_bedrock_objective_add(
                 world,
                 &BSetDisplayObjective {
                     display_slot: Self::bedrock_slot_name(index).to_string(),
@@ -664,11 +687,20 @@ impl Scoreboard {
         }
     }
 
-    /// Replays the current Bedrock-visible scoreboard after the client has
-    /// completed a join or recovery boundary. Bedrock has no Java-style team
-    /// packet, so team prefixes and suffixes are folded into fake-player score
-    /// names while the stable score identity remains unchanged.
-    pub async fn send_snapshot_to(&self, player: &Player) {
+    pub async fn send_initial_bedrock_snapshot_to(&self, player: &Player) {
+        self.send_bedrock_snapshot_to(player, false).await;
+    }
+
+    pub async fn send_recovery_bedrock_snapshot_to(&self, player: &Player) {
+        self.send_bedrock_snapshot_to(player, true).await;
+    }
+
+    /// Replays the current Bedrock-visible scoreboard after a join or recovery
+    /// boundary. A fresh connection must not receive removal packets for
+    /// unknown objectives; recovery removes only IDs tracked for that client.
+    /// Bedrock has no Java-style team packet, so team prefixes and suffixes are
+    /// folded into fake-player score names while identity remains stable.
+    async fn send_bedrock_snapshot_to(&self, player: &Player, reset_existing: bool) {
         let Some(client) = player.client.bedrock() else {
             return;
         };
@@ -676,14 +708,23 @@ impl Scoreboard {
             return;
         }
 
-        let mut known_objectives: Vec<_> = self.bedrock_objective_history.iter().collect();
-        known_objectives.sort_unstable();
-        for objective_name in known_objectives {
-            client
-                .send_game_packet(&BRemoveObjective {
-                    objective_name: objective_name.clone(),
-                })
-                .await;
+        let known_objectives = client.scoreboard_objective_ids().await;
+        debug!(
+            player = %player.gameprofile.name,
+            reset_existing,
+            stale_objectives = known_objectives.len(),
+            displayed_objectives = self.display_slots.iter().flatten().count(),
+            "Sending Bedrock scoreboard snapshot"
+        );
+        if reset_existing {
+            for objective_name in known_objectives {
+                client
+                    .enqueue_packet(&BRemoveObjective {
+                        objective_name: objective_name.clone(),
+                    })
+                    .await;
+                client.forget_scoreboard_objective(&objective_name).await;
+            }
         }
 
         for (index, objective_name) in self.display_slots.iter().enumerate() {
@@ -691,15 +732,20 @@ impl Scoreboard {
                 continue;
             };
             let objective = &self.objectives[objective_name];
-            let bedrock_objective_id = Self::bedrock_objective_id(index, objective_name);
+            let Some(bedrock_objective_id) = self.bedrock_display_ids[index].as_ref() else {
+                continue;
+            };
             client
-                .send_game_packet(&BSetDisplayObjective {
+                .enqueue_packet(&BSetDisplayObjective {
                     display_slot: Self::bedrock_slot_name(index).to_string(),
-                    objective_name: bedrock_objective_id,
+                    objective_name: bedrock_objective_id.clone(),
                     display_name: objective.display_name.clone().get_text(),
                     criteria_name: "dummy".to_string(),
                     sort_order: VarInt(1),
                 })
+                .await;
+            client
+                .track_scoreboard_objective(bedrock_objective_id.clone())
                 .await;
         }
 
@@ -711,7 +757,9 @@ impl Scoreboard {
             let Some(scores) = self.scores.get(objective_name) else {
                 continue;
             };
-            let bedrock_objective_id = Self::bedrock_objective_id(index, objective_name);
+            let Some(bedrock_objective_id) = self.bedrock_display_ids[index].as_ref() else {
+                continue;
+            };
             let mut entity_names: Vec<_> = scores.keys().collect();
             entity_names.sort_unstable();
             for entity_name in entity_names {
@@ -739,7 +787,7 @@ impl Scoreboard {
         }
         if !entries.is_empty() {
             client
-                .send_game_packet(&BSetScore {
+                .enqueue_packet(&BSetScore {
                     action: VarInt(0),
                     entries,
                 })
@@ -1006,6 +1054,24 @@ mod tests {
         assert!(first > 0);
         assert_ne!(first, other_objective);
         assert_ne!(first, other_player);
+    }
+
+    #[test]
+    fn bedrock_display_objectives_use_opaque_numeric_ids() {
+        let mut scoreboard = Scoreboard::default();
+        let objective_id = scoreboard.allocate_bedrock_id().to_string();
+        scoreboard.display_slots[1] = Some("java_objective".to_string());
+        scoreboard.bedrock_display_ids[1] = Some(objective_id.clone());
+
+        assert_eq!(
+            scoreboard.displayed_instances_for("java_objective"),
+            vec![(1, objective_id.clone())]
+        );
+        assert!(objective_id.parse::<i64>().is_ok());
+        assert!(!objective_id.contains("java_objective"));
+
+        let score_id = scoreboard.bedrock_score_id(&objective_id, "player");
+        assert!(score_id > objective_id.parse::<i64>().unwrap());
     }
 }
 

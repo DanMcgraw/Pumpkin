@@ -169,6 +169,9 @@ pub struct BedrockClient {
     replayed_recovery_epoch: AtomicU64,
     recovery_replay_in_progress: AtomicBool,
     replacement_player_snapshot_claimed: AtomicBool,
+    /// Scoreboard objective IDs that were actually sent to this connection.
+    /// Bedrock can crash when asked to remove an objective it has never seen.
+    scoreboard_objective_ids: Mutex<HashSet<String>>,
     /// An notifier that is triggered when this client is closed.
     close_token: CancellationToken,
     last_seen: Arc<AtomicCell<std::time::Instant>>,
@@ -227,6 +230,7 @@ impl BedrockClient {
             replayed_recovery_epoch: AtomicU64::new(0),
             recovery_replay_in_progress: AtomicBool::new(false),
             replacement_player_snapshot_claimed: AtomicBool::new(false),
+            scoreboard_objective_ids: Mutex::new(HashSet::new()),
             compounds: Arc::new(Mutex::new(HashMap::new())),
             close_token: CancellationToken::new(),
             last_seen: Arc::new(AtomicCell::new(std::time::Instant::now())),
@@ -459,6 +463,32 @@ impl BedrockClient {
     #[must_use]
     pub fn allows_packet_group(&self, group: state::BedrockPacketGroup) -> bool {
         self.session_state().allows(group)
+    }
+
+    pub async fn track_scoreboard_objective(&self, objective_id: String) {
+        self.scoreboard_objective_ids
+            .lock()
+            .await
+            .insert(objective_id);
+    }
+
+    pub async fn forget_scoreboard_objective(&self, objective_id: &str) -> bool {
+        self.scoreboard_objective_ids
+            .lock()
+            .await
+            .remove(objective_id)
+    }
+
+    pub async fn scoreboard_objective_ids(&self) -> Vec<String> {
+        let mut objective_ids = self
+            .scoreboard_objective_ids
+            .lock()
+            .await
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        objective_ids.sort_unstable();
+        objective_ids
     }
 
     pub fn transition_session_state(&self, next: state::BedrockSessionState) -> bool {

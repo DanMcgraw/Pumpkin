@@ -235,7 +235,7 @@ impl BedrockClient {
             .scoreboard
             .lock()
             .await
-            .send_snapshot_to(player)
+            .send_initial_bedrock_snapshot_to(player)
             .await;
     }
 
