@@ -7,7 +7,7 @@ use pumpkin_protocol::{
         CRemoveObjective as BRemoveObjective, CSetDisplayObjective as BSetDisplayObjective,
         CSetScore as BSetScore, ScoreEntry as BScoreEntry,
     },
-    codec::var_int::VarInt,
+    codec::{var_int::VarInt, var_long::VarLong},
     java::client::play::{
         CDisplayObjective, CSetPlayerTeam, CUpdateObjectives, CUpdateScore, Mode, RenderType,
         TeamMethod, TeamParameters,
@@ -214,11 +214,11 @@ impl Scoreboard {
             for score in &scores {
                 let scoreboard_id = self.bedrock_score_id(&bedrock_objective_id, score.entity_name);
                 entries.push(BScoreEntry {
-                    scoreboard_id,
+                    scoreboard_id: VarLong(scoreboard_id),
                     objective_name: bedrock_objective_id.clone(),
-                    score: score.value,
-                    entry_type: VarInt(3),
-                    entity_unique_id: 0,
+                    score: score.value.0,
+                    entry_type: BScoreEntry::TYPE_FAKE_PLAYER,
+                    entity_unique_id: VarLong(0),
                     custom_name: self.bedrock_score_name(score),
                 });
             }
@@ -227,7 +227,7 @@ impl Scoreboard {
             Self::broadcast_bedrock(
                 world,
                 &BSetScore {
-                    action: VarInt(0),
+                    action: BSetScore::ACTION_CHANGE,
                     entries,
                 },
             )
@@ -261,11 +261,11 @@ impl Scoreboard {
                     continue;
                 };
                 entries.push(BScoreEntry {
-                    scoreboard_id: *scoreboard_id,
+                    scoreboard_id: VarLong(*scoreboard_id),
                     objective_name: bedrock_objective_id.clone(),
-                    score: score.value,
-                    entry_type: VarInt(3),
-                    entity_unique_id: 0,
+                    score: score.value.0,
+                    entry_type: BScoreEntry::TYPE_FAKE_PLAYER,
+                    entity_unique_id: VarLong(0),
                     custom_name: self.bedrock_score_name(score),
                 });
             }
@@ -275,7 +275,7 @@ impl Scoreboard {
         }
 
         let packet = BSetScore {
-            action: VarInt(0),
+            action: BSetScore::ACTION_CHANGE,
             entries,
         };
         for player in world.players.load().iter() {
@@ -416,11 +416,11 @@ impl Scoreboard {
         for (_, bedrock_objective_id) in self.displayed_instances_for(score.objective_name) {
             let scoreboard_id = self.bedrock_score_id(&bedrock_objective_id, score.entity_name);
             entries.push(BScoreEntry {
-                scoreboard_id,
+                scoreboard_id: VarLong(scoreboard_id),
                 objective_name: bedrock_objective_id,
-                score: score.value,
-                entry_type: VarInt(3),
-                entity_unique_id: 0,
+                score: score.value.0,
+                entry_type: BScoreEntry::TYPE_FAKE_PLAYER,
+                entity_unique_id: VarLong(0),
                 custom_name: self.bedrock_score_name(&score),
             });
         }
@@ -428,7 +428,7 @@ impl Scoreboard {
             Self::broadcast_bedrock(
                 world,
                 &BSetScore {
-                    action: VarInt(0),
+                    action: BSetScore::ACTION_CHANGE,
                     entries,
                 },
             )
@@ -466,11 +466,11 @@ impl Scoreboard {
                 .get(&(bedrock_objective_id.clone(), entity_name.to_string()))
             {
                 entries.push(BScoreEntry {
-                    scoreboard_id: *scoreboard_id,
+                    scoreboard_id: VarLong(*scoreboard_id),
                     objective_name: bedrock_objective_id,
-                    score: VarInt(0),
-                    entry_type: VarInt(3),
-                    entity_unique_id: 0,
+                    score: 0,
+                    entry_type: BScoreEntry::TYPE_FAKE_PLAYER,
+                    entity_unique_id: VarLong(0),
                     custom_name: entity_name.to_string(),
                 });
             }
@@ -479,7 +479,7 @@ impl Scoreboard {
             Self::broadcast_bedrock(
                 world,
                 &BSetScore {
-                    action: VarInt(1),
+                    action: BSetScore::ACTION_REMOVE,
                     entries,
                 },
             )
@@ -776,11 +776,11 @@ impl Scoreboard {
                     continue;
                 };
                 entries.push(BScoreEntry {
-                    scoreboard_id: *scoreboard_id,
+                    scoreboard_id: VarLong(*scoreboard_id),
                     objective_name: bedrock_objective_id.clone(),
-                    score: score.value,
-                    entry_type: VarInt(3),
-                    entity_unique_id: 0,
+                    score: score.value.0,
+                    entry_type: BScoreEntry::TYPE_FAKE_PLAYER,
+                    entity_unique_id: VarLong(0),
                     custom_name: self.bedrock_score_name(score),
                 });
             }
@@ -788,7 +788,7 @@ impl Scoreboard {
         if !entries.is_empty() {
             client
                 .enqueue_packet(&BSetScore {
-                    action: VarInt(0),
+                    action: BSetScore::ACTION_CHANGE,
                     entries,
                 })
                 .await;
