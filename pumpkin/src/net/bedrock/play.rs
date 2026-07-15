@@ -76,33 +76,15 @@ const fn should_complete_bedrock_respawn(pending: bool, dead: bool) -> bool {
     pending && !dead
 }
 
-fn descriptor_to_stack(desc: &NetworkItemDescriptor, is_creative: bool) -> ItemStack {
+fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
     if desc.id.0 == 0 || desc.stack_size == 0 {
         ItemStack::EMPTY.clone()
     } else {
-        let mut mapped_item = None;
-
-        if is_creative {
-            let index = (desc.id.0.saturating_sub(1)) as usize;
-            if index < pumpkin_data::bedrock_creative::CREATIVE_ENTRIES.len() {
-                let entry = pumpkin_data::bedrock_creative::CREATIVE_ENTRIES[index];
-                if let Some(mapping) = pumpkin_data::item::JavaToBedrockItemMapping::from_bedrock(
-                    entry.item_id,
-                    entry.item_aux_value,
-                ) {
-                    mapped_item = Some(mapping.java_item);
-                }
-            }
-        }
-
-        if mapped_item.is_none()
-            && let Some(mapping) = pumpkin_data::item::JavaToBedrockItemMapping::from_bedrock(
-                desc.id.0 as i16,
-                desc.aux_value.0,
-            )
-        {
-            mapped_item = Some(mapping.java_item);
-        }
+        let mapped_item = pumpkin_data::item::JavaToBedrockItemMapping::from_bedrock(
+            desc.id.0 as i16,
+            desc.aux_value.0,
+        )
+        .map(|mapping| mapping.java_item);
 
         mapped_item.map_or_else(
             || {
@@ -633,13 +615,12 @@ impl BedrockClient {
             player_screen_handler.send_content_updates().await;
         }
 
-        let is_creative = player.gamemode.load() == GameMode::Creative;
         for action in &packet.actions {
             use pumpkin_protocol::bedrock::server::inventory_transaction::InventoryActionSource;
             let source_type = InventoryActionSource::from(action.source_type);
             if source_type == InventoryActionSource::World {
-                let old_stack = descriptor_to_stack(&action.old_item, is_creative);
-                let new_stack = descriptor_to_stack(&action.new_item, is_creative);
+                let old_stack = descriptor_to_stack(&action.old_item);
+                let new_stack = descriptor_to_stack(&action.new_item);
                 if old_stack.is_empty() && !new_stack.is_empty() {
                     player.drop_item(new_stack).await;
                 }
@@ -647,7 +628,7 @@ impl BedrockClient {
                 if let Some(screen_slot) =
                     map_bedrock_slot_to_screen_handler(window_id, action.inventory_slot)
                 {
-                    let item_stack = descriptor_to_stack(&action.new_item, is_creative);
+                    let item_stack = descriptor_to_stack(&action.new_item);
 
                     let mut player_screen_handler = player.player_screen_handler.lock().await;
 
@@ -758,16 +739,23 @@ impl BedrockClient {
 
                 if data.action_type.0 == 0 {
                     // Click block
-                    let is_creative = player.gamemode.load() == GameMode::Creative;
-                    let client_stack = descriptor_to_stack(&data.item_in_hand, is_creative);
+                    let client_stack = descriptor_to_stack(&data.item_in_hand);
 
                     let held_item = player.inventory.held_item();
-                    if !client_stack.is_empty() {
-                        let mut server_stack = held_item.lock().await;
-                        if server_stack.is_empty() || server_stack.item.id != client_stack.item.id {
-                            *server_stack = client_stack.clone();
-                        }
+                    let server_stack = held_item.lock().await;
+                    if !server_stack.are_equal(&client_stack) {
+                        warn!(
+                            client_item = client_stack.item.id,
+                            client_count = client_stack.item_count,
+                            server_item = server_stack.item.id,
+                            server_count = server_stack.item_count,
+                            "Rejected Bedrock use-item transaction with a stale or invalid held item"
+                        );
+                        drop(server_stack);
+                        player.sync_bedrock_main_inventory().await;
+                        return;
                     }
+                    drop(server_stack);
 
                     let result = server
                         .block_registry
@@ -2276,9 +2264,28 @@ mod inventory_stack_response_tests {
     };
 
     use super::{
-        bedrock_crafting_input_slot_id, record_update, should_begin_bedrock_respawn,
-        should_complete_bedrock_respawn,
+        bedrock_crafting_input_slot_id, descriptor_to_stack, record_update,
+        should_begin_bedrock_respawn, should_complete_bedrock_respawn,
     };
+
+    use pumpkin_protocol::{
+        bedrock::network_item::NetworkItemDescriptor,
+        codec::{var_int::VarInt, var_uint::VarUInt},
+    };
+
+    #[test]
+    fn runtime_item_id_is_not_treated_as_a_creative_entry_index() {
+        let descriptor = NetworkItemDescriptor {
+            id: VarInt(285),
+            stack_size: 64,
+            aux_value: VarUInt(0),
+            ..Default::default()
+        };
+
+        let stack = descriptor_to_stack(&descriptor);
+        assert_eq!(stack.item.id, Item::APPLE.id);
+        assert_eq!(stack.item_count, 64);
+    }
 
     #[test]
     fn respawn_state_machine_follows_client_ready_then_final_action() {

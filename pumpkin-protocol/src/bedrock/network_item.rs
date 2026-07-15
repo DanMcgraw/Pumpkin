@@ -398,7 +398,10 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
 mod tests {
     use std::io::{Cursor, Read};
 
-    use pumpkin_data::{item::Item, item_stack::ItemStack};
+    use pumpkin_data::{
+        item::{BedrockItem, Item, JavaToBedrockItemMapping},
+        item_stack::ItemStack,
+    };
 
     use crate::serial::PacketWrite;
 
@@ -454,6 +457,22 @@ mod tests {
                 0x00, 0x00, 0x00, 0x00, // empty can-destroy list
             ]
         );
+    }
+
+    #[test]
+    fn apple_runtime_mapping_round_trips_through_the_negotiated_palette() {
+        let to_bedrock = JavaToBedrockItemMapping::from_java_item_id(Item::APPLE.id).unwrap();
+        assert_eq!(to_bedrock.bedrock_item.id, BedrockItem::APPLE.id);
+        assert_eq!(to_bedrock.bedrock_item.registry_key, "minecraft:apple");
+        assert!(to_bedrock.bedrock_item.component_based);
+        assert!(!to_bedrock.bedrock_item.definition_components.is_empty());
+
+        let to_java = JavaToBedrockItemMapping::from_bedrock(
+            to_bedrock.bedrock_item.id,
+            to_bedrock.bedrock_data,
+        )
+        .unwrap();
+        assert_eq!(to_java.java_item.id, Item::APPLE.id);
     }
 
     #[test]
