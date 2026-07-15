@@ -2755,6 +2755,9 @@ impl EntityBase for LivingEntity {
                     }
 
                     self.clear_active_hand().await;
+                    if let Some(player) = caller.get_player() {
+                        player.sync_bedrock_main_inventory().await;
+                    }
                 }
             }
 

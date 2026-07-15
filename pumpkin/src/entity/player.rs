@@ -43,10 +43,14 @@ use advancement::PlayerAdvancement;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::block_properties::{BlockProperties, HorizontalFacing};
 use pumpkin_data::damage::DamageType;
-use pumpkin_data::data_component_impl::{AttributeModifiersImpl, EnchantmentsImpl, Operation};
+use pumpkin_data::data_component_impl::{
+    AttributeModifiersImpl, BlocksAttacksImpl, ConsumableImpl, EnchantmentsImpl, FoodImpl,
+    Operation,
+};
 use pumpkin_data::data_component_impl::{EquipmentSlot, EquippableImpl, ToolImpl, WeaponImpl};
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::{EntityPose, EntityStatus, EntityType};
+use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
@@ -111,6 +115,7 @@ use crate::net::{DisconnectReason, PlayerConfig};
 use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
 use crate::plugin::player::craft_item::CraftItemEvent;
 use crate::plugin::player::exp_change::PlayerExpChangeEvent;
+use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use crate::plugin::player::furnace_extract::FurnaceExtractEvent;
 use crate::plugin::player::inventory_drag::InventoryDragEvent;
 use crate::plugin::player::inventory_interact::InventoryClickEvent;
@@ -118,6 +123,7 @@ use crate::plugin::player::inventory_open::InventoryOpenEvent;
 use crate::plugin::player::player_change_world::PlayerChangeWorldEvent;
 use crate::plugin::player::player_drop_item::PlayerDropItemEvent;
 use crate::plugin::player::player_gamemode_change::PlayerGamemodeChangeEvent;
+use crate::plugin::player::player_interact_event::{InteractAction, PlayerInteractEvent};
 use crate::plugin::player::player_permission_check::PlayerPermissionCheckEvent;
 use crate::plugin::player::player_teleport::PlayerTeleportEvent;
 use crate::plugin::server::packet::PacketSentEvent;
@@ -150,6 +156,10 @@ fn bedrock_death_info_cause(death_message: &TextComponent, locale: Locale) -> St
     // positional placeholders such as %1$s are substituted before Bedrock's
     // printf-style percent escaping is applied.
     death_message.0.clone().get_text(locale).replace('%', "%%")
+}
+
+const fn can_start_food_use(invulnerable: bool, can_always_eat: bool, hunger: u8) -> bool {
+    invulnerable || can_always_eat || hunger < 20
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -491,8 +501,8 @@ impl ChunkManager {
 mod chunk_manager_tests {
     use super::{
         BedrockInputTickObservation, ChunkManager, MetadataValue, Player, bedrock_death_info_cause,
-        bedrock_initial_position_matches, client_load_is_ready, entity_data_flag, entity_data_key,
-        observe_bedrock_input_tick,
+        bedrock_initial_position_matches, can_start_food_use, client_load_is_ready,
+        entity_data_flag, entity_data_key, observe_bedrock_input_tick,
     };
     use pumpkin_util::{math::vector3::Vector3, text::TextComponent, translation::Locale};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -506,6 +516,14 @@ mod chunk_manager_tests {
         assert_eq!(ChunkManager::validated_chunks_per_tick(100.0), 16);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::NAN), 1);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::INFINITY), 1);
+    }
+
+    #[test]
+    fn food_use_respects_hunger_and_always_eat_rules() {
+        assert!(can_start_food_use(false, false, 19));
+        assert!(!can_start_food_use(false, false, 20));
+        assert!(can_start_food_use(false, true, 20));
+        assert!(can_start_food_use(true, false, 20));
     }
 
     #[test]
@@ -3174,6 +3192,155 @@ impl Player {
         let health = self.living_entity.health.load();
         let max_health = self.living_entity.get_max_health();
         health > 0.0 && health < max_health
+    }
+
+    /// Runs the edition-neutral right-click-in-air item behavior.
+    ///
+    /// Java and Bedrock both enter through this path so cooldowns, food rules,
+    /// active-hand state, plugin events, equipping, and item callbacks remain
+    /// server authoritative.
+    pub async fn use_item_in_hand(
+        self: &Arc<Self>,
+        hand: Hand,
+        pitch: f32,
+        yaw: f32,
+        server: &Server,
+    ) {
+        if !self.has_client_loaded() {
+            return;
+        }
+        self.update_last_action_time();
+
+        let inventory = self.inventory();
+        let item_in_hand = if hand == Hand::Left {
+            inventory.held_item()
+        } else {
+            inventory.off_hand_item().await
+        };
+
+        let item_id = item_in_hand.lock().await.item.id;
+        self.increment_stat(StatisticCategory::Used, item_id as i32, 1)
+            .await;
+
+        let hit_result = self
+            .world()
+            .raycast(
+                self.eye_position(),
+                self.eye_position()
+                    .add(&(Vector3::rotation_vector(f64::from(pitch), f64::from(yaw)) * 4.5)),
+                async |pos, world| {
+                    let block = world.get_block(pos);
+                    block != &Block::AIR && block != &Block::WATER && block != &Block::LAVA
+                },
+            )
+            .await;
+
+        let event = if let Some((hit_pos, _hit_dir)) = hit_result {
+            PlayerInteractEvent::new(
+                self,
+                InteractAction::RightClickBlock,
+                self.world().get_block(&hit_pos),
+                Some(hit_pos),
+                hand,
+            )
+        } else {
+            PlayerInteractEvent::new(self, InteractAction::RightClickAir, &Block::AIR, None, hand)
+        };
+
+        self.prepare_hand_item_for_use(hand, &item_in_hand).await;
+
+        let (item_for_use, stack_for_use) = {
+            let held = item_in_hand.lock().await;
+            (held.item, held.clone())
+        };
+
+        if item_for_use.id == Item::FISHING_ROD.id {
+            // TODO: Apply fishing rod durability on retrieval based on catch type.
+            let fish_event = PlayerFishEvent::new(
+                self.clone(),
+                None,
+                Uuid::nil(),
+                String::new(),
+                PlayerFishState::Fishing,
+                hand,
+                0,
+            );
+            if server.plugin_manager.fire(fish_event).await.cancelled {
+                return;
+            }
+        }
+
+        send_cancellable! {{
+            server;
+            event;
+            'after: {
+                server.item_registry.on_use(&stack_for_use, self).await;
+            }
+        }}
+    }
+
+    async fn prepare_hand_item_for_use(
+        self: &Arc<Self>,
+        hand: Hand,
+        item_in_hand: &Arc<Mutex<ItemStack>>,
+    ) {
+        let inventory = self.inventory();
+        let mut held = item_in_hand.lock().await;
+
+        if let Some(cooldown) = held.get_use_cooldown() {
+            let group = cooldown
+                .cooldown_group
+                .clone()
+                .unwrap_or_else(|| held.item.registry_key.to_string());
+            if self.is_on_cooldown(&group).await {
+                return;
+            }
+        }
+
+        if held.get_data_component::<ConsumableImpl>().is_some()
+            || held.get_data_component::<BlocksAttacksImpl>().is_some()
+        {
+            if let Some(food) = held.get_data_component::<FoodImpl>() {
+                if can_start_food_use(
+                    self.abilities.lock().await.invulnerable,
+                    food.can_always_eat,
+                    self.hunger_manager.level.load(),
+                ) {
+                    self.living_entity
+                        .set_active_hand(hand, held.clone(), held.get_max_use_time())
+                        .await;
+                }
+            } else {
+                self.living_entity
+                    .set_active_hand(hand, held.clone(), held.get_max_use_time())
+                    .await;
+            }
+        }
+
+        if let Some(equippable) = held.get_data_component::<EquippableImpl>() {
+            if inventory
+                .is_already_equipped(item_in_hand, equippable.slot)
+                .await
+            {
+                return;
+            }
+
+            self.enqueue_equipment_change(equippable.slot, &held).await;
+
+            let binding = {
+                let mut equipment = inventory.entity_equipment.lock().await;
+                equipment.get_or_insert(equippable.slot)
+            };
+            let mut equip_item = binding.lock().await;
+            if equip_item.is_empty() {
+                *equip_item = held.clone();
+                held.decrement_unless_creative(self.gamemode.load(), 1);
+            } else {
+                let binding = held.clone();
+                *held = equip_item.clone();
+                *equip_item = binding;
+            }
+        }
     }
 
     /// Sends Geyser's ordered player inventory bootstrap: main, armor,

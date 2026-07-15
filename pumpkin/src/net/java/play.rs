@@ -23,7 +23,6 @@ use crate::net::PlayerConfig;
 use crate::net::java::JavaClient;
 use crate::plugin::block::block_damage::BlockDamageEvent;
 use crate::plugin::player::changed_main_hand::PlayerChangedMainHandEvent;
-use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use crate::plugin::player::item_held::PlayerItemHeldEvent;
 use crate::plugin::player::player_chat::PlayerChatEvent;
 use crate::plugin::player::player_command_send::PlayerCommandSendEvent;
@@ -41,9 +40,7 @@ use crate::plugin::player::player_toggle_sprint_event::PlayerToggleSprintEvent;
 use crate::server::{Server, seasonal_events};
 use crate::world::{World, chunker};
 use pumpkin_data::block_properties::{BlockProperties, CommandBlockLikeProperties};
-use pumpkin_data::data_component_impl::{
-    BlocksAttacksImpl, ConsumableImpl, EquipmentSlot, EquippableImpl, FoodImpl,
-};
+use pumpkin_data::data_component_impl::EquipmentSlot;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
@@ -2417,181 +2414,14 @@ impl JavaClient {
         if !player.has_client_loaded() {
             return;
         }
-        player.update_last_action_time();
-
-        let inventory = player.inventory();
         let Ok(hand) = Hand::try_from(use_item.hand.0) else {
             self.kick(TextComponent::text("InvalidHand")).await;
             return;
         };
         self.update_sequence(player, use_item.sequence.0);
-
-        let item_in_hand = if hand == Hand::Left {
-            inventory.held_item()
-        } else {
-            inventory.off_hand_item().await
-        };
-
-        let (item_id, _item) = {
-            let guard = item_in_hand.lock().await;
-            (guard.item.id, guard.item)
-        };
         player
-            .increment_stat(StatisticCategory::Used, item_id as i32, 1)
+            .use_item_in_hand(hand, use_item.pitch, use_item.yaw, server)
             .await;
-
-        let hit_result = player
-            .world()
-            .raycast(
-                player.eye_position(),
-                player.eye_position().add(
-                    &(Vector3::rotation_vector(f64::from(use_item.pitch), f64::from(use_item.yaw))
-                        * 4.5),
-                ),
-                async |pos, world| {
-                    let block = world.get_block(pos);
-                    block != &Block::AIR && block != &Block::WATER && block != &Block::LAVA
-                },
-            )
-            .await;
-
-        let event = if let Some((hit_pos, _hit_dir)) = hit_result {
-            PlayerInteractEvent::new(
-                player,
-                InteractAction::RightClickBlock,
-                player.world().get_block(&hit_pos),
-                Some(hit_pos),
-                hand,
-            )
-        } else {
-            PlayerInteractEvent::new(
-                player,
-                InteractAction::RightClickAir,
-                &Block::AIR,
-                None,
-                hand,
-            )
-        };
-        self.prepare_hand_item_for_use(player, hand, &item_in_hand)
-            .await;
-
-        let (item_for_use, stack_for_use) = {
-            let held = item_in_hand.lock().await;
-            (held.item, held.clone())
-        };
-
-        if !self
-            .should_continue_use_after_fish_event(server, player, hand, item_for_use)
-            .await
-        {
-            return;
-        }
-
-        send_cancellable! {{
-            server;
-            event;
-            'after: {
-                server.item_registry.on_use(&stack_for_use, player).await;
-            }
-        }}
-    }
-
-    async fn prepare_hand_item_for_use(
-        &self,
-        player: &Arc<Player>,
-        hand: Hand,
-        item_in_hand: &Arc<Mutex<ItemStack>>,
-    ) {
-        let inventory = player.inventory();
-        let mut held = item_in_hand.lock().await;
-
-        if let Some(cooldown) = held.get_use_cooldown() {
-            let group = cooldown
-                .cooldown_group
-                .clone()
-                .unwrap_or_else(|| held.item.registry_key.to_string());
-            if player.is_on_cooldown(&group).await {
-                return;
-            }
-        }
-
-        if held.get_data_component::<ConsumableImpl>().is_some()
-            || held.get_data_component::<BlocksAttacksImpl>().is_some()
-        {
-            // If its food we want to make sure we can actually consume it
-            if let Some(food) = held.get_data_component::<FoodImpl>() {
-                if player.abilities.lock().await.invulnerable
-                    || food.can_always_eat
-                    || player.hunger_manager.level.load() < 20
-                {
-                    player
-                        .living_entity
-                        .set_active_hand(hand, held.clone(), held.get_max_use_time())
-                        .await;
-                }
-            } else {
-                player
-                    .living_entity
-                    .set_active_hand(hand, held.clone(), held.get_max_use_time())
-                    .await;
-            }
-        }
-        if let Some(equippable) = held.get_data_component::<EquippableImpl>() {
-            // Skip if the item is already in the target equipment slot.
-            // This prevents a self-deadlock: `held` already locks the same
-            // Mutex<ItemStack> that `get_or_insert` would return, and
-            // Tokio's Mutex is not reentrant.
-            if inventory
-                .is_already_equipped(item_in_hand, equippable.slot)
-                .await
-            {
-                return;
-            }
-
-            // If it can be equipped we want to make sure we can actually equip it
-            player
-                .enqueue_equipment_change(equippable.slot, &held)
-                .await;
-
-            let binding = {
-                let mut equipment = inventory.entity_equipment.lock().await;
-                equipment.get_or_insert(equippable.slot)
-            };
-            let mut equip_item = binding.lock().await;
-            if equip_item.is_empty() {
-                *equip_item = held.clone();
-                held.decrement_unless_creative(player.gamemode.load(), 1);
-            } else {
-                let binding = held.clone();
-                *held = equip_item.clone();
-                *equip_item = binding;
-            }
-        }
-    }
-
-    async fn should_continue_use_after_fish_event(
-        &self,
-        server: &Server,
-        player: &Arc<Player>,
-        hand: Hand,
-        item_for_use: &Item,
-    ) -> bool {
-        if item_for_use.id != Item::FISHING_ROD.id {
-            return true;
-        }
-
-        // TODO: Apply fishing rod durability on retrieval based on catch type.
-        let fish_event = PlayerFishEvent::new(
-            player.clone(),
-            None,
-            uuid::Uuid::nil(),
-            String::new(),
-            PlayerFishState::Fishing,
-            hand,
-            0,
-        );
-        let fish_event = server.plugin_manager.fire(fish_event).await;
-        !fish_event.cancelled
     }
 
     pub async fn handle_set_held_item(&self, player: &Player, held: SSetHeldItem) {

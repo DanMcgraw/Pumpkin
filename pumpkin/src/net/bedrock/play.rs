@@ -76,6 +76,16 @@ const fn should_complete_bedrock_respawn(pending: bool, dead: bool) -> bool {
     pending && !dead
 }
 
+const fn should_process_bedrock_fall(
+    position_changed: bool,
+    was_on_ground: bool,
+    on_ground: bool,
+    flying: bool,
+    alive: bool,
+) -> bool {
+    (position_changed || was_on_ground != on_ground) && !flying && alive
+}
+
 fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
     if desc.id.0 == 0 || desc.stack_size == 0 {
         ItemStack::EMPTY.clone()
@@ -98,6 +108,12 @@ fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
             |item| ItemStack::new(desc.stack_size as u8, item),
         )
     }
+}
+
+fn client_stack_matches_authoritative(client: &ItemStack, authoritative: &ItemStack) -> bool {
+    (client.is_empty() && authoritative.is_empty())
+        || (client.item.id == authoritative.item.id
+            && client.item_count == authoritative.item_count)
 }
 
 const fn map_bedrock_slot_to_screen_handler(window_id: i32, slot: u32) -> Option<usize> {
@@ -234,9 +250,9 @@ impl BedrockClient {
         let entity = player.get_entity();
         let on_ground =
             packet.input_data.get(InputData::VerticalCollision as usize) && packet.delta.y <= 0.0;
-        entity
+        let was_on_ground = entity
             .on_ground
-            .store(on_ground, std::sync::atomic::Ordering::Relaxed);
+            .swap(on_ground, std::sync::atomic::Ordering::Relaxed);
 
         // Bedrock reports the local player's eye position in PlayerAuthInput,
         // while Pumpkin stores entity positions at their feet (as Java does).
@@ -366,6 +382,25 @@ impl BedrockClient {
             }
         }
 
+        if should_process_bedrock_fall(
+            pos_changed,
+            was_on_ground,
+            on_ground,
+            player.abilities.lock().await.flying,
+            player.living_entity.health.load() > 0.0
+                && !player.living_entity.dead.load(Ordering::Relaxed),
+        ) {
+            player
+                .living_entity
+                .fall(
+                    player.clone(),
+                    new_pos.y - old_pos.y,
+                    on_ground,
+                    player.gamemode.load() == GameMode::Creative,
+                )
+                .await;
+        }
+
         let input_data = packet.input_data;
 
         if input_data.get(InputData::StartSprinting as usize) {
@@ -390,6 +425,7 @@ impl BedrockClient {
                         {
                             player.abilities.lock().await.flying = true;
                         };
+                        player.living_entity.fall_distance.store(0.0);
                         player.send_abilities_update().await;
                     }
                     'cancelled: {
@@ -737,26 +773,37 @@ impl BedrockClient {
                     return;
                 }
 
+                let client_stack = descriptor_to_stack(&data.item_in_hand);
+                let held_item = player.inventory.held_item();
+                let server_stack = held_item.lock().await;
+                if !client_stack_matches_authoritative(&client_stack, &server_stack) {
+                    warn!(
+                        client_item = client_stack.item.id,
+                        client_count = client_stack.item_count,
+                        server_item = server_stack.item.id,
+                        server_count = server_stack.item_count,
+                        "Rejected Bedrock use-item transaction with a stale or invalid held item"
+                    );
+                    drop(server_stack);
+                    player.sync_bedrock_main_inventory().await;
+                    return;
+                }
+                drop(server_stack);
+
+                if data.action_type.0 == 1 {
+                    player
+                        .use_item_in_hand(
+                            pumpkin_util::Hand::Left,
+                            player.get_entity().pitch.load(),
+                            player.get_entity().yaw.load(),
+                            &server,
+                        )
+                        .await;
+                    return;
+                }
+
                 if data.action_type.0 == 0 {
                     // Click block
-                    let client_stack = descriptor_to_stack(&data.item_in_hand);
-
-                    let held_item = player.inventory.held_item();
-                    let server_stack = held_item.lock().await;
-                    if !server_stack.are_equal(&client_stack) {
-                        warn!(
-                            client_item = client_stack.item.id,
-                            client_count = client_stack.item_count,
-                            server_item = server_stack.item.id,
-                            server_count = server_stack.item_count,
-                            "Rejected Bedrock use-item transaction with a stale or invalid held item"
-                        );
-                        drop(server_stack);
-                        player.sync_bedrock_main_inventory().await;
-                        return;
-                    }
-                    drop(server_stack);
-
                     let result = server
                         .block_registry
                         .use_with_item(
@@ -2264,8 +2311,9 @@ mod inventory_stack_response_tests {
     };
 
     use super::{
-        bedrock_crafting_input_slot_id, descriptor_to_stack, record_update,
-        should_begin_bedrock_respawn, should_complete_bedrock_respawn,
+        bedrock_crafting_input_slot_id, client_stack_matches_authoritative, descriptor_to_stack,
+        record_update, should_begin_bedrock_respawn, should_complete_bedrock_respawn,
+        should_process_bedrock_fall,
     };
 
     use pumpkin_protocol::{
@@ -2285,6 +2333,33 @@ mod inventory_stack_response_tests {
         let stack = descriptor_to_stack(&descriptor);
         assert_eq!(stack.item.id, Item::APPLE.id);
         assert_eq!(stack.item_count, 64);
+    }
+
+    #[test]
+    fn held_item_validation_checks_identity_and_count() {
+        let authoritative = ItemStack::new(4, &Item::APPLE);
+        assert!(client_stack_matches_authoritative(
+            &ItemStack::new(4, &Item::APPLE),
+            &authoritative
+        ));
+        assert!(!client_stack_matches_authoritative(
+            &ItemStack::new(3, &Item::APPLE),
+            &authoritative
+        ));
+        assert!(!client_stack_matches_authoritative(
+            &ItemStack::new(4, &Item::STONE),
+            &authoritative
+        ));
+    }
+
+    #[test]
+    fn bedrock_fall_processing_includes_landing_without_position_delta() {
+        assert!(should_process_bedrock_fall(false, false, true, false, true));
+        assert!(should_process_bedrock_fall(true, false, false, false, true));
+        assert!(!should_process_bedrock_fall(true, false, false, true, true));
+        assert!(!should_process_bedrock_fall(
+            true, false, false, false, false
+        ));
     }
 
     #[test]

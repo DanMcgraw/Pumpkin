@@ -167,6 +167,14 @@ type FlowingFluidProperties = pumpkin_data::fluid::FlowingWaterLikeFluidProperti
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
+fn item_player_collision_box(bounding_box: BoundingBox) -> BoundingBox {
+    bounding_box.expand(0.5, 0.25, 0.5)
+}
+
+const fn should_drop_block_items(event_allows_drops: bool, gamerule_allows_drops: bool) -> bool {
+    event_allows_drops && gamerule_allows_drops
+}
+
 impl PumpkinError for GetBlockError {
     fn is_kick(&self) -> bool {
         false
@@ -1043,7 +1051,16 @@ impl World {
 
                     let entity_inner = e_clone.get_entity();
                     let entity_pos = entity_inner.pos.load();
-                    let entity_bb = entity_inner.bounding_box.load();
+                    let entity_bb = if e_clone.clone().get_item_entity().is_some() {
+                        // Item pickup is intentionally more forgiving than a
+                        // literal entity-box intersection. This matches the
+                        // player's practical pickup reach and prevents grounded
+                        // death drops from requiring the supporting block to be
+                        // removed before they can be collected.
+                        item_player_collision_box(entity_inner.bounding_box.load())
+                    } else {
+                        entity_inner.bounding_box.load()
+                    };
 
                     for (player, player_pos, player_bb) in p_cache.iter() {
                         if (player_pos.x - entity_pos.x).abs() < 5.0
@@ -4966,7 +4983,7 @@ impl World {
 
         if !event.cancelled {
             let mut flags = flags;
-            if event.drop {
+            if should_drop_block_items(event.drop, self.level_info.load().game_rules.block_drops) {
                 flags.remove(BlockFlags::SKIP_DROPS);
             } else {
                 flags.insert(BlockFlags::SKIP_DROPS);
@@ -6133,6 +6150,34 @@ fn read_entity_uuid(nbt: &NbtCompound) -> Option<Uuid> {
         | ((*c as u32 as u128) << 32)
         | (*d as u32 as u128);
     Some(Uuid::from_u128(uuid))
+}
+
+#[cfg(test)]
+mod cross_edition_gameplay_tests {
+    use super::{item_player_collision_box, should_drop_block_items};
+    use pumpkin_util::math::{boundingbox::BoundingBox, vector3::Vector3};
+
+    #[test]
+    fn block_drops_require_event_and_gamerule_permission() {
+        assert!(should_drop_block_items(true, true));
+        assert!(!should_drop_block_items(true, false));
+        assert!(!should_drop_block_items(false, true));
+    }
+
+    #[test]
+    fn grounded_items_have_a_practical_player_pickup_volume() {
+        let item = BoundingBox {
+            min: Vector3::new(-0.125, 63.7, -0.125),
+            max: Vector3::new(0.125, 63.95, 0.125),
+        };
+        let player = BoundingBox {
+            min: Vector3::new(-0.3, 64.0, -0.3),
+            max: Vector3::new(0.3, 65.8, 0.3),
+        };
+
+        assert!(!item.intersects(&player));
+        assert!(item_player_collision_box(item).intersects(&player));
+    }
 }
 
 #[cfg(test)]
