@@ -3994,6 +3994,7 @@ impl Player {
             .await;
         self.send_abilities_update().await;
         self.send_initial_bedrock_inventory_state().await;
+        self.world().send_bedrock_weather_to(client).await;
         self.world()
             .scoreboard
             .lock()

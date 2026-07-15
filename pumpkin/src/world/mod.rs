@@ -1209,7 +1209,7 @@ impl World {
     async fn tick_environment(self: &Arc<Self>) {
         let mut notify_level = false;
         let mut save_block_entities_before_notify = false;
-        let (world_age, is_night, time_of_day) = {
+        let (world_age, is_night, time_of_day, advance_weather) = {
             let mut level_time = self.level_time.lock().await;
             let (advance_time, advance_weather) = {
                 let lock = self.level_info.load();
@@ -1250,6 +1250,7 @@ impl World {
                 level_time.world_age,
                 level_time.is_night(),
                 level_time.time_of_day,
+                advance_weather,
             )
         };
 
@@ -1261,6 +1262,7 @@ impl World {
         }
 
         let mut weather = self.weather.lock().await;
+        weather.weather_cycle_enabled = advance_weather;
         weather.tick_weather(self);
 
         if self.should_skip_night() && is_night {
@@ -1835,6 +1837,22 @@ impl World {
         }
     }
 
+    pub async fn send_bedrock_weather_to(&self, client: &crate::net::bedrock::BedrockClient) {
+        let (rain_level, thunder_level) = {
+            let weather = self.weather.lock().await;
+            (weather.rain_level, weather.thunder_level)
+        };
+        client
+            .send_game_packet(&Weather::bedrock_rain_packet(rain_level))
+            .await;
+        client
+            .send_game_packet(&Weather::bedrock_thunder_packet(
+                rain_level,
+                thunder_level,
+            ))
+            .await;
+    }
+
     /// Gets the y position of the first non air block from the top down
     pub fn get_top_block(&self, position: Vector2<i32>) -> i32 {
         let chunk_pos = Vector2::new(position.x >> 4, position.y >> 4);
@@ -2039,6 +2057,7 @@ impl World {
                 },
             })
             .await;
+        self.send_bedrock_weather_to(client).await;
 
         client
             .send_game_packet(&CItemRegistry {
@@ -5960,6 +5979,16 @@ impl World {
             if is_within_view_distance(chunk_pos, center, view_distance)
                 && let ClientPlatform::Bedrock(client) = player.client.as_ref()
             {
+                client.try_enqueue_packet(packet);
+            }
+        }
+    }
+
+    /// Broadcasts a Bedrock packet to every Bedrock player in this world.
+    pub fn broadcast_packet_bedrock_sync<B: BClientPacket>(&self, packet: &B) {
+        let players = self.players.load();
+        for player in players.iter() {
+            if let ClientPlatform::Bedrock(client) = player.client.as_ref() {
                 client.try_enqueue_packet(packet);
             }
         }

@@ -1,4 +1,5 @@
 use super::World;
+use pumpkin_protocol::bedrock::client::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::java::client::play::{CGameEvent, GameEvent};
 use rand::RngExt;
 
@@ -69,18 +70,21 @@ impl Weather {
         self.thundering = thundering;
 
         if was_raining != raining {
-            if was_raining {
-                world.broadcast_packet_all(&CGameEvent::new(GameEvent::EndRaining, 0.0));
+            let java_packet = if was_raining {
+                CGameEvent::new(GameEvent::EndRaining, 0.0)
             } else {
-                world.broadcast_packet_all(&CGameEvent::new(GameEvent::BeginRaining, 0.0));
-            }
+                CGameEvent::new(GameEvent::BeginRaining, 0.0)
+            };
+            world.broadcast_packet_except_editioned_sync(
+                &[],
+                &java_packet,
+                &Self::bedrock_rain_packet(self.rain_level),
+            );
         }
     }
 
     pub fn tick_weather(&mut self, world: &World) {
-        if !self.weather_cycle_enabled {
-            self.advance_weather_cycle();
-        }
+        self.advance_weather_cycle_if_enabled();
 
         // Update visual transitions
         self.old_rain_level = self.rain_level;
@@ -100,17 +104,58 @@ impl Weather {
 
         // Broadcast level changes if needed
         if (self.old_rain_level - self.rain_level).abs() > f32::EPSILON {
-            world.broadcast_packet_all(&CGameEvent::new(
-                GameEvent::RainLevelChange,
-                self.rain_level,
-            ));
+            world.broadcast_packet_except_editioned_sync(
+                &[],
+                &CGameEvent::new(GameEvent::RainLevelChange, self.rain_level),
+                &Self::bedrock_rain_packet(self.rain_level),
+            );
+
+            let rain_started = self.old_rain_level <= 0.0 && self.rain_level > 0.0;
+            let rain_stopped = self.old_rain_level > 0.0 && self.rain_level <= 0.0;
+            let thunder_level_unchanged =
+                (self.old_thunder_level - self.thunder_level).abs() <= f32::EPSILON;
+            if thunder_level_unchanged
+                && self.thunder_level > 0.0
+                && (rain_started || rain_stopped)
+            {
+                world.broadcast_packet_bedrock_sync(&Self::bedrock_thunder_packet(
+                    self.rain_level,
+                    self.thunder_level,
+                ));
+            }
         }
 
         if (self.old_thunder_level - self.thunder_level).abs() > f32::EPSILON {
-            world.broadcast_packet_all(&CGameEvent::new(
-                GameEvent::ThunderLevelChange,
-                self.thunder_level,
-            ));
+            world.broadcast_packet_except_editioned_sync(
+                &[],
+                &CGameEvent::new(GameEvent::ThunderLevelChange, self.thunder_level),
+                &Self::bedrock_thunder_packet(self.rain_level, self.thunder_level),
+            );
+        }
+    }
+
+    fn advance_weather_cycle_if_enabled(&mut self) {
+        if self.weather_cycle_enabled {
+            self.advance_weather_cycle();
+        }
+    }
+
+    #[must_use]
+    pub fn bedrock_rain_packet(rain_level: f32) -> CLevelEvent {
+        let event = if rain_level > 0.0 {
+            LevelEvent::StartRaining
+        } else {
+            LevelEvent::StopRaining
+        };
+        CLevelEvent::weather(event, rain_level)
+    }
+
+    #[must_use]
+    pub fn bedrock_thunder_packet(rain_level: f32, thunder_level: f32) -> CLevelEvent {
+        if rain_level > 0.0 && thunder_level > 0.0 {
+            CLevelEvent::weather(LevelEvent::StartThunderstorm, thunder_level)
+        } else {
+            CLevelEvent::weather(LevelEvent::StopThunderstorm, 0.0)
         }
     }
 
@@ -169,5 +214,37 @@ impl Clone for Weather {
             old_thunder_level: self.old_thunder_level,
             weather_cycle_enabled: self.weather_cycle_enabled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Weather;
+
+    #[test]
+    fn weather_cycle_only_advances_when_enabled() {
+        let mut weather = Weather::new();
+        weather.rain_time = 1;
+        weather.thunder_time = 2;
+        weather.weather_cycle_enabled = false;
+        weather.advance_weather_cycle_if_enabled();
+        assert_eq!(weather.rain_time, 1);
+        assert!(!weather.raining);
+
+        weather.weather_cycle_enabled = true;
+        weather.advance_weather_cycle_if_enabled();
+        assert_eq!(weather.rain_time, 0);
+        assert!(weather.raining);
+    }
+
+    #[test]
+    fn bedrock_thunder_requires_active_rain() {
+        let stopped = Weather::bedrock_thunder_packet(0.0, 1.0);
+        assert_eq!(stopped.event_id.0, 3004);
+        assert_eq!(stopped.data.0, 0);
+
+        let started = Weather::bedrock_thunder_packet(1.0, 0.5);
+        assert_eq!(started.event_id.0, 3002);
+        assert_eq!(started.data.0, 32_767);
     }
 }
