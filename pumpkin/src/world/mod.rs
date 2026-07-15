@@ -2603,6 +2603,11 @@ impl World {
 
             client_suggestions::send_c_commands_packet(player, server, &command_dispatcher).await;
         };
+        self.scoreboard
+            .lock()
+            .await
+            .send_java_snapshot_to(player)
+            .await;
 
         // Start waiting for level chunks before the initial center chunk is sent.
         client

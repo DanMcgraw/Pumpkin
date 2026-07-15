@@ -27,6 +27,8 @@ pub enum OwnedArg {
     Particle(pumpkin_data::particle::Particle),
     Msg(String),
     TextComponent(TextComponent),
+    ScoreHolders(Vec<String>),
+    Style(pumpkin_util::text::style::Style),
     Time(i32),
     Num(
         Result<
@@ -70,6 +72,8 @@ impl OwnedArg {
             Arg::Particle(p) => Self::Particle(*p),
             Arg::Msg(m) => Self::Msg(m.clone()),
             Arg::TextComponent(t) => Self::TextComponent(t.clone()),
+            Arg::ScoreHolders(holders) => Self::ScoreHolders(holders.clone()),
+            Arg::Style(style) => Self::Style(style.clone()),
             Arg::Time(t) => Self::Time(*t),
             Arg::Num(n) => Self::Num(*n),
             Arg::Bool(b) => Self::Bool(*b),

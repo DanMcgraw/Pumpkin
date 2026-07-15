@@ -49,6 +49,8 @@ pub mod position_block;
 pub mod resource;
 pub mod resource_location;
 pub mod rotation;
+pub mod score_holder;
+pub mod scoreboard;
 pub mod simple;
 pub mod sound;
 pub mod sound_category;
@@ -130,6 +132,8 @@ pub enum Arg<'a> {
     Particle(Particle),
     Msg(String),
     TextComponent(TextComponent),
+    ScoreHolders(Vec<String>),
+    Style(pumpkin_util::text::style::Style),
     Time(i32),
     Num(Result<Number, NotInBounds>),
     Bool(bool),

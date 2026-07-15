@@ -40,6 +40,7 @@ mod plugins;
 mod pumpkin;
 mod rotate;
 mod say;
+mod scoreboard;
 mod seed;
 mod setblock;
 mod setidletimeout;
@@ -106,6 +107,10 @@ pub async fn default_dispatcher(
     dispatcher.register(damage::init_command_tree(), "minecraft:command.damage");
     dispatcher.register(bossbar::init_command_tree(), "minecraft:command.bossbar");
     dispatcher.register(say::init_command_tree(), "minecraft:command.say");
+    dispatcher.register(
+        scoreboard::init_command_tree(),
+        "minecraft:command.scoreboard",
+    );
     dispatcher.register(gamemode::init_command_tree(), "minecraft:command.gamemode");
     dispatcher.register(gamerule::init_command_tree(), "minecraft:command.gamerule");
     dispatcher.register(
@@ -208,6 +213,13 @@ fn register_level_0_permissions(registry: &mut PermissionRegistry) {
 #[expect(clippy::too_many_lines)]
 fn register_level_2_permissions(registry: &mut PermissionRegistry) {
     // Register permissions for commands with PermissionLvl::Two
+    registry
+        .register_permission(Permission::new(
+            "minecraft:command.scoreboard",
+            "Manages scoreboard objectives and player scores",
+            PermissionDefault::Op(PermissionLvl::Two),
+        ))
+        .expect("Permission already registered");
     registry
         .register_permission(Permission::new(
             "minecraft:command.worldborder",
