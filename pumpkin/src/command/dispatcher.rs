@@ -4,7 +4,7 @@ use pumpkin_util::text::TextComponent;
 use pumpkin_util::text::click::ClickEvent;
 use pumpkin_util::text::color::NamedColor;
 use rustc_hash::FxHashMap;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, trace, warn};
 
 use super::args::ConsumedArgs;
 use super::errors::command_syntax_error::{CommandSyntaxError, CommandSyntaxErrorContext};
@@ -510,8 +510,8 @@ impl CommandDispatcher {
                         executor.execute(src, server, &parsed_args).await?;
                         Ok(PathResult::Matched)
                     } else {
-                        debug!(
-                            "Error while parsing command: {raw_args:?} was not consumed, but should have been"
+                        trace!(
+                            "Command path rejected: {raw_args:?} remained after reaching an executor"
                         );
                         Ok(PathResult::Failed(path_failure(
                             raw_args,
@@ -533,7 +533,7 @@ impl CommandDispatcher {
                         )));
                     };
                     if raw_arg.value != string.as_str() {
-                        debug!("Error while parsing command: {raw_args:?}: expected {string}");
+                        trace!("Command path rejected: expected {string}, remaining={raw_args:?}");
                         return Ok(PathResult::Failed(path_failure(
                             raw_args,
                             total_args,
@@ -552,8 +552,8 @@ impl CommandDispatcher {
                             matched_any_node = true;
                         }
                         Ok(None) => {
-                            debug!(
-                                "Error while parsing command: {raw_args:?}: cannot parse argument {name}"
+                            trace!(
+                                "Command path rejected: cannot parse argument {name}, remaining={raw_args:?}"
                             );
                             return Ok(PathResult::Failed(path_failure(
                                 raw_args,
@@ -576,8 +576,8 @@ impl CommandDispatcher {
                 }
                 NodeType::Require { predicate, .. } => {
                     if !predicate(src) {
-                        debug!(
-                            "Error while parsing command: {raw_args:?} does not meet the requirement"
+                        trace!(
+                            "Command path rejected: requirement not met, remaining={raw_args:?}"
                         );
                         return Ok(PathResult::Failed(path_failure(
                             raw_args,
@@ -592,7 +592,7 @@ impl CommandDispatcher {
             }
         }
 
-        debug!("Error while parsing command: {raw_args:?} was not consumed, but should have been");
+        trace!("Command path rejected: no executor consumed remaining arguments {raw_args:?}");
         Ok(PathResult::Failed(path_failure(
             raw_args,
             total_args,
@@ -698,7 +698,7 @@ mod test {
     use tokio::sync::RwLock;
 
     use super::{
-        PathParsingFailure, render_syntax_error_messages, select_parse_error,
+        CommandDispatcher, PathParsingFailure, render_syntax_error_messages, select_parse_error,
         unknown_argument_syntax_error,
     };
     use crate::command::errors::error_types;
@@ -721,6 +721,19 @@ mod test {
             .fallback_dispatcher;
         let tree = CommandTree::new(["test"], "test_desc");
         dispatcher.register(tree, "minecraft:test");
+    }
+
+    #[test]
+    fn split_parts_preserves_quoted_scoreboard_display_name() {
+        let (command, args) =
+            CommandDispatcher::split_parts("scoreboard objectives add test dummy \"Test Score\"")
+                .expect("valid scoreboard command");
+
+        assert_eq!(command, "scoreboard");
+        assert_eq!(
+            args.iter().rev().map(|arg| arg.value).collect::<Vec<_>>(),
+            ["objectives", "add", "test", "dummy", "\"Test Score\""]
+        );
     }
 
     #[test]

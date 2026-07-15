@@ -65,3 +65,14 @@ fn parse_text_component(input: &str) -> Option<TextComponent> {
         .map_err(|e| debug!("Failed to parse text component: {e}"))
         .ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_text_component;
+
+    #[test]
+    fn parses_quoted_plain_text_component() {
+        let component = parse_text_component("\"Test Score\"").expect("valid text component");
+        assert_eq!(component.get_text(), "Test Score");
+    }
+}
