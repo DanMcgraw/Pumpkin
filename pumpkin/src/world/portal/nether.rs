@@ -8,7 +8,9 @@ use pumpkin_data::{
     tag::Taggable,
 };
 use pumpkin_protocol::{bedrock::client::CUpdateBlock, java::client::play::CBlockUpdate};
-use pumpkin_util::math::{boundingbox::EntityDimensions, position::BlockPos, vector3::Vector3};
+use pumpkin_util::math::{
+    boundingbox::EntityDimensions, position::BlockPos, vector2::Vector2, vector3::Vector3,
+};
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 
 use crate::world::World;
@@ -516,7 +518,21 @@ impl NetherPortal {
                 continue;
             }
 
-            if world.get_block(&pos) != &Block::NETHER_PORTAL {
+            // Load the 3x3 chunks around pos to ensure all portal checks can run synchronously
+            let chunk_x = pos.0.x >> 4;
+            let chunk_z = pos.0.z >> 4;
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    let chunk_coordinate = Vector2::new(chunk_x + dx, chunk_z + dz);
+                    let _ = world
+                        .level
+                        .get_or_fetch_chunk(chunk_coordinate, |_| ())
+                        .await;
+                }
+            }
+
+            let state_id = world.get_block_state_id_async(&pos).await;
+            if Block::from_state_id(state_id) != &Block::NETHER_PORTAL {
                 continue;
             }
 
