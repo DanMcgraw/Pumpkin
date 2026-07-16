@@ -3306,6 +3306,7 @@ impl Player {
                 self.sync_bedrock_input_position();
                 let entity = &self.living_entity.entity;
                 entity.set_rotation(yaw, pitch);
+                crate::world::chunker::update_position(self).await;
                 match self.client.as_ref() {
                     ClientPlatform::Java(client) => {
                         let teleport_id = self
