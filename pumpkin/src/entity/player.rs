@@ -2568,9 +2568,11 @@ impl Player {
                     // Await serialization/enqueue so PlayerSpawn cannot overtake
                     // the fifth initial LevelChunk in the outgoing queue.
                     bedrock_client.send_chunks(&chunk_of_chunks).await;
-                    if !self.bedrock_spawned.load(Ordering::Relaxed)
-                        && total_sent_chunks > 4
-                    {
+                    if crate::net::bedrock::state::should_send_initial_player_spawn(
+                        bedrock_client.session_state(),
+                        self.bedrock_spawned.load(Ordering::Relaxed),
+                        total_sent_chunks,
+                    ) {
                         bedrock_client
                             .enqueue_packet(&CPlayStatus::PlayerSpawn)
                             .await;
@@ -3227,13 +3229,35 @@ impl Player {
                     ClientPlatform::Bedrock(bedrock) => {
                         let bedrock_dimension =
                             crate::net::bedrock::state::dimension_id(&new_world.dimension);
-                        let pos_f32 = Vector3::new(position.x as f32, position.y as f32, position.z as f32);
+                        // Bedrock dimension changes use a temporary high position and
+                        // complete at the real destination after the client acknowledges.
+                        let transition_position = Vector3::new(0.0, f32::from(i16::MAX), 0.0);
                         let change_dim_packet = pumpkin_protocol::bedrock::client::CChangeDimension::new(
                             bedrock_dimension,
-                            pos_f32,
-                            false,
+                            transition_position,
+                            true,
                         );
                         bedrock.enqueue_packet(&change_dim_packet).await;
+                        bedrock
+                            .enqueue_packet(
+                                &pumpkin_protocol::bedrock::client::CPlayerAction::dimension_change_success(
+                                    self.entity_id() as u64,
+                                ),
+                            )
+                            .await;
+                        self.bedrock_spawned.store(false, Ordering::Relaxed);
+
+                        // Bedrock 1.19.50+ needs initial sections before it sends
+                        // DimensionChangeAck. Empty chunks unblock that handshake;
+                        // the normal chunk manager replaces them immediately after.
+                        let center = BlockPos::floored_v(position).chunk_position();
+                        let mut transition_chunks = Vec::with_capacity(49);
+                        for x in -3..=3 {
+                            for z in -3..=3 {
+                                transition_chunks.push(center.add_raw(x, z));
+                            }
+                        }
+                        bedrock.send_empty_chunks(&transition_chunks).await;
                     }
                 }
 

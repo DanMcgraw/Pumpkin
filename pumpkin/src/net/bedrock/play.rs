@@ -519,7 +519,7 @@ impl BedrockClient {
             player,
             server,
             SPlayerAction {
-                runtime_id: VarInt(0), // Unused
+                runtime_id: VarULong(0), // Unused
                 action,
                 block_pos,
                 result_pos: BlockPos::ZERO,
@@ -764,7 +764,7 @@ impl BedrockClient {
                         player,
                         &server,
                         SPlayerAction {
-                            runtime_id: VarInt(0),
+                            runtime_id: VarULong(0),
                             action: PlayerAction::PredictDestroyBlock,
                             block_pos: data.block_position,
                             result_pos: BlockPos::ZERO,
@@ -1166,6 +1166,24 @@ impl BedrockClient {
             }
             player.set_client_loaded(true);
             player.reset_bedrock_input_state();
+            self.send_game_packet(&pumpkin_protocol::bedrock::client::CPlayStatus::PlayerSpawn)
+                .await;
+            player.bedrock_spawned.store(true, Ordering::Relaxed);
+            let entity = player.get_entity();
+            self.send_game_packet(&pumpkin_protocol::bedrock::client::CMovePlayer::new(
+                VarULong(entity.entity_id as u64),
+                player.bedrock_network_position(),
+                entity.pitch.load(),
+                entity.yaw.load(),
+                entity.yaw.load(),
+                pumpkin_protocol::bedrock::client::CMovePlayer::MODE_TELEPORT,
+                entity.on_ground.load(Ordering::Relaxed),
+                VarULong(0),
+                0,
+                0,
+                VarULong(0),
+            ))
+            .await;
             player.send_bedrock_recovery_state().await;
             return;
         }

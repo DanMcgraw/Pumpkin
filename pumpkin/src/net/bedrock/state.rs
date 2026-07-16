@@ -92,6 +92,17 @@ pub const fn recovery_replay_pending(
         && replayed_epoch < recovery_epoch
 }
 
+/// Initial join is the only lifecycle that emits PlayerSpawn from chunk
+/// progress. Dimension changes complete it explicitly after the client ack.
+#[must_use]
+pub const fn should_send_initial_player_spawn(
+    state: BedrockSessionState,
+    spawned: bool,
+    sent_chunks: usize,
+) -> bool {
+    matches!(state, BedrockSessionState::Initializing) && !spawned && sent_chunks > 4
+}
+
 /// Maps Pumpkin's Java-style dimension registry entries to Bedrock's fixed
 /// dimension IDs.
 #[must_use]
@@ -183,7 +194,7 @@ mod tests {
 
     use super::{
         BedrockPacketGroup, BedrockSessionState, dimension_id, game_rule, game_rules,
-        recovery_replay_pending,
+        recovery_replay_pending, should_send_initial_player_spawn,
     };
 
     #[test]
@@ -195,6 +206,25 @@ mod tests {
         assert!(BedrockSessionState::ChangingDimension.allows(BedrockPacketGroup::WorldTransition));
         assert!(BedrockSessionState::Dead.allows(BedrockPacketGroup::Death));
         assert!(!BedrockSessionState::Disconnected.allows(BedrockPacketGroup::Gameplay));
+    }
+
+    #[test]
+    fn chunk_progress_only_completes_initial_spawn() {
+        assert!(should_send_initial_player_spawn(
+            BedrockSessionState::Initializing,
+            false,
+            5,
+        ));
+        assert!(!should_send_initial_player_spawn(
+            BedrockSessionState::ChangingDimension,
+            false,
+            5,
+        ));
+        assert!(!should_send_initial_player_spawn(
+            BedrockSessionState::Initializing,
+            true,
+            5,
+        ));
     }
 
     #[test]

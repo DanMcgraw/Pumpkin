@@ -3,12 +3,15 @@ use std::io::{Error, Read};
 use pumpkin_macros::packet;
 use pumpkin_util::math::position::BlockPos;
 
-use crate::{codec::var_int::VarInt, serial::PacketRead};
+use crate::{
+    codec::{var_int::VarInt, var_ulong::VarULong},
+    serial::PacketRead,
+};
 
 #[derive(Debug, PacketRead)]
 #[packet(36)]
 pub struct SPlayerAction {
-    pub runtime_id: VarInt,
+    pub runtime_id: VarULong,
     pub action: Action,
     pub block_pos: BlockPos,
     pub result_pos: BlockPos,
@@ -110,5 +113,33 @@ impl PacketRead for Action {
         let action = VarInt::read(reader)?;
 
         Self::try_from(action.0).map_err(Error::other)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use pumpkin_util::math::position::BlockPos;
+
+    use super::{Action, SPlayerAction};
+    use crate::serial::PacketRead;
+
+    #[test]
+    fn reads_unsigned_runtime_id_before_dimension_ack() {
+        let packet = SPlayerAction::read(&mut Cursor::new([
+            0xac, 0x02, // runtime ID 300
+            0x1c, // DimensionChangeAck 14, zig-zag encoded
+            0, 0, 0, // block position
+            0, 0, 0, // result position
+            0, // face
+        ]))
+        .unwrap();
+
+        assert_eq!(packet.runtime_id.0, 300);
+        assert!(matches!(packet.action, Action::DimensionChangeAck));
+        assert_eq!(packet.block_pos, BlockPos::ZERO);
+        assert_eq!(packet.result_pos, BlockPos::ZERO);
+        assert_eq!(packet.face.0, 0);
     }
 }

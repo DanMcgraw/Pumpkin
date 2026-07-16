@@ -7,6 +7,7 @@ use pumpkin_data::{
     tag,
     tag::Taggable,
 };
+use pumpkin_protocol::{bedrock::client::CUpdateBlock, java::client::play::CBlockUpdate};
 use pumpkin_util::math::{boundingbox::EntityDimensions, position::BlockPos, vector3::Vector3};
 use pumpkin_world::{chunk::ChunkHeightmapType, world::BlockFlags};
 
@@ -265,23 +266,39 @@ impl NetherPortal {
         let mut props = NetherPortalLikeProperties::default(&Block::NETHER_PORTAL);
         props.axis = self.axis;
         let state = props.to_state_id(&Block::NETHER_PORTAL);
-        let blocks = BlockPos::iterate(
+        let blocks: Vec<_> = BlockPos::iterate(
             self.lower_conor,
             self.lower_conor
                 .offset_dir(BlockDirection::Up.to_offset(), self.height as i32 - 1)
                 .offset_dir(self.negative_direction.to_offset(), self.width as i32 - 1),
-        );
+        )
+        .collect();
 
         let mut poi_storage = world.portal_poi.lock().await;
-        for pos in blocks {
+        for pos in &blocks {
             world
                 .set_block_state(
-                    &pos,
+                    pos,
                     state,
                     BlockFlags::NOTIFY_LISTENERS | BlockFlags::FORCE_STATE,
                 )
                 .await;
-            poi_storage.add_portal(pos);
+            poi_storage.add_portal(*pos);
+        }
+        drop(poi_storage);
+
+        // Ignition first places fire, which Bedrock predicts locally. Re-send
+        // the completed portal states after the whole frame is converted so a
+        // delayed fire update cannot remain visible on Bedrock clients.
+        let bedrock_state = BlockState::to_be_network_id(state);
+        for pos in blocks {
+            world
+                .broadcast_to_chunk_editioned(
+                    pos.chunk_position(),
+                    &CBlockUpdate::new(pos, i32::from(state.as_u16()).into()),
+                    &CUpdateBlock::new(pos, u32::from(bedrock_state)),
+                )
+                .await;
         }
     }
 
