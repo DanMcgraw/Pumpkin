@@ -594,12 +594,12 @@ impl NetherPortal {
             BlockDirection::South // Fixed: positive Z direction
         };
 
-        // Pre-load the 5x5 chunks centered around the target position
+        // Pre-load the 3x3 chunks centered around the target position (covering a 16-block radius)
         let center_chunk_x = target_pos.0.x >> 4;
         let center_chunk_z = target_pos.0.z >> 4;
-        let mut chunk_futures = Vec::with_capacity(25);
-        for dx in -2..=2 {
-            for dz in -2..=2 {
+        let mut chunk_futures = Vec::with_capacity(9);
+        for dx in -1..=1 {
+            for dz in -1..=1 {
                 let chunk_coordinate = Vector2::new(center_chunk_x + dx, center_chunk_z + dz);
                 chunk_futures.push(world.level.get_or_fetch_chunk(chunk_coordinate, |_| ()));
             }
@@ -609,8 +609,8 @@ impl NetherPortal {
         let mut ideal_pos: Option<(BlockPos, HorizontalAxis, f64)> = None;
         let mut acceptable_pos: Option<(BlockPos, HorizontalAxis, f64)> = None;
 
-        for offset_x in -32..=32 {
-            for offset_z in -32..=32 {
+        for offset_x in -16..=16 {
+            for offset_z in -16..=16 {
                 let check_x = target_pos.0.x + offset_x;
                 let check_z = target_pos.0.z + offset_z;
 
