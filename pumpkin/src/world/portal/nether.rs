@@ -594,6 +594,18 @@ impl NetherPortal {
             BlockDirection::South // Fixed: positive Z direction
         };
 
+        // Pre-load the 5x5 chunks centered around the target position
+        let center_chunk_x = target_pos.0.x >> 4;
+        let center_chunk_z = target_pos.0.z >> 4;
+        let mut chunk_futures = Vec::with_capacity(25);
+        for dx in -2..=2 {
+            for dz in -2..=2 {
+                let chunk_coordinate = Vector2::new(center_chunk_x + dx, center_chunk_z + dz);
+                chunk_futures.push(world.level.get_or_fetch_chunk(chunk_coordinate, |_| ()));
+            }
+        }
+        futures::future::join_all(chunk_futures).await;
+
         let mut ideal_pos: Option<(BlockPos, HorizontalAxis, f64)> = None;
         let mut acceptable_pos: Option<(BlockPos, HorizontalAxis, f64)> = None;
 
@@ -612,25 +624,23 @@ impl NetherPortal {
                     continue;
                 }
 
-                let heightmap_y = world
-                    .get_heightmap_height_async(
-                        ChunkHeightmapType::MotionBlocking,
-                        check_x,
-                        check_z,
-                    )
-                    .await;
+                let heightmap_y = world.get_heightmap_height(
+                    ChunkHeightmapType::MotionBlocking,
+                    check_x,
+                    check_z,
+                );
                 let start_y = heightmap_y.min(top_y_limit);
 
                 let mut y = start_y;
                 while y >= min_y {
                     let pos = BlockPos(Vector3::new(check_x, y, check_z));
-                    let state = world.get_block_state_async(&pos).await;
+                    let state = world.get_block_state(&pos);
 
                     if Self::is_valid_portal_air(state) {
                         let mut bottom_y = y;
                         while bottom_y > min_y {
                             let below = BlockPos(Vector3::new(check_x, bottom_y - 1, check_z));
-                            let below_state = world.get_block_state_async(&below).await;
+                            let below_state = world.get_block_state(&below);
                             if !Self::is_valid_portal_air(below_state) {
                                 break;
                             }
@@ -642,23 +652,18 @@ impl NetherPortal {
                             let floor_pos = BlockPos(Vector3::new(check_x, bottom_y, check_z));
 
                             for check_axis in [HorizontalAxis::X, HorizontalAxis::Z] {
-                                if Self::is_valid_portal_pos_async(world, floor_pos, check_axis, 0)
-                                    .await
-                                {
+                                if Self::is_valid_portal_pos(world, floor_pos, check_axis, 0) {
                                     let dist = f64::from(target_pos.0.squared_distance_to(
                                         floor_pos.0.x,
                                         floor_pos.0.y,
                                         floor_pos.0.z,
                                     ));
 
-                                    let is_ideal = Self::is_valid_portal_pos_async(
+                                    let is_ideal = Self::is_valid_portal_pos(
                                         world, floor_pos, check_axis, -1,
-                                    )
-                                    .await
-                                        && Self::is_valid_portal_pos_async(
-                                            world, floor_pos, check_axis, 1,
-                                        )
-                                        .await;
+                                    ) && Self::is_valid_portal_pos(
+                                        world, floor_pos, check_axis, 1,
+                                    );
 
                                     if is_ideal {
                                         if ideal_pos.is_none()
@@ -709,8 +714,8 @@ impl NetherPortal {
         state.replaceable() && !state.is_liquid()
     }
 
-    async fn is_valid_portal_pos_async(
-        world: &Arc<World>,
+    fn is_valid_portal_pos(
+        world: &World,
         floor_pos: BlockPos,
         axis: HorizontalAxis,
         perpendicular_offset: i32,
@@ -733,7 +738,7 @@ impl NetherPortal {
                     .offset_dir(perpendicular.to_offset(), perpendicular_offset)
                     .offset_dir(BlockDirection::Up.to_offset(), height);
 
-                let state = world.get_block_state_async(&pos).await;
+                let state = world.get_block_state(&pos);
 
                 if height < 0 {
                     if !state.is_solid_block() {
@@ -747,6 +752,7 @@ impl NetherPortal {
 
         true
     }
+
 
     pub async fn build_portal_frame(
         world: &Arc<World>,
