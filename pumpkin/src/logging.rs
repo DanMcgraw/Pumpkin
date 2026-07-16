@@ -10,9 +10,9 @@ use rustyline::validate::Validator;
 use rustyline::{Editor, Helper};
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use time::{Duration, OffsetDateTime};
 use tracing::Subscriber;
@@ -91,14 +91,14 @@ pub struct ReadlineLogWrapper {
 }
 
 struct GzipRollingLoggerData {
-    pub current_day_of_month: u8,
     pub last_rotate_time: time::OffsetDateTime,
-    pub file: BufWriter<File>,
+    pub file: Option<BufWriter<File>>,
     latest_filename: String,
 }
 
 pub struct GzipRollingLogger {
     log_level: LevelFilter,
+    log_dir: PathBuf,
     data: std::sync::Mutex<GzipRollingLoggerData>,
 }
 
@@ -107,10 +107,18 @@ impl GzipRollingLogger {
         log_level: LevelFilter,
         filename: String,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let now = time::OffsetDateTime::now_utc();
-        std::fs::create_dir_all(LOG_DIR)?;
+        Self::new_in_dir(log_level, filename, PathBuf::from(LOG_DIR))
+    }
 
-        let latest_path = PathBuf::from(LOG_DIR).join(&filename);
+    fn new_in_dir(
+        log_level: LevelFilter,
+        filename: String,
+        log_dir: PathBuf,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let now = time::OffsetDateTime::now_utc();
+        std::fs::create_dir_all(&log_dir)?;
+
+        let latest_path = log_dir.join(&filename);
 
         // If latest.log exists, we will gzip it
         if latest_path.exists() {
@@ -119,7 +127,7 @@ impl GzipRollingLogger {
                 latest_path.display()
             );
 
-            let new_gz_path = Self::new_filename(true)?;
+            let new_gz_path = Self::new_filename_in(&log_dir, true)?;
 
             let mut file = File::open(&latest_path)?;
 
@@ -138,16 +146,23 @@ impl GzipRollingLogger {
 
         Ok(Self {
             log_level,
+            log_dir,
             data: std::sync::Mutex::new(GzipRollingLoggerData {
-                current_day_of_month: now.day(),
                 last_rotate_time: now,
                 latest_filename: filename,
-                file,
+                file: Some(file),
             }),
         })
     }
 
     pub fn new_filename(yesterday: bool) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        Self::new_filename_in(Path::new(LOG_DIR), yesterday)
+    }
+
+    fn new_filename_in(
+        log_dir: &Path,
+        yesterday: bool,
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let mut now = OffsetDateTime::now_utc();
 
         if yesterday {
@@ -156,12 +171,10 @@ impl GzipRollingLogger {
 
         let date_format = format!("{}-{:02}-{:02}", now.year(), now.month() as u8, now.day());
 
-        let log_path = PathBuf::from(LOG_DIR);
-
         let mut oldest_log = None;
 
         for id in 1..=MAX_ATTEMPTS {
-            let filename = log_path.join(format!("{date_format}-{id}.log.gz"));
+            let filename = log_dir.join(format!("{date_format}-{id}.log.gz"));
 
             if !filename.exists() {
                 return Ok(filename);
@@ -200,28 +213,43 @@ impl GzipRollingLogger {
         let now = time::OffsetDateTime::now_utc();
         let mut data = self.data.lock().unwrap();
 
-        let new_gz_path = Self::new_filename(true)?;
-        let latest_path = PathBuf::from(LOG_DIR).join(&data.latest_filename);
+        let new_gz_path = Self::new_filename_in(&self.log_dir, true)?;
+        let latest_path = self.log_dir.join(&data.latest_filename);
 
-        // Flush and drop the current file
-        data.file.flush()?;
-        drop(std::mem::replace(
-            &mut data.file,
-            BufWriter::new(File::create("/dev/null")?),
-        ));
+        // Flush and close latest.log before reopening it for compression. An
+        // Option avoids platform-specific null-device paths such as /dev/null.
+        let file = data.file.as_mut().ok_or("Log file is already rotating")?;
+        file.flush()?;
+        drop(data.file.take());
 
-        let mut file = File::open(&latest_path)?;
-        let mut encoder = GzEncoder::new(
-            BufWriter::new(File::create(&new_gz_path)?),
-            flate2::Compression::best(),
-        );
-        io::copy(&mut file, &mut encoder)?;
-        encoder.finish()?;
+        let rotation = (|| -> Result<BufWriter<File>, Box<dyn std::error::Error>> {
+            let mut file = File::open(&latest_path)?;
+            let mut encoder = GzEncoder::new(
+                BufWriter::new(File::create(&new_gz_path)?),
+                flate2::Compression::best(),
+            );
+            io::copy(&mut file, &mut encoder)?;
+            encoder.finish()?;
+            Ok(BufWriter::new(File::create(&latest_path)?))
+        })();
 
-        data.current_day_of_month = now.day();
-        data.last_rotate_time = now;
-        data.file = BufWriter::new(File::create(&latest_path)?);
-        Ok(())
+        match rotation {
+            Ok(file) => {
+                data.last_rotate_time = now;
+                data.file = Some(file);
+                Ok(())
+            }
+            Err(error) => {
+                // Preserve logging after a recoverable compression failure.
+                data.file = Some(BufWriter::new(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&latest_path)?,
+                ));
+                Err(error)
+            }
+        }
     }
 }
 
@@ -279,17 +307,72 @@ where
             let clean_message = remove_ansi_color_code(&message);
 
             // Write to file
-            let _ = writeln!(data.file, "[{level}] {clean_message}");
-            let _ = data.file.flush();
+            if let Some(file) = data.file.as_mut() {
+                let _ = writeln!(file, "[{level}] {clean_message}");
+                let _ = file.flush();
+            }
 
             // Check if we need to rotate
-            if data.current_day_of_month != now.day() {
+            if data.last_rotate_time.date() != now.date() {
                 drop(data);
                 if let Err(e) = self.rotate_log() {
                     eprintln!("Failed to rotate log: {e}");
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::File;
+    use std::io::{Read, Write};
+
+    use flate2::read::GzDecoder;
+    use tempfile::TempDir;
+    use time::Duration;
+    use tracing_subscriber::filter::LevelFilter;
+
+    use super::GzipRollingLogger;
+
+    #[test]
+    fn rotation_closes_and_reopens_log_without_a_platform_null_device() {
+        let temp_dir = TempDir::new().unwrap();
+        let logger = GzipRollingLogger::new_in_dir(
+            LevelFilter::INFO,
+            "latest.log".to_string(),
+            temp_dir.path().to_path_buf(),
+        )
+        .unwrap();
+
+        {
+            let mut data = logger.data.lock().unwrap();
+            writeln!(data.file.as_mut().unwrap(), "before rotation").unwrap();
+            data.last_rotate_time -= Duration::days(1);
+        }
+
+        logger.rotate_log().unwrap();
+
+        let archive = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|extension| extension == "gz"))
+            .unwrap();
+        let mut archived_text = String::new();
+        GzDecoder::new(File::open(archive).unwrap())
+            .read_to_string(&mut archived_text)
+            .unwrap();
+        assert_eq!(archived_text, "before rotation\n");
+
+        {
+            let mut data = logger.data.lock().unwrap();
+            writeln!(data.file.as_mut().unwrap(), "after rotation").unwrap();
+            data.file.as_mut().unwrap().flush().unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(temp_dir.path().join("latest.log")).unwrap(),
+            "after rotation\n"
+        );
     }
 }
 
