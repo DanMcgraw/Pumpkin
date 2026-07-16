@@ -1082,24 +1082,29 @@ pub fn build() -> TokenStream {
     let mut bedrock_item_definitions = Vec::new();
     for item in be_runtime_item_states {
         let components = &be_item_components.get(&item.name).unwrap().components;
+        let mut component_data = NbtCompound::new();
+        if let Some(components) = components {
+            // ItemComponentPacket expects the complete item definition map.
+            // The vanilla palette stores the actual component collection under
+            // this outer key; stripping it makes icons, names, and use behavior
+            // invisible to Bedrock even though the runtime item ID still maps.
+            component_data.put_compound("components", components.clone());
+        }
 
         bedrock_item_definitions.push(BedrockItem {
             id: item.id,
             registry_key: item.name.clone(),
             version: item.version,
             component_based: item.component_based,
-            components: if let Some(c) = components {
-                Nbt::new("".to_string(), c.clone())
-            } else {
-                if item.component_based {
-                    eprintln!(
-                        "Couldn't find the components for a component based item: {}.",
-                        item.name
-                    );
-                }
-                Nbt::new("".to_string(), NbtCompound::new())
-            },
+            components: Nbt::new("".to_string(), component_data),
         });
+
+        if components.is_none() && item.component_based {
+            eprintln!(
+                "Couldn't find the components for a component based item: {}.",
+                item.name
+            );
+        }
     }
 
     let mut type_from_raw_id_arms = TokenStream::new();

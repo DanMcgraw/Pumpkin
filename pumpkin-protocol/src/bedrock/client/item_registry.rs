@@ -25,6 +25,7 @@ pub struct ItemDefinition {
 mod tests {
     use super::{CItemRegistry, ItemDefinition};
     use crate::{codec::var_int::VarInt, serial::PacketWrite};
+    use pumpkin_data::item::BedrockItem;
 
     #[test]
     fn item_components_use_protocol_1001_wire_layout() {
@@ -52,6 +53,19 @@ mod tests {
                 2,    // data-driven item version 1, zig-zag encoded
                 10, 0, 0, // little-endian NBT compound
             ]
+        );
+    }
+
+    #[test]
+    fn vanilla_item_definitions_keep_the_components_compound() {
+        const COMPONENTS_PREFIX: &[u8] = b"\n\0\n\ncomponents";
+
+        assert_eq!(BedrockItem::APPLE.registry_key, "minecraft:apple");
+        assert!(
+            BedrockItem::APPLE
+                .definition_components
+                .starts_with(COMPONENTS_PREFIX),
+            "apple component data must retain the outer `components` compound"
         );
     }
 }
