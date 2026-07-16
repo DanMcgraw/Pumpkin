@@ -3,7 +3,10 @@ use std::{
     sync::{Arc, atomic::Ordering},
 };
 
-use pumpkin_data::{data_component_impl::EquipmentSlot, item_stack::ItemStack};
+use pumpkin_data::{
+    data_component_impl::{ConsumableImpl, EquipmentSlot, EquippableImpl},
+    item_stack::ItemStack,
+};
 use pumpkin_inventory::screen_handler::{InventoryPlayer, ScreenHandler};
 use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::bedrock::{
@@ -111,7 +114,7 @@ fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
 }
 
 fn client_stack_matches_authoritative(client: &ItemStack, authoritative: &ItemStack) -> bool {
-    (client.is_empty() && authoritative.is_empty())
+    client.is_empty()
         || (client.item.id == authoritative.item.id
             && client.item_count == authoritative.item_count)
 }
@@ -889,6 +892,27 @@ impl BedrockClient {
                                     stack.decrement(1);
                                 }
                             }
+                        }
+
+                        let should_use_in_hand =
+                            stack.get_data_component::<ConsumableImpl>().is_some()
+                                || stack.get_data_component::<EquippableImpl>().is_some();
+                        drop(stack);
+
+                        // Bedrock may report a right click as ClickBlock even
+                        // when the held item's default behavior (eating or
+                        // equipping) is what should run. Once neither the block
+                        // nor the item's block-use path consumed the action,
+                        // fall back to the edition-neutral in-hand behavior.
+                        if should_use_in_hand {
+                            player
+                                .use_item_in_hand(
+                                    pumpkin_util::Hand::Left,
+                                    player.get_entity().pitch.load(),
+                                    player.get_entity().yaw.load(),
+                                    &server,
+                                )
+                                .await;
                         }
                     }
                 }
@@ -2040,7 +2064,9 @@ fn map_bedrock_container_slot(
             }
         }
         ContainerName::Armor => (slot_id < 4).then(|| 5 + slot_id as usize),
-        ContainerName::Offhand => (slot_id == 0).then_some(45),
+        // Bedrock uses logical slot 1 for item-stack requests even though
+        // InventoryContent represents the offhand as its sole element.
+        ContainerName::Offhand => Some(45),
         ContainerName::Cursor => None,
         ContainerName::CraftingInput => {
             if is_player_screen {
@@ -2340,8 +2366,12 @@ mod inventory_stack_response_tests {
     }
 
     #[test]
-    fn held_item_validation_checks_identity_and_count() {
+    fn held_item_validation_accepts_omitted_descriptor_but_checks_supplied_data() {
         let authoritative = ItemStack::new(4, &Item::APPLE);
+        assert!(client_stack_matches_authoritative(
+            &ItemStack::EMPTY,
+            &authoritative
+        ));
         assert!(client_stack_matches_authoritative(
             &ItemStack::new(4, &Item::APPLE),
             &authoritative

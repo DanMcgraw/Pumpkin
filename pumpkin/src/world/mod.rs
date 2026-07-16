@@ -2,7 +2,7 @@ use crate::block::entities::{BlockEntity, block_entity_from_block_state, block_e
 use dashmap::DashMap;
 use pumpkin_data::attributes::Attributes;
 use pumpkin_data::chunk::Biome;
-use pumpkin_data::item::{BedrockItem, BedrockItemVersion};
+use pumpkin_data::item::BedrockItem;
 use pumpkin_protocol::bedrock::client::EntityProperties;
 use pumpkin_protocol::bedrock::client::item_registry::{CItemRegistry, ItemDefinition};
 use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
@@ -2065,13 +2065,6 @@ impl World {
                     .iter()
                     .map(|b| ItemDefinition {
                         name: b.registry_key.into(),
-                        id: b.id,
-                        component_based: b.component_based,
-                        item_version: VarInt::from(match b.version {
-                            BedrockItemVersion::Legacy => 0,
-                            BedrockItemVersion::DataDriven => 1,
-                            BedrockItemVersion::None => 2,
-                        }),
                         component_data: b.definition_components.into(),
                     })
                     .collect::<Vec<_>>(),
