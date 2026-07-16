@@ -2671,6 +2671,20 @@ impl Entity {
         )]);
 
         if let Some(bedrock_flag) = flag.to_bedrock() {
+            self.set_bedrock_flag(bedrock_flag, value).await;
+        }
+    }
+
+    /// Updates one Bedrock actor flag and broadcasts the complete flag banks to
+    /// clients tracking this entity.
+    pub async fn set_bedrock_flag(&self, bedrock_flag: u32, value: bool) {
+        self.set_bedrock_flags(&[(bedrock_flag, value)]).await;
+    }
+
+    /// Updates multiple Bedrock actor flags in one metadata packet.
+    pub async fn set_bedrock_flags(&self, updates: &[(u32, bool)]) {
+        for &(bedrock_flag, value) in updates {
+            assert!(bedrock_flag < 128, "Bedrock actor flag index out of range");
             let (key, index) = if bedrock_flag >= 64 {
                 (entity_data_key::FLAGS_TWO, (bedrock_flag - 64) as u8)
             } else {
@@ -2692,37 +2706,36 @@ impl Entity {
                     self.bedrock_flags_two.fetch_and(mask, Ordering::Relaxed);
                 }
             }
+        }
 
-            let world = self.world.load();
-            let chunk_pos = self.chunk_pos.load();
-            for player in world.players.load().iter() {
-                if let ClientPlatform::Bedrock(client) = player.client.as_ref() {
-                    let center = player.get_entity().chunk_pos.load();
-                    let view_distance =
-                        crate::world::chunker::get_view_distance(player).get() as i32;
+        let world = self.world.load();
+        let chunk_pos = self.chunk_pos.load();
+        for player in world.players.load().iter() {
+            if let ClientPlatform::Bedrock(client) = player.client.as_ref() {
+                let center = player.get_entity().chunk_pos.load();
+                let view_distance = crate::world::chunker::get_view_distance(player).get() as i32;
 
-                    if is_within_view_distance(chunk_pos, center, view_distance) {
-                        let mut metadata = EntityMetadata(std::collections::HashMap::new());
-                        metadata.set(
-                            entity_data_key::FLAGS,
-                            MetadataValue::Long(self.bedrock_flags.load(Ordering::Relaxed)),
-                        );
-                        metadata.set(
-                            entity_data_key::FLAGS_TWO,
-                            MetadataValue::Long(self.bedrock_flags_two.load(Ordering::Relaxed)),
-                        );
-                        client
-                            .enqueue_packet(&CSetActorData {
-                                actor_runtime_id: VarULong(self.entity_id as u64),
-                                metadata,
-                                synced_properties: PropertySyncData {
-                                    int_properties: std::collections::HashMap::new(),
-                                    float_properties: std::collections::HashMap::new(),
-                                },
-                                tick: VarULong(0),
-                            })
-                            .await;
-                    }
+                if is_within_view_distance(chunk_pos, center, view_distance) {
+                    let mut metadata = EntityMetadata(std::collections::HashMap::new());
+                    metadata.set(
+                        entity_data_key::FLAGS,
+                        MetadataValue::Long(self.bedrock_flags.load(Ordering::Relaxed)),
+                    );
+                    metadata.set(
+                        entity_data_key::FLAGS_TWO,
+                        MetadataValue::Long(self.bedrock_flags_two.load(Ordering::Relaxed)),
+                    );
+                    client
+                        .enqueue_packet(&CSetActorData {
+                            actor_runtime_id: VarULong(self.entity_id as u64),
+                            metadata,
+                            synced_properties: PropertySyncData {
+                                int_properties: std::collections::HashMap::new(),
+                                float_properties: std::collections::HashMap::new(),
+                            },
+                            tick: VarULong(0),
+                        })
+                        .await;
                 }
             }
         }

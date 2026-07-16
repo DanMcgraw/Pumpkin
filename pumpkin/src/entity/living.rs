@@ -6,7 +6,9 @@ use pumpkin_data::tracked_data::{TrackedData, TrackedId};
 use pumpkin_inventory::build_equipment_slots;
 use pumpkin_inventory::player::player_inventory::PlayerInventory;
 use pumpkin_inventory::screen_handler::InventoryPlayer;
-use pumpkin_protocol::bedrock::client::take_item_actor::CTakeItemActor;
+use pumpkin_protocol::bedrock::client::{
+    set_actor_data::entity_data_flag, take_item_actor::CTakeItemActor,
+};
 use pumpkin_protocol::bedrock::server::actor_event::{ActorEventType, SActorEvent};
 use pumpkin_protocol::codec::var_ulong::VarULong;
 use pumpkin_util::GameMode;
@@ -262,24 +264,25 @@ impl LivingEntity {
         self.item_use_time.store(duration, Ordering::Relaxed);
         *self.item_in_use.lock().await = Some(stack);
         *self.active_hand.lock().await = Some(hand);
-        self.set_living_flag(Self::USING_ITEM_FLAG, true);
-        self.set_living_flag(Self::OFF_HAND_ACTIVE_FLAG, hand == Hand::Left);
+        self.set_active_item_flags(true, hand == Hand::Right).await;
     }
 
-    fn set_living_flag(&self, flag: u8, value: bool) {
-        let index = flag;
-        let mut b = self.livings_flags.load(Ordering::Relaxed);
-        if value {
-            b |= index;
-        } else {
-            b &= !index;
-        }
+    async fn set_active_item_flags(&self, using_item: bool, off_hand_active: bool) {
+        let b = update_active_item_flags(
+            self.livings_flags.load(Ordering::Relaxed),
+            using_item,
+            off_hand_active,
+        );
         self.livings_flags.store(b, Ordering::Relaxed);
         self.entity.send_meta_data(&[Metadata::new(
             TrackedData::LIVING_ENTITY_FLAGS,
             MetaDataType::BYTE,
             b,
         )]);
+
+        self.entity
+            .set_bedrock_flags(&bedrock_active_item_flags(using_item, off_hand_active))
+            .await;
     }
 
     pub async fn clear_active_hand(&self) {
@@ -287,7 +290,7 @@ impl LivingEntity {
         *self.active_hand.lock().await = None;
         self.item_use_time.store(0, Ordering::Relaxed);
 
-        self.set_living_flag(Self::USING_ITEM_FLAG, false);
+        self.set_active_item_flags(false, false).await;
     }
 
     pub async fn is_blocking(&self) -> bool {
@@ -2763,6 +2766,19 @@ impl EntityBase for LivingEntity {
                     }
 
                     self.clear_active_hand().await;
+                    self.entity.world.load().broadcast_to_chunk_editioned_sync(
+                        self.entity.chunk_pos.load(),
+                        &CEntityStatus::new(
+                            self.entity.entity_id,
+                            EntityStatus::UseItemComplete as i8,
+                        ),
+                        &SActorEvent {
+                            entity_runtime_id: VarULong(self.entity.entity_id as u64),
+                            event_type: ActorEventType::UseItem,
+                            event_data: VarInt(0),
+                            fire_at_position: None,
+                        },
+                    );
                     if let Some(player) = caller.get_player() {
                         player.sync_bedrock_main_inventory().await;
                     }
@@ -2813,6 +2829,24 @@ impl EntityBase for LivingEntity {
 
 fn should_remove_after_death(entity_type: &EntityType, death_time: u8) -> bool {
     death_time == 20 && entity_type != &EntityType::PLAYER
+}
+
+fn update_active_item_flags(current: u8, using_item: bool, off_hand_active: bool) -> u8 {
+    let mut flags = current & !(LivingEntity::USING_ITEM_FLAG | LivingEntity::OFF_HAND_ACTIVE_FLAG);
+    if using_item {
+        flags |= LivingEntity::USING_ITEM_FLAG;
+    }
+    if off_hand_active {
+        flags |= LivingEntity::OFF_HAND_ACTIVE_FLAG;
+    }
+    flags
+}
+
+const fn bedrock_active_item_flags(using_item: bool, off_hand_active: bool) -> [(u32, bool); 2] {
+    [
+        (entity_data_flag::USING_ITEM, using_item),
+        (entity_data_flag::EMERGING, using_item && off_hand_active),
+    ]
 }
 
 /// Returns `true` if `damage_type` is in `#minecraft:bypasses_armor` (1.21.11).
@@ -2869,6 +2903,35 @@ pub(crate) const fn bypasses_armor_durability(damage_type: &DamageType) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_item_flags_drive_bedrock_use_animation_and_correct_hand() {
+        assert_eq!(update_active_item_flags(0, true, false), 1);
+        assert_eq!(update_active_item_flags(0, true, true), 3);
+        assert_eq!(update_active_item_flags(4, false, false), 4);
+
+        assert_eq!(
+            bedrock_active_item_flags(true, false),
+            [
+                (entity_data_flag::USING_ITEM, true),
+                (entity_data_flag::EMERGING, false),
+            ]
+        );
+        assert_eq!(
+            bedrock_active_item_flags(true, true),
+            [
+                (entity_data_flag::USING_ITEM, true),
+                (entity_data_flag::EMERGING, true),
+            ]
+        );
+        assert_eq!(
+            bedrock_active_item_flags(false, false),
+            [
+                (entity_data_flag::USING_ITEM, false),
+                (entity_data_flag::EMERGING, false),
+            ]
+        );
+    }
 
     #[test]
     fn death_animation_does_not_remove_the_session_player() {
