@@ -3141,7 +3141,7 @@ impl Player {
         }
 
         self.watched_section.store(Cylindrical::new(
-            Vector2::new(0, 0),
+            Vector2::new(i32::MAX, i32::MAX),
             NonZeroU8::new(1).unwrap(),
         ));
     }
@@ -3231,7 +3231,7 @@ impl Player {
                             crate::net::bedrock::state::dimension_id(&new_world.dimension);
                         // Bedrock dimension changes use a temporary high position and
                         // complete at the real destination after the client acknowledges.
-                        let transition_position = Vector3::new(0.0, f32::from(i16::MAX), 0.0);
+                        let transition_position = Vector3::new(position.x as f32, f32::from(i16::MAX), position.z as f32);
                         let change_dim_packet = pumpkin_protocol::bedrock::client::CChangeDimension::new(
                             bedrock_dimension,
                             transition_position,
