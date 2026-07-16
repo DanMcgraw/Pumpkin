@@ -1,7 +1,7 @@
 use std::{collections::HashMap, hash::Hash};
 
 use pumpkin_data::{
-    BlockState, BlockStateId,
+    Block, BlockState, BlockStateId,
     block_properties::{has_random_ticks, is_air, is_liquid},
     fluid::Fluid,
 };
@@ -36,6 +36,20 @@ const fn bedrock_bits_per_entry(palette_len: usize) -> u8 {
 #[must_use]
 pub fn has_random_ticking_fluid(id: BlockStateId) -> bool {
     Fluid::from_state_id(id).is_some_and(|fluid| Fluid::same_fluid_type(fluid.id, Fluid::LAVA.id))
+}
+
+#[inline]
+#[must_use]
+pub fn is_submerged_or_waterlogged(id: BlockStateId) -> bool {
+    let block = Block::from_state_id(id);
+    if block == &Block::SEAGRASS
+        || block == &Block::TALL_SEAGRASS
+        || block == &Block::KELP
+        || block == &Block::KELP_PLANT
+    {
+        return true;
+    }
+    BlockState::from_id(id).is_waterlogged()
 }
 
 #[derive(Clone)]
@@ -879,6 +893,49 @@ pub struct BeNetworkSerialization<V> {
 
 // TODO: Do our own testing; do we really need to handle network and disk serialization differently?
 pub type BlockPalette = PalettedContainer<BlockStateId, 16>;
+
+impl PalettedContainer<BlockStateId, 16> {
+    #[must_use]
+    pub fn get_bedrock_layer1(&self) -> Option<BeNetworkSerialization<u16>> {
+        let has_submerged = match self {
+            Self::Homogeneous(id) => is_submerged_or_waterlogged(*id),
+            Self::Heterogeneous(data) => data.palette.iter().any(|&id| is_submerged_or_waterlogged(id)),
+        };
+
+        if !has_submerged {
+            return None;
+        }
+
+        let water_id = Block::WATER.default_state.id;
+        let air_id = BlockStateId::AIR;
+
+        let layer1_container = match self {
+            Self::Homogeneous(id) => {
+                let layer1_val = if is_submerged_or_waterlogged(*id) { water_id } else { air_id };
+                Self::Homogeneous(layer1_val)
+            }
+            Self::Heterogeneous(data) => {
+                let mut cube = Box::new([[[air_id; 16]; 16]; 16]);
+                for x in 0..16 {
+                    for y in 0..16 {
+                        for z in 0..16 {
+                            let original_id = data.get(x, y, z);
+                            let layer1_id = if is_submerged_or_waterlogged(original_id) {
+                                water_id
+                            } else {
+                                air_id
+                            };
+                            cube[y][z][x] = layer1_id;
+                        }
+                    }
+                }
+                Self::from_cube(cube)
+            }
+        };
+
+        Some(layer1_container.convert_be_network())
+    }
+}
 const BLOCK_DISK_MIN_BITS: u8 = 4;
 const BLOCK_NETWORK_MIN_MAP_BITS: u8 = 4;
 const BLOCK_NETWORK_MAX_MAP_BITS: u8 = 8;

@@ -56,7 +56,8 @@ impl PacketWrite for CLevelChunk<'_> {
         for (i, block_palette) in block_sections.iter().enumerate() {
             // Version 9: [version:byte][num_storages:byte][sub_chunk_index:byte]
             let y = (i as i8) + min_y_section;
-            let num_storages = 1;
+            let layer1 = block_palette.get_bedrock_layer1();
+            let num_storages = if layer1.is_some() { 2 } else { 1 };
             data_write.write_all(&[VERSION, num_storages, y as u8])?;
 
             let network_repr = block_palette.convert_be_network();
@@ -78,6 +79,27 @@ impl PacketWrite for CLevelChunk<'_> {
                     }
                 }
                 NetworkPalette::Direct => (),
+            }
+
+            if let Some(layer1_repr) = layer1 {
+                (layer1_repr.bits_per_entry << 1 | 1).write(data_write)?;
+
+                for data in layer1_repr.packed_data {
+                    data.write(data_write)?;
+                }
+
+                match layer1_repr.palette {
+                    NetworkPalette::Single(id) => {
+                        VarInt(i32::from(id)).write(data_write)?;
+                    }
+                    NetworkPalette::Indirect(palette) => {
+                        VarInt(palette.len() as i32).write(data_write)?;
+                        for id in palette {
+                            VarInt(i32::from(id)).write(data_write)?;
+                        }
+                    }
+                    NetworkPalette::Direct => (),
+                }
             }
         }
 

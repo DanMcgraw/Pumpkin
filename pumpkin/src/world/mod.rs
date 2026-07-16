@@ -1169,6 +1169,31 @@ impl World {
                         be_block_id as u32,
                     ),
                 );
+
+                // Send Layer 1 block update to Bedrock clients in that chunk
+                let is_waterlogged = pumpkin_world::chunk::palette::is_submerged_or_waterlogged(block_state_id);
+                let layer1_block_id = if is_waterlogged {
+                    BlockState::to_be_network_id(pumpkin_data::Block::WATER.default_state.id)
+                } else {
+                    BlockState::to_be_network_id(pumpkin_data::BlockStateId::AIR)
+                };
+                let layer1_packet = pumpkin_protocol::bedrock::client::CUpdateBlock::new_with_layer(
+                    block_pos,
+                    layer1_block_id as u32,
+                    1,
+                );
+
+                let players = self.players.load();
+                let recipients = players.iter().filter(|p| {
+                    let center = p.get_entity().chunk_pos.load();
+                    let view_distance = get_view_distance(p).get() as i32;
+                    is_within_view_distance(chunk_pos, center, view_distance)
+                });
+                for p in recipients {
+                    if let ClientPlatform::Bedrock(be_client) = p.client.as_ref() {
+                        be_client.try_enqueue_packet(&layer1_packet);
+                    }
+                }
             } else {
                 let players = self.players.load();
                 let mut java_recipients = Vec::new();
@@ -1189,6 +1214,20 @@ impl World {
                                     &pumpkin_protocol::bedrock::client::CUpdateBlock::new(
                                         *block_pos,
                                         be_block_id as u32,
+                                    ),
+                                );
+
+                                let is_waterlogged = pumpkin_world::chunk::palette::is_submerged_or_waterlogged(*block_state_id);
+                                let layer1_block_id = if is_waterlogged {
+                                    BlockState::to_be_network_id(pumpkin_data::Block::WATER.default_state.id)
+                                } else {
+                                    BlockState::to_be_network_id(pumpkin_data::BlockStateId::AIR)
+                                };
+                                be_client.try_enqueue_packet(
+                                    &pumpkin_protocol::bedrock::client::CUpdateBlock::new_with_layer(
+                                        *block_pos,
+                                        layer1_block_id as u32,
+                                        1,
                                     ),
                                 );
                             }

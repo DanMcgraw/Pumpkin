@@ -23,6 +23,16 @@ impl CUpdateBlock {
             layer: VarUInt(0),
         }
     }
+
+    #[must_use]
+    pub const fn new_with_layer(position: BlockPos, block_runtime_id: u32, layer: u32) -> Self {
+        Self {
+            position,
+            block_runtime_id: VarUInt(block_runtime_id),
+            flags: VarUInt(0x3), // neighbors | network
+            layer: VarUInt(layer),
+        }
+    }
 }
 
 impl PacketWrite for CUpdateBlock {
