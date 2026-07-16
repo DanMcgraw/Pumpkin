@@ -14,8 +14,8 @@ use pumpkin_world::inventory::Inventory;
 use crate::{
     player::player_inventory::PlayerInventory,
     screen_handler::{
-        InventoryPlayer, ItemStackFuture, ScreenHandler, ScreenHandlerBehaviour,
-        ScreenHandlerFuture, offer_or_drop_stack,
+        EnchantingOffer, EnchantingOperation, InventoryPlayer, ItemStackFuture, ScreenHandler,
+        ScreenHandlerBehaviour, ScreenHandlerFuture, offer_or_drop_stack,
     },
     slot::NormalSlot,
     window_property::{EnchantmentTable, WindowProperty},
@@ -59,9 +59,9 @@ impl EnchantingTableScreenHandler {
         handler
     }
 
-    pub async fn update_enchantments(&mut self, _player: &dyn InventoryPlayer) {
+    pub async fn update_enchantments(&mut self, player: &dyn InventoryPlayer) {
         let item = self.inventory.get_stack(0).await;
-        let item = item.lock().await;
+        let item = item.lock().await.clone();
 
         if item.is_empty() || item.has_enchantments() {
             for i in 0..3 {
@@ -99,8 +99,23 @@ impl EnchantingTableScreenHandler {
                             self.level_requirements[i],
                         );
                         if let Some(first) = enchantments.first() {
-                            self.enchantment_id[i] = first.0.id as i32;
-                            self.enchantment_level[i] = first.1;
+                            let offer = EnchantingOffer {
+                                item: item.clone(),
+                                slot: i,
+                                bookshelf_count: self.bookshelf_count,
+                                level_requirement: self.level_requirements[i],
+                                enchantment_id: first.0.id as i32,
+                                enchantment_level: first.1,
+                            };
+                            if let Some(offer) = player.on_enchanting_offer(offer).await {
+                                self.level_requirements[i] = offer.level_requirement.max(1);
+                                self.enchantment_id[i] = offer.enchantment_id;
+                                self.enchantment_level[i] = offer.enchantment_level.max(1);
+                            } else {
+                                self.level_requirements[i] = 0;
+                                self.enchantment_id[i] = -1;
+                                self.enchantment_level[i] = -1;
+                            }
                         } else {
                             self.enchantment_id[i] = -1;
                             self.enchantment_level[i] = -1;
@@ -305,12 +320,15 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             }
 
             let level_req = self.level_requirements[id as usize];
+            if level_req <= 0 {
+                return false;
+            }
             if player.experience_level() < level_req && !player.is_creative() {
                 return false;
             }
 
             let lapis_slot = self.inventory.get_stack(1).await;
-            let mut lapis_stack = lapis_slot.lock().await;
+            let lapis_stack = lapis_slot.lock().await;
             let lapis_cost = (id + 1) as u8;
 
             if !player.is_creative()
@@ -321,7 +339,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
 
             // Perform enchantment
             let item_slot = self.inventory.get_stack(0).await;
-            let mut item_stack = item_slot.lock().await;
+            let item_stack = item_slot.lock().await;
 
             if item_stack.is_empty() || item_stack.has_enchantments() {
                 return false;
@@ -337,13 +355,48 @@ impl ScreenHandler for EnchantingTableScreenHandler {
                 return false;
             }
 
+            let operation = EnchantingOperation {
+                item: item_stack.clone(),
+                slot: id as usize,
+                level_cost: id + 1,
+                lapis_cost,
+                enchantments: enchantments
+                    .into_iter()
+                    .map(|(enchantment, level)| (enchantment.id as i32, level))
+                    .collect(),
+            };
+            drop(item_stack);
+            drop(lapis_stack);
+
+            let Some(operation) = player.on_enchant_item(operation).await else {
+                return false;
+            };
+            let level_cost = operation.level_cost.clamp(0, level_req);
+            let lapis_cost = operation.lapis_cost.min(64);
+
+            let mut lapis_stack = lapis_slot.lock().await;
+            let mut item_stack = item_slot.lock().await;
+
+            if !player.is_creative()
+                && (player.experience_level() < level_cost || lapis_stack.item_count < lapis_cost)
+            {
+                return false;
+            }
+            if item_stack.is_empty() || item_stack.has_enchantments() {
+                return false;
+            }
+
             if !player.is_creative() {
-                player.add_experience_levels(-(id + 1)).await;
+                player.add_experience_levels(-level_cost).await;
                 lapis_stack.decrement(lapis_cost);
             }
 
-            for (enchant, level) in enchantments {
-                item_stack.add_enchantment(enchant, level as u16);
+            *item_stack = operation.item;
+            for (enchantment_id, level) in operation.enchantments {
+                if let Some(enchantment) = Enchantment::from_id(enchantment_id as u8) {
+                    item_stack
+                        .add_enchantment(enchantment, level.clamp(1, enchantment.max_level) as u16);
+                }
             }
 
             // CRITICAL FIX: Drop locks *before* calling `update_enchantments`

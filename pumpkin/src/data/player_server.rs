@@ -176,6 +176,18 @@ impl ServerPlayerData {
         }
     }
 
+    /// Saves a complete raw player-data compound for an offline data update.
+    pub async fn save_data(
+        &self,
+        uuid: uuid::Uuid,
+        data: NbtCompound,
+    ) -> Result<(), PlayerDataError> {
+        let storage = self.storage.clone();
+        tokio::task::spawn_blocking(move || storage.save_player_data(&uuid, data))
+            .await
+            .expect("Player data save panicked")
+    }
+
     /// Extracts and saves data from a player.
     ///
     /// This function extracts NBT data from a player and saves it to disk.

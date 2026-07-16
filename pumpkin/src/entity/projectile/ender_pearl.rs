@@ -30,6 +30,7 @@ impl EnderPearlEntity {
         let thrown = ThrownItemEntity {
             entity,
             owner_id: None,
+            owner_uuid: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
             gravity: GRAVITY,
@@ -48,6 +49,10 @@ impl EnderPearlEntity {
 impl NBTStorage for EnderPearlEntity {}
 
 impl EntityBase for EnderPearlEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.thrown.owner_uuid
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

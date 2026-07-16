@@ -35,6 +35,7 @@ impl EggEntity {
         let thrown = ThrownItemEntity {
             entity,
             owner_id: None,
+            owner_uuid: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
             gravity: GRAVITY,
@@ -67,6 +68,10 @@ impl EggEntity {
 impl NBTStorage for EggEntity {}
 
 impl EntityBase for EggEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.thrown.owner_uuid
+    }
+
     fn init_data_tracker(&self) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             let entity = self.get_entity();

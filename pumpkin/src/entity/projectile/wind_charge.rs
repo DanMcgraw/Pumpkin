@@ -98,6 +98,10 @@ impl WindChargeEntity {
 impl NBTStorage for WindChargeEntity {}
 
 impl EntityBase for WindChargeEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.thrown_item_entity.owner_uuid
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

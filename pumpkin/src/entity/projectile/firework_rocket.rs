@@ -36,6 +36,7 @@ impl FireworkRocketEntity {
             entity: ThrownItemEntity {
                 entity,
                 owner_id: None,
+                owner_uuid: None,
                 collides_with_projectiles: false,
                 has_hit: AtomicBool::new(false),
                 gravity: GRAVITY,
@@ -90,6 +91,10 @@ impl FireworkRocketEntity {
 impl NBTStorage for FireworkRocketEntity {}
 
 impl EntityBase for FireworkRocketEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.entity.owner_uuid
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

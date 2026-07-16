@@ -1,6 +1,7 @@
 pub mod context;
 pub mod events;
 pub mod gui;
+pub mod persistent_data;
 
 use std::{pin::Pin, sync::Arc};
 

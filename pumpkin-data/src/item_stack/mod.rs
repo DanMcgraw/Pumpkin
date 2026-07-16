@@ -204,6 +204,68 @@ impl ItemStack {
         }
     }
 
+    /// Returns the enchantments currently applied to this stack.
+    #[must_use]
+    pub fn enchantments(&self) -> Vec<(&'static Enchantment, i32)> {
+        self.get_data_component::<EnchantmentsImpl>()
+            .map(|enchantments| enchantments.enchantment.to_vec())
+            .unwrap_or_default()
+    }
+
+    /// Adds or replaces a single enchantment level without creating duplicate entries.
+    pub fn set_enchantment(&mut self, enchantment: &'static Enchantment, level: i32) {
+        let mut enchantments = self.enchantments();
+        enchantments.retain(|(existing, _)| existing.id != enchantment.id);
+        if level > 0 {
+            enchantments.push((enchantment, level.min(enchantment.max_level)));
+        }
+        self.patch
+            .retain(|(id, _)| *id != DataComponent::Enchantments);
+        if !enchantments.is_empty() {
+            self.patch.push((
+                DataComponent::Enchantments,
+                Some(
+                    EnchantmentsImpl {
+                        enchantment: Cow::Owned(enchantments),
+                    }
+                    .to_dyn(),
+                ),
+            ));
+        }
+    }
+
+    /// Removes all normal enchantments from this stack.
+    pub fn clear_enchantments(&mut self) {
+        self.patch
+            .retain(|(id, _)| *id != DataComponent::Enchantments);
+        if self
+            .item
+            .components
+            .iter()
+            .any(|(id, _)| *id == DataComponent::Enchantments)
+        {
+            self.patch.push((DataComponent::Enchantments, None));
+        }
+    }
+
+    /// Returns the anvil prior-work level stored in persistent stack data.
+    #[must_use]
+    pub fn repair_cost_level(&self) -> i32 {
+        self.get_custom_data("minecraft", "repair_cost")
+            .and_then(|tag| tag.extract_int())
+            .unwrap_or(0)
+            .max(0)
+    }
+
+    /// Stores the anvil prior-work level in persistent stack data.
+    pub fn set_repair_cost_level(&mut self, level: i32) {
+        if level <= 0 {
+            self.remove_custom_data("minecraft", "repair_cost");
+        } else {
+            self.set_custom_data("minecraft", "repair_cost", NbtTag::Int(level));
+        }
+    }
+
     pub const EMPTY: &'static Self = &Self {
         item_count: 0,
         item: &Item::AIR,
@@ -770,6 +832,22 @@ mod tests {
             Some(NbtTag::ByteArray(vec![0, 1, 127, -128, -1].into()))
         );
         assert!(stack.has_custom_data("test_plugin", "marker"));
+    }
+
+    #[test]
+    fn repair_cost_round_trips_through_persistent_stack_data() {
+        let mut stack = iron_sword();
+        assert_eq!(stack.repair_cost_level(), 0);
+        stack.set_repair_cost_level(3);
+        assert_eq!(stack.repair_cost_level(), 3);
+
+        let mut encoded = NbtCompound::new();
+        stack.write_item_stack(&mut encoded);
+        let decoded = ItemStack::read_item_stack(&encoded).expect("item stack should decode");
+        assert_eq!(decoded.repair_cost_level(), 3);
+
+        stack.set_repair_cost_level(0);
+        assert_eq!(stack.repair_cost_level(), 0);
     }
 
     #[test]

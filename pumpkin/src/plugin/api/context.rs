@@ -8,6 +8,7 @@ use crate::{
     LoggerOption, command::client_suggestions, net::ClientPlatform, plugin::PluginMetadata,
     plugin_log,
 };
+use pumpkin_nbt::tag::NbtTag;
 use pumpkin_util::{
     PermissionLvl,
     permission::{Permission, PermissionManager},
@@ -41,6 +42,21 @@ pub struct Context {
     pub logger: Arc<OnceLock<LoggerOption>>,
 }
 impl Context {
+    fn persistent_data_namespace(&self) -> String {
+        self.metadata
+            .name
+            .bytes()
+            .map(|byte| {
+                let byte = byte.to_ascii_lowercase();
+                if byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"._-".contains(&byte) {
+                    char::from(byte)
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    }
+
     /// Creates a new instance of `Context`.
     ///
     /// # Arguments
@@ -97,6 +113,249 @@ impl Context {
     #[must_use]
     pub fn get_player_by_name(&self, player_name: &str) -> Option<Arc<Player>> {
         self.server.get_player_by_name(player_name)
+    }
+
+    /// Reads a value in this plugin's namespace from online or offline player data.
+    pub async fn get_player_data(
+        &self,
+        player_uuid: uuid::Uuid,
+        key: &str,
+    ) -> Result<Option<NbtTag>, super::persistent_data::PluginDataError> {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+
+        let namespace = self.persistent_data_namespace();
+        if let Some(player) = self.server.get_player_by_uuid(player_uuid) {
+            return Ok(player.get_plugin_data(&namespace, key));
+        }
+
+        let Some(data) = self
+            .server
+            .player_data_storage
+            .load_data(&player_uuid)
+            .await
+            .map_err(|error| super::persistent_data::PluginDataError::Storage(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        Ok(data
+            .get_compound("PumpkinPluginData")
+            .and_then(|root| root.get(&namespace))
+            .and_then(NbtTag::extract_compound)
+            .and_then(|namespace_data| namespace_data.get(key))
+            .cloned())
+    }
+
+    /// Stores a value in this plugin's namespace and persists it immediately.
+    pub async fn set_player_data(
+        &self,
+        player_uuid: uuid::Uuid,
+        key: &str,
+        value: NbtTag,
+    ) -> Result<(), super::persistent_data::PluginDataError> {
+        let namespace = self.persistent_data_namespace();
+        if let Some(player) = self.server.get_player_by_uuid(player_uuid) {
+            player.set_plugin_data(&namespace, key, value)?;
+            return self
+                .server
+                .player_data_storage
+                .save_player(&player)
+                .await
+                .map_err(|error| {
+                    super::persistent_data::PluginDataError::Storage(error.to_string())
+                });
+        }
+
+        let mut data = self
+            .server
+            .player_data_storage
+            .load_data(&player_uuid)
+            .await
+            .map_err(|error| super::persistent_data::PluginDataError::Storage(error.to_string()))?
+            .unwrap_or_default();
+        let mut plugin_root = data
+            .get_compound("PumpkinPluginData")
+            .cloned()
+            .unwrap_or_default();
+        let namespace_data =
+            super::persistent_data::namespace_with_value(&plugin_root, &namespace, key, value)?;
+        plugin_root
+            .child_tags
+            .insert(namespace.into(), NbtTag::Compound(namespace_data));
+        data.child_tags
+            .insert("PumpkinPluginData".into(), NbtTag::Compound(plugin_root));
+        self.server
+            .player_data_storage
+            .save_data(player_uuid, data)
+            .await
+            .map_err(|error| super::persistent_data::PluginDataError::Storage(error.to_string()))
+    }
+
+    /// Removes a value in this plugin's namespace and persists the update.
+    pub async fn remove_player_data(
+        &self,
+        player_uuid: uuid::Uuid,
+        key: &str,
+    ) -> Result<(), super::persistent_data::PluginDataError> {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+
+        let namespace = self.persistent_data_namespace();
+        if let Some(player) = self.server.get_player_by_uuid(player_uuid) {
+            player.remove_plugin_data(&namespace, key);
+            return self
+                .server
+                .player_data_storage
+                .save_player(&player)
+                .await
+                .map_err(|error| {
+                    super::persistent_data::PluginDataError::Storage(error.to_string())
+                });
+        }
+
+        let Some(mut data) = self
+            .server
+            .player_data_storage
+            .load_data(&player_uuid)
+            .await
+            .map_err(|error| super::persistent_data::PluginDataError::Storage(error.to_string()))?
+        else {
+            return Ok(());
+        };
+        let Some(mut plugin_root) = data.get_compound("PumpkinPluginData").cloned() else {
+            return Ok(());
+        };
+        let Some(NbtTag::Compound(mut namespace_data)) =
+            plugin_root.child_tags.remove(namespace.as_str())
+        else {
+            return Ok(());
+        };
+        namespace_data.child_tags.remove(key);
+        if !namespace_data.is_empty() {
+            plugin_root
+                .child_tags
+                .insert(namespace.into(), NbtTag::Compound(namespace_data));
+        }
+        data.child_tags
+            .insert("PumpkinPluginData".into(), NbtTag::Compound(plugin_root));
+        self.server
+            .player_data_storage
+            .save_data(player_uuid, data)
+            .await
+            .map_err(|error| super::persistent_data::PluginDataError::Storage(error.to_string()))
+    }
+
+    /// Reads a value owned by this plugin from an entity's persistent data.
+    pub fn get_entity_data(
+        &self,
+        entity: &dyn crate::entity::EntityBase,
+        key: &str,
+    ) -> Result<Option<NbtTag>, super::persistent_data::PluginDataError> {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+        Ok(entity
+            .get_entity()
+            .get_plugin_data(&self.persistent_data_namespace(), key))
+    }
+
+    /// Stores a bounded value owned by this plugin on an entity.
+    pub fn set_entity_data(
+        &self,
+        entity: &dyn crate::entity::EntityBase,
+        key: &str,
+        value: NbtTag,
+    ) -> Result<(), super::persistent_data::PluginDataError> {
+        entity
+            .get_entity()
+            .set_plugin_data(&self.persistent_data_namespace(), key, value)
+    }
+
+    /// Removes a value owned by this plugin from an entity.
+    pub fn remove_entity_data(
+        &self,
+        entity: &dyn crate::entity::EntityBase,
+        key: &str,
+    ) -> Result<(), super::persistent_data::PluginDataError> {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+        entity
+            .get_entity()
+            .remove_plugin_data(&self.persistent_data_namespace(), key);
+        Ok(())
+    }
+
+    /// Reads block metadata in this plugin's namespace.
+    pub fn get_block_metadata(
+        &self,
+        world: &crate::world::World,
+        position: &pumpkin_util::math::position::BlockPos,
+        key: &str,
+    ) -> Result<Option<pumpkin_nbt::compound::NbtCompound>, super::persistent_data::PluginDataError>
+    {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+        Ok(world.get_block_metadata(
+            position,
+            &format!("{}:{key}", self.persistent_data_namespace()),
+        ))
+    }
+
+    /// Stores or removes block metadata in this plugin's namespace.
+    pub fn set_block_metadata(
+        &self,
+        world: &crate::world::World,
+        position: &pumpkin_util::math::position::BlockPos,
+        key: &str,
+        value: Option<pumpkin_nbt::compound::NbtCompound>,
+    ) -> Result<(), super::persistent_data::PluginDataError> {
+        if !super::persistent_data::valid_component(key) {
+            return Err(super::persistent_data::PluginDataError::InvalidKey);
+        }
+        world.set_block_metadata(
+            position,
+            &format!("{}:{key}", self.persistent_data_namespace()),
+            value,
+        )
+    }
+
+    /// Breaks a bounded set of blocks through Pumpkin's normal protection, drop, and durability paths.
+    pub async fn break_blocks(
+        &self,
+        world: Arc<crate::world::World>,
+        player: Arc<Player>,
+        positions: impl IntoIterator<Item = pumpkin_util::math::position::BlockPos>,
+    ) -> Result<Vec<pumpkin_util::math::position::BlockPos>, super::persistent_data::BatchBlockError>
+    {
+        let mut unique = std::collections::HashSet::new();
+        for position in positions {
+            unique.insert(position);
+            if unique.len() > 128 {
+                return Err(super::persistent_data::BatchBlockError::TooLarge);
+            }
+        }
+
+        let mut broken = Vec::with_capacity(unique.len());
+        for position in unique {
+            let state = world.get_block_state(&position);
+            if world
+                .break_block(
+                    &position,
+                    Some(player.clone()),
+                    pumpkin_world::world::BlockFlags::NOTIFY_ALL,
+                )
+                .await
+                .is_some()
+            {
+                player.apply_tool_damage_for_block_break(state).await;
+                broken.push(position);
+            }
+        }
+        Ok(broken)
     }
 
     /// Registers a service with the plugin context.

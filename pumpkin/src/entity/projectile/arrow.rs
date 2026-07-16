@@ -54,6 +54,7 @@ impl ArrowPickup {
 pub struct ArrowEntity {
     pub entity: Entity,
     pub owner_id: Option<i32>,
+    pub owner_uuid: Option<uuid::Uuid>,
     pub base_damage: f64,
     pub pickup: ArrowPickup,
     pub is_critical: AtomicBool,
@@ -79,6 +80,7 @@ impl ArrowEntity {
         Self {
             entity,
             owner_id,
+            owner_uuid: None,
             base_damage: Self::ARROW_BASE_DAMAGE,
             pickup: ArrowPickup::Disallowed,
             is_critical: AtomicBool::new(false),
@@ -103,6 +105,7 @@ impl ArrowEntity {
         Self {
             entity,
             owner_id: Some(shooter.entity_id),
+            owner_uuid: Some(shooter.entity_uuid),
             base_damage: Self::ARROW_BASE_DAMAGE,
             pickup,
             is_critical: AtomicBool::new(false),
@@ -196,6 +199,10 @@ impl ArrowEntity {
 impl NBTStorage for ArrowEntity {}
 
 impl EntityBase for ArrowEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.owner_uuid
+    }
+
     #[allow(clippy::too_many_lines)]
     fn tick<'a>(
         &'a self,

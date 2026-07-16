@@ -810,6 +810,7 @@ impl ToFromWasmEvent for PlayerFishEvent {
                 player: consume_player(state, &data.player),
                 caught_uuid: data.caught_uuid.map(|id| WitUuid::from_wit(&id)),
                 caught_type: data.caught_type,
+                caught_item: None,
                 hook_uuid: WitUuid::from_wit(&data.hook_uuid),
                 state: from_wasm_fish_state(data.state),
                 hand: from_wasm_hand(data.hand),

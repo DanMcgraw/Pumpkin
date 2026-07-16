@@ -25,6 +25,7 @@ impl SmallFireballEntity {
         let thrown = ThrownItemEntity {
             entity,
             owner_id: None,
+            owner_uuid: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
             gravity: GRAVITY,
@@ -43,6 +44,10 @@ impl SmallFireballEntity {
 impl NBTStorage for SmallFireballEntity {}
 
 impl EntityBase for SmallFireballEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.thrown.owner_uuid
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

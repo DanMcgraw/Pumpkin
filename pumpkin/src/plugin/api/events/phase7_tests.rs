@@ -51,6 +51,7 @@ mod tests {
             block_ticks: ChunkTickScheduler::default(),
             fluid_ticks: ChunkTickScheduler::default(),
             pending_block_entities: Mutex::default(),
+            custom_block_data: Mutex::default(),
             light_engine: Mutex::new(ChunkLight::default()),
             light_populated: AtomicBool::new(false),
             status: ChunkStatus::Empty,

@@ -31,7 +31,7 @@ impl FollowOwnerGoal {
     }
 
     fn can_follow(mob: &dyn Mob) -> bool {
-        !mob.is_sitting()
+        !Mob::is_sitting(mob)
     }
 
     fn find_owner(mob: &dyn Mob) -> Option<Arc<Player>> {

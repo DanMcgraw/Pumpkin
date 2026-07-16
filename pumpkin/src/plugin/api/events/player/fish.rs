@@ -1,3 +1,4 @@
+use pumpkin_data::item_stack::ItemStack;
 use pumpkin_macros::{Event, cancellable};
 use pumpkin_util::Hand;
 use std::sync::Arc;
@@ -44,6 +45,9 @@ pub struct PlayerFishEvent {
     /// The caught entity type (registry key).
     pub caught_type: String,
 
+    /// The item produced by a fish/loot catch, if any. Plugins may replace it.
+    pub caught_item: Option<ItemStack>,
+
     /// The UUID of the fishing hook.
     pub hook_uuid: uuid::Uuid,
 
@@ -73,6 +77,7 @@ impl PlayerFishEvent {
             caught_uuid,
             hook_uuid,
             caught_type,
+            caught_item: None,
             state,
             hand,
             exp_to_drop,

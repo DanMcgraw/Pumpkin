@@ -74,7 +74,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::{
-    Arc,
+    Arc, RwLock,
     atomic::{
         AtomicBool, AtomicI32, AtomicU8, AtomicU32,
         Ordering::{self, Relaxed},
@@ -128,6 +128,20 @@ pub type EntityBaseFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type TeleportFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
+    /// Stable owner identifier for projectile entities.
+    fn projectile_owner_uuid(&self) -> Option<Uuid> {
+        None
+    }
+
+    /// Vanilla owner identifier for tameable entities.
+    fn owner_uuid(&self) -> Option<Uuid> { None }
+
+    fn is_tamed(&self) -> bool { false }
+
+    fn is_sitting(&self) -> bool { false }
+
+    fn set_sitting(&self, _sitting: bool) {}
+
     /// Called every tick for this entity.
     ///
     /// The `caller` parameter is a reference to the entity that initiated the tick.
@@ -726,6 +740,8 @@ pub struct Entity {
     pub entity_id: i32,
     /// A persistent, unique identifier for the entity
     pub entity_uuid: uuid::Uuid,
+    /// Namespaced plugin-owned data persisted with this entity.
+    plugin_data: RwLock<NbtCompound>,
     /// The type of entity (e.g., player, zombie, item)
     pub entity_type: &'static EntityType,
     /// The world in which the entity exists.
@@ -892,6 +908,7 @@ impl Entity {
         Self {
             entity_id,
             entity_uuid,
+            plugin_data: RwLock::new(NbtCompound::new()),
             entity_type,
             on_ground: AtomicBool::new(false),
             touching_water: AtomicBool::new(false),
@@ -1028,6 +1045,44 @@ impl Entity {
         }
 
         metadata
+    }
+
+    #[must_use]
+    pub fn get_plugin_data(&self, namespace: &str, key: &str) -> Option<NbtTag> {
+        self.plugin_data
+            .read()
+            .unwrap()
+            .get(namespace)
+            .and_then(NbtTag::extract_compound)
+            .and_then(|data| data.get(key))
+            .cloned()
+    }
+
+    pub fn set_plugin_data(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: NbtTag,
+    ) -> Result<(), crate::plugin::api::persistent_data::PluginDataError> {
+        let mut root = self.plugin_data.write().unwrap();
+        let namespace_data = crate::plugin::api::persistent_data::namespace_with_value(
+            &root, namespace, key, value,
+        )?;
+        root.child_tags
+            .insert(namespace.into(), NbtTag::Compound(namespace_data));
+        Ok(())
+    }
+
+    pub fn remove_plugin_data(&self, namespace: &str, key: &str) {
+        let mut root = self.plugin_data.write().unwrap();
+        let Some(NbtTag::Compound(mut namespace_data)) = root.child_tags.remove(namespace) else {
+            return;
+        };
+        namespace_data.child_tags.remove(key);
+        if !namespace_data.is_empty() {
+            root.child_tags
+                .insert(namespace.into(), NbtTag::Compound(namespace_data));
+        }
     }
 
     /// Sets the entity's age in ticks.
@@ -3363,6 +3418,10 @@ impl NBTStorage for Entity {
                 nbt.put_string("CustomName", name_json);
             }
             nbt.put_bool("CustomNameVisible", self.custom_name_visible.load(Relaxed));
+            let plugin_data = self.plugin_data.read().unwrap().clone();
+            if !plugin_data.is_empty() {
+                nbt.put("PumpkinEntityPluginData", NbtTag::Compound(plugin_data));
+            }
 
             // todo more...
         })
@@ -3411,6 +3470,9 @@ impl NBTStorage for Entity {
             }
             self.custom_name_visible
                 .store(nbt.get_bool("CustomNameVisible").unwrap_or(false), Relaxed);
+            if let Some(plugin_data) = nbt.get_compound("PumpkinEntityPluginData") {
+                *self.plugin_data.write().unwrap() = plugin_data.clone();
+            }
             // todo more...
         })
     }

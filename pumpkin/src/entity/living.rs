@@ -38,6 +38,7 @@ use crate::plugin::api::events::entity::{
     entity_death::EntityDeathEvent,
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
+use crate::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent;
 use crate::server::Server;
 use crate::world::chunker::{get_view_distance, is_within_view_distance};
 use crate::world::loot::{LootContextParameters, LootTableExt};
@@ -424,6 +425,63 @@ impl LivingEntity {
 
         f(inst);
         inst.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// Adds or replaces an attribute modifier and immediately synchronizes it.
+    pub async fn add_attribute_modifier(&self, attribute: &Attributes, modifier: Modifier) {
+        self.update_attribute(attribute, |instance| {
+            instance.add_or_replace_modifier(modifier);
+        });
+        crate::entity::attributes::send_attribute_updates_for_living(
+            self,
+            vec![attribute.clone()],
+        )
+        .await;
+    }
+
+    /// Removes an attribute modifier by its stable, namespaced identifier.
+    pub async fn remove_attribute_modifier(&self, attribute: &Attributes, id: &str) {
+        self.update_attribute(attribute, |instance| instance.remove_modifier(id));
+        crate::entity::attributes::send_attribute_updates_for_living(
+            self,
+            vec![attribute.clone()],
+        )
+        .await;
+    }
+
+    /// Removes all modifiers owned by one plugin namespace and returns the count removed.
+    pub async fn clear_attribute_modifiers(
+        &self,
+        attribute: &Attributes,
+        namespace: &str,
+    ) -> usize {
+        let prefix = format!("{namespace}:");
+        let mut removed = 0;
+        self.update_attribute(attribute, |instance| {
+            let before = instance.modifiers.len();
+            instance
+                .modifiers
+                .retain(|modifier| !modifier.id.starts_with(&prefix));
+            removed = before - instance.modifiers.len();
+        });
+        if removed > 0 {
+            crate::entity::attributes::send_attribute_updates_for_living(
+                self,
+                vec![attribute.clone()],
+            )
+            .await;
+        }
+        removed
+    }
+
+    /// Returns a snapshot of the modifiers currently applied to an attribute.
+    #[must_use]
+    pub fn get_attribute_modifiers(&self, attribute: &Attributes) -> Vec<Modifier> {
+        self.attributes
+            .read()
+            .unwrap()
+            .get(&attribute.id)
+            .map_or_else(Vec::new, |instance| instance.modifiers.clone())
     }
 
     /// Returns the computed value for `attribute` using the local instance, falling back
@@ -2055,6 +2113,26 @@ impl NBTStorage for LivingEntity {
                     nbt.put("active_effects", NbtTag::List(effects_list));
                 }
             }
+            let attributes = self.attributes.read().unwrap();
+            let mut persisted_modifiers = Vec::new();
+            for (attribute_id, instance) in attributes.iter() {
+                for modifier in &instance.modifiers {
+                    if modifier.id.starts_with("minecraft:") {
+                        continue;
+                    }
+                    let mut modifier_nbt = NbtCompound::new();
+                    modifier_nbt.put_byte("Attribute", *attribute_id as i8);
+                    modifier_nbt.put_double("Base", instance.base_value);
+                    modifier_nbt.put_string("Id", modifier.id.clone());
+                    modifier_nbt.put_double("Amount", modifier.amount);
+                    modifier_nbt.put_byte("Operation", modifier.operation as i8);
+                    persisted_modifiers.push(NbtTag::Compound(modifier_nbt));
+                }
+            }
+            drop(attributes);
+            if !persisted_modifiers.is_empty() {
+                nbt.put_list("PumpkinAttributeModifiers", persisted_modifiers);
+            }
             //TODO: write equipment
             // todo more...
         })
@@ -2095,6 +2173,46 @@ impl NBTStorage for LivingEntity {
                             active_effects.insert(effect.effect_type, effect);
                         }
                     }
+                }
+            }
+            if let Some(modifiers) = nbt.get_list("PumpkinAttributeModifiers") {
+                let mut attributes = self.attributes.write().unwrap();
+                for modifier in modifiers {
+                    let NbtTag::Compound(modifier) = modifier else {
+                        continue;
+                    };
+                    let Some(attribute_id) = modifier.get_byte("Attribute") else {
+                        continue;
+                    };
+                    let Some(id) = modifier.get_string("Id") else {
+                        continue;
+                    };
+                    let Some(amount) = modifier.get_double("Amount") else {
+                        continue;
+                    };
+                    let operation = match modifier.get_byte("Operation") {
+                        Some(0) => ModifierOperation::Add,
+                        Some(1) => ModifierOperation::MultiplyBase,
+                        Some(2) => ModifierOperation::MultiplyTotal,
+                        _ => continue,
+                    };
+                    let attribute_id = attribute_id as u8;
+                    let base = modifier.get_double("Base").unwrap_or_else(|| {
+                        self.entity
+                            .entity_type
+                            .attributes
+                            .iter()
+                            .find(|(attribute, _)| attribute.id == attribute_id)
+                            .map_or(0.0, |(_, value)| *value)
+                    });
+                    attributes
+                        .entry(attribute_id)
+                        .or_insert_with(|| AttributeInstance::new(base))
+                        .add_or_replace_modifier(Modifier {
+                            id: id.to_string(),
+                            amount,
+                            operation,
+                        });
                 }
             }
         })
@@ -2604,14 +2722,57 @@ impl EntityBase for LivingEntity {
                 if let Some(item) = item_in_use.as_ref()
                     && self.item_use_time.fetch_sub(1, Ordering::Relaxed) <= 0
                 {
+                    let active_hand = self.active_hand.lock().await.unwrap_or(Hand::Right);
+                    let mut nutrition = item
+                        .get_data_component::<FoodImpl>()
+                        .map_or(0, |food| food.nutrition as u8);
+                    let mut saturation = item
+                        .get_data_component::<FoodImpl>()
+                        .map_or(0.0, |food| food.saturation);
+                    let is_potion = item
+                        .get_data_component::<pumpkin_data::data_component_impl::PotionContentsImpl>()
+                        .is_some();
+                    let mut result_item = if is_potion {
+                        ItemStack::new(1, &Item::GLASS_BOTTLE)
+                    } else {
+                        ItemStack::EMPTY.clone()
+                    };
+
+                    if let Some(player) = caller.get_player()
+                        && let Some(player) = self
+                            .entity
+                            .world
+                            .load()
+                            .get_player_by_uuid(player.gameprofile.id)
+                        && let Some(server) = self.entity.world.load().server.upgrade()
+                    {
+                        let event = server
+                            .plugin_manager
+                            .fire(PlayerItemUseFinishEvent::new(
+                                player,
+                                item.clone(),
+                                active_hand,
+                                nutrition,
+                                saturation,
+                                result_item,
+                            ))
+                            .await;
+                        if event.cancelled {
+                            self.clear_active_hand().await;
+                            return;
+                        }
+                        nutrition = event.nutrition;
+                        saturation = event.saturation;
+                        result_item = event.result_item;
+                    }
+
                     // Consume item
-                    let mut is_potion = false;
-                    if let Some(food) = item.get_data_component::<FoodImpl>()
+                    if item.get_data_component::<FoodImpl>().is_some()
                         && let Some(player) = caller.get_player()
                     {
                         player
                             .hunger_manager
-                            .eat(player, food.nutrition as u8, food.saturation)
+                            .eat(player, nutrition, saturation)
                             .await;
 
                         // Special food effects
@@ -2681,10 +2842,9 @@ impl EntityBase for LivingEntity {
                     }
 
                     // Handle potion consumption
-                    if item.get_data_component::<pumpkin_data::data_component_impl::PotionContentsImpl>().is_some() {
+                    if is_potion {
                         let effects = crate::item::potion::PotionContents::read_potion_effects(item);
                         crate::item::potion::PotionContents::apply_effects_to(self, effects, 1.0, crate::item::potion::PotionApplicationSource::Normal).await;
-                        is_potion = true;
                     }
 
                     if let Some(player) = caller.get_player() {
@@ -2703,7 +2863,7 @@ impl EntityBase for LivingEntity {
                                     if player.gamemode.load() != GameMode::Creative {
                                         held_lock.decrement(1);
                                         if held_lock.is_empty() {
-                                            *held_lock = ItemStack::new(1, &Item::GLASS_BOTTLE);
+                                            *held_lock = result_item.clone();
                                         }
                                     }
                                 } else {
@@ -2722,7 +2882,7 @@ impl EntityBase for LivingEntity {
                                     if player.gamemode.load() != GameMode::Creative {
                                         off_lock.decrement(1);
                                         if off_lock.is_empty() {
-                                            *off_lock = ItemStack::new(1, &Item::GLASS_BOTTLE);
+                                            *off_lock = result_item.clone();
                                         }
                                     }
                                 } else {
@@ -2746,7 +2906,7 @@ impl EntityBase for LivingEntity {
                                 if player.gamemode.load() != GameMode::Creative {
                                     item_lock.decrement(1);
                                     if item_lock.is_empty() {
-                                        *item_lock = ItemStack::new(1, &Item::GLASS_BOTTLE);
+                                        *item_lock = result_item;
                                     }
                                 }
                             } else {

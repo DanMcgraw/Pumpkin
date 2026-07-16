@@ -33,6 +33,7 @@ impl SplashPotionEntity {
         let thrown = ThrownItemEntity {
             entity,
             owner_id: None,
+            owner_uuid: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
             gravity: GRAVITY,
@@ -119,6 +120,10 @@ pub(crate) async fn extinguish_fire_if_water_potion(
 }
 
 impl EntityBase for SplashPotionEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.thrown.owner_uuid
+    }
+
     fn init_data_tracker(&self) -> EntityBaseFuture<'_, ()> {
         Box::pin(async move {
             let entity = self.get_entity();

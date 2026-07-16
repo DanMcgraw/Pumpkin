@@ -166,6 +166,23 @@ impl ChunkData {
                 }
                 std::sync::Mutex::new(block_entities)
             },
+            custom_block_data: {
+                let mut custom_data = FxHashMap::default();
+                for mut nbt in chunk_data.pumpkin_block_data {
+                    if let (Some(x), Some(y), Some(z), Some(data)) = (
+                        nbt.get_int("x"),
+                        nbt.get_int("y"),
+                        nbt.get_int("z"),
+                        nbt.child_tags.remove("data").and_then(|tag| match tag {
+                            pumpkin_nbt::tag::NbtTag::Compound(data) => Some(data),
+                            _ => None,
+                        }),
+                    ) {
+                        custom_data.insert(BlockPos::new(x, y, z), data);
+                    }
+                }
+                std::sync::Mutex::new(custom_data)
+            },
             light_engine: std::sync::Mutex::new(light_engine),
             light_populated: AtomicBool::new(chunk_data.light_correct),
             status: chunk_data.status,
@@ -193,6 +210,19 @@ impl ChunkData {
         let block_entities_nbt = {
             let entities_guard = self.pending_block_entities.lock().unwrap();
             entities_guard.values().cloned().collect::<Vec<_>>()
+        };
+        let custom_block_data_nbt = {
+            let data = self.custom_block_data.lock().unwrap();
+            data.iter()
+                .map(|(position, value)| {
+                    let mut nbt = NbtCompound::new();
+                    nbt.put_int("x", position.0.x);
+                    nbt.put_int("y", position.0.y);
+                    nbt.put_int("z", position.0.z);
+                    nbt.put("data", pumpkin_nbt::tag::NbtTag::Compound(value.clone()));
+                    nbt
+                })
+                .collect::<Vec<_>>()
         };
 
         let light_lock = self.light_engine.lock().unwrap();
@@ -232,6 +262,7 @@ impl ChunkData {
             block_ticks: &self.block_ticks.to_vec(),
             fluid_ticks: &self.fluid_ticks.to_vec(),
             block_entities: &block_entities_nbt,
+            pumpkin_block_data: &custom_block_data_nbt,
             light_correct: is_light_correct,
         };
 
@@ -497,6 +528,8 @@ struct ChunkNbt {
     fluid_ticks: Vec<ScheduledTick<&'static Fluid>>,
     #[serde(rename = "block_entities")]
     block_entities: Vec<NbtCompound>,
+    #[serde(rename = "PumpkinBlockData", default)]
+    pumpkin_block_data: Vec<NbtCompound>,
     #[serde(rename = "isLightOn", default)]
     light_correct: bool,
 }
@@ -521,6 +554,8 @@ struct ChunkNbtRef<'a> {
     fluid_ticks: &'a [ScheduledTick<&'static Fluid>],
     #[serde(rename = "block_entities")]
     block_entities: &'a [NbtCompound],
+    #[serde(rename = "PumpkinBlockData")]
+    pumpkin_block_data: &'a [NbtCompound],
     #[serde(rename = "isLightOn", default)]
     light_correct: bool,
 }

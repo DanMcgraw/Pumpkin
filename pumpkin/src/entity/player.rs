@@ -10,7 +10,7 @@ use std::str::FromStr;
 use std::sync::atomic::{
     AtomicBool, AtomicI8, AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering,
 };
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -70,8 +70,8 @@ use pumpkin_inventory::player::{
     player_inventory::PlayerInventory, player_screen_handler::PlayerScreenHandler,
 };
 use pumpkin_inventory::screen_handler::{
-    ClickType, InventoryPlayer, PlayerFuture, ScreenHandler, ScreenHandlerFactory,
-    ScreenHandlerListener,
+    AnvilOperation, ClickType, EnchantingOffer, EnchantingOperation, GrindstoneOperation,
+    InventoryPlayer, PlayerFuture, ScreenHandler, ScreenHandlerFactory, ScreenHandlerListener,
 };
 use pumpkin_inventory::sync_handler::SyncHandler;
 use pumpkin_macros::send_cancellable;
@@ -121,13 +121,21 @@ use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
 use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
 use crate::plugin::player::craft_item::CraftItemEvent;
+use crate::plugin::player::anvil_prepare::AnvilPrepareEvent;
+use crate::plugin::player::anvil_repair::AnvilRepairEvent;
+use crate::plugin::player::enchant_item::EnchantItemEvent;
+use crate::plugin::player::enchant_item_generate::EnchantItemGenerateEvent;
 use crate::plugin::player::exp_change::PlayerExpChangeEvent;
 use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use crate::plugin::player::furnace_extract::FurnaceExtractEvent;
+use crate::plugin::player::grindstone::{GrindstoneEvent, GrindstoneTakeEvent};
 use crate::plugin::player::inventory_drag::InventoryDragEvent;
 use crate::plugin::player::inventory_interact::InventoryClickEvent;
 use crate::plugin::player::inventory_open::InventoryOpenEvent;
 use crate::plugin::player::player_change_world::PlayerChangeWorldEvent;
+use crate::plugin::player::player_attack::{
+    PlayerAttackDamageEvent, PlayerAttackValidateEvent,
+};
 use crate::plugin::player::player_drop_item::PlayerDropItemEvent;
 use crate::plugin::player::player_gamemode_change::PlayerGamemodeChangeEvent;
 use crate::plugin::player::player_interact_event::{InteractAction, PlayerInteractEvent};
@@ -794,6 +802,8 @@ pub struct Player {
     pub keep_inventory_on_death: AtomicBool,
     /// Whether the player should keep their experience level on the next death.
     pub keep_level_on_death: AtomicBool,
+    /// Namespaced plugin-owned state persisted in the vanilla player data file.
+    plugin_data: RwLock<NbtCompound>,
 }
 
 use base64::prelude::*;
@@ -1133,6 +1143,48 @@ impl Player {
             bedrock_skin: ArcSwap::new(Arc::new(bedrock_skin)),
             keep_inventory_on_death: AtomicBool::new(false),
             keep_level_on_death: AtomicBool::new(false),
+            plugin_data: RwLock::new(NbtCompound::new()),
+        }
+    }
+
+    /// Returns a cloned plugin-owned value from this player's persistent data.
+    #[must_use]
+    pub fn get_plugin_data(&self, namespace: &str, key: &str) -> Option<NbtTag> {
+        self.plugin_data
+            .read()
+            .unwrap()
+            .get(namespace)?
+            .extract_compound()?
+            .get(key)
+            .cloned()
+    }
+
+    /// Stores a plugin-owned value after enforcing namespace and size limits.
+    pub fn set_plugin_data(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: NbtTag,
+    ) -> Result<(), crate::plugin::api::persistent_data::PluginDataError> {
+        let mut root = self.plugin_data.write().unwrap();
+        let namespace_data = crate::plugin::api::persistent_data::namespace_with_value(
+            &root, namespace, key, value,
+        )?;
+        root.child_tags
+            .insert(namespace.into(), NbtTag::Compound(namespace_data));
+        Ok(())
+    }
+
+    /// Removes one plugin-owned value and prunes an empty namespace.
+    pub fn remove_plugin_data(&self, namespace: &str, key: &str) {
+        let mut root = self.plugin_data.write().unwrap();
+        let Some(NbtTag::Compound(mut namespace_data)) = root.child_tags.remove(namespace) else {
+            return;
+        };
+        namespace_data.child_tags.remove(key);
+        if !namespace_data.is_empty() {
+            root.child_tags
+                .insert(namespace.into(), NbtTag::Compound(namespace_data));
         }
     }
 
@@ -1326,6 +1378,33 @@ impl Player {
 
         let inventory = self.inventory();
         let item_stack = inventory.held_item();
+        let weapon = item_stack.lock().await.clone();
+        let Some(attacker) = world.get_player_by_uuid(self.gameprofile.id) else {
+            return;
+        };
+        let validation = server
+            .plugin_manager
+            .fire(PlayerAttackValidateEvent {
+                player: attacker.clone(),
+                target: victim.clone(),
+                weapon: weapon.clone(),
+                maximum_reach: self
+                    .living_entity
+                    .get_attribute_value(&Attributes::ENTITY_INTERACTION_RANGE),
+                cancelled: false,
+            })
+            .await;
+        let maximum_reach = validation.maximum_reach.clamp(0.0, 16.0);
+        if validation.cancelled
+            || !maximum_reach.is_finite()
+            || attacker_entity
+                .pos
+                .load()
+                .squared_distance_to_vec(&victim_entity.pos.load())
+                > maximum_reach * maximum_reach
+        {
+            return;
+        }
 
         let base_damage = self
             .living_entity
@@ -1439,6 +1518,26 @@ impl Player {
             damage += 1.5 * f64::from(fall_distance);
         }
 
+        let damage_event = server
+            .plugin_manager
+            .fire(PlayerAttackDamageEvent {
+                player: attacker,
+                target: victim.clone(),
+                weapon,
+                base_damage: base_damage as f32,
+                final_damage: damage as f32,
+                sweeping: matches!(attack_type, AttackType::Sweeping),
+                knockback_multiplier: 1.0,
+                cancelled: false,
+            })
+            .await;
+        if damage_event.cancelled || !damage_event.final_damage.is_finite() {
+            return;
+        }
+        damage = f64::from(damage_event.final_damage.clamp(0.0, 2048.0));
+        let sweeping = damage_event.sweeping;
+        let knockback_multiplier = damage_event.knockback_multiplier.clamp(0.0, 8.0);
+
         if !victim
             .damage_with_context(
                 &*victim,
@@ -1518,49 +1617,49 @@ impl Player {
         );
 
         if victim.get_living_entity().is_some() {
-            let mut knockback_strength = 1.0 + f64::from(knockback_level);
-            match attack_type {
-                AttackType::Knockback => knockback_strength += 1.0,
-                AttackType::Sweeping => {
-                    combat::spawn_sweep_particle(attacker_entity, &world, &pos);
+            let mut knockback_strength = (1.0 + f64::from(knockback_level))
+                * f64::from(knockback_multiplier);
+            if matches!(attack_type, AttackType::Knockback) {
+                knockback_strength += f64::from(knockback_multiplier);
+            }
+            if sweeping {
+                combat::spawn_sweep_particle(attacker_entity, &world, &pos);
 
-                    let mut sweep_damage = 1.0;
-                    if let Some(enchantments) = item_stack
-                        .lock()
-                        .await
-                        .get_data_component::<EnchantmentsImpl>()
-                    {
-                        for (enchantment, level) in enchantments.enchantment.iter() {
-                            if **enchantment == Enchantment::SWEEPING_EDGE {
-                                sweep_damage +=
-                                    damage as f32 * (*level as f32 / (*level as f32 + 1.0));
-                            }
-                        }
-                    }
-
-                    let search_box = BoundingBox::new(
-                        Vector3::new(pos.x - 1.0, pos.y - 0.5, pos.z - 1.0),
-                        Vector3::new(pos.x + 1.0, pos.y + 0.5, pos.z + 1.0),
-                    );
-                    let victims = world.get_all_at_box(&search_box);
-                    for other_victim in victims {
-                        if other_victim.get_entity().entity_id != victim_entity.entity_id
-                            && other_victim.get_entity().entity_id != attacker_entity.entity_id
-                        {
-                            other_victim
-                                .damage_with_context(
-                                    other_victim.as_ref(),
-                                    sweep_damage,
-                                    DamageType::PLAYER_ATTACK,
-                                    None,
-                                    Some(self),
-                                    Some(self),
-                                )
-                                .await;
+                let mut sweep_damage = 1.0;
+                if let Some(enchantments) = item_stack
+                    .lock()
+                    .await
+                    .get_data_component::<EnchantmentsImpl>()
+                {
+                    for (enchantment, level) in enchantments.enchantment.iter() {
+                        if **enchantment == Enchantment::SWEEPING_EDGE {
+                            sweep_damage +=
+                                damage as f32 * (*level as f32 / (*level as f32 + 1.0));
                         }
                     }
                 }
-                _ => {}
+
+                let search_box = BoundingBox::new(
+                    Vector3::new(pos.x - 1.0, pos.y - 0.5, pos.z - 1.0),
+                    Vector3::new(pos.x + 1.0, pos.y + 0.5, pos.z + 1.0),
+                );
+                let victims = world.get_all_at_box(&search_box);
+                for other_victim in victims {
+                    if other_victim.get_entity().entity_id != victim_entity.entity_id
+                        && other_victim.get_entity().entity_id != attacker_entity.entity_id
+                    {
+                        other_victim
+                            .damage_with_context(
+                                other_victim.as_ref(),
+                                sweep_damage,
+                                DamageType::PLAYER_ATTACK,
+                                None,
+                                Some(self),
+                                Some(self),
+                            )
+                            .await;
+                    }
+                }
             }
             if config.knockback {
                 combat::handle_knockback(attacker_entity, victim_entity, knockback_strength);
@@ -5034,7 +5133,7 @@ impl Player {
             .as_any_mut()
             .downcast_mut::<pumpkin_inventory::anvil::AnvilScreenHandler>()
         {
-            anvil_handler.update_item_name(packet.item_name).await;
+            anvil_handler.update_item_name(packet.item_name, self.as_ref()).await;
         }
     }
 
@@ -5716,6 +5815,11 @@ impl NBTStorage for Player {
             }
             nbt.put_int("XpSeed", self.enchantment_seed.load(Ordering::Relaxed));
             self.stats.lock().await.write_nbt(nbt);
+            let plugin_data = self.plugin_data.read().unwrap().clone();
+            if !plugin_data.is_empty() {
+                nbt.child_tags
+                    .insert("PumpkinPluginData".into(), NbtTag::Compound(plugin_data));
+            }
         })
     }
 
@@ -5774,6 +5878,10 @@ impl NBTStorage for Player {
                 Ordering::Relaxed,
             );
             self.stats.lock().await.read_nbt(nbt);
+            *self.plugin_data.write().unwrap() = nbt
+                .get_compound("PumpkinPluginData")
+                .cloned()
+                .unwrap_or_default();
         })
     }
 }
@@ -6778,6 +6886,165 @@ impl InventoryPlayer for Player {
                     ))
                     .await;
             }
+        })
+    }
+
+    fn on_enchanting_offer(
+        &self,
+        offer: EnchantingOffer,
+    ) -> PlayerFuture<'_, Option<EnchantingOffer>> {
+        Box::pin(async move {
+            let server = self.world().server.upgrade()?;
+            let player = self.world().get_player_by_id(self.entity_id())?;
+            let event = server
+                .plugin_manager
+                .fire(EnchantItemGenerateEvent {
+                    player,
+                    item: offer.item,
+                    slot: offer.slot,
+                    bookshelf_count: offer.bookshelf_count,
+                    level_requirement: offer.level_requirement,
+                    enchantment_id: offer.enchantment_id,
+                    enchantment_level: offer.enchantment_level,
+                    cancelled: false,
+                })
+                .await;
+            (!event.cancelled).then_some(EnchantingOffer {
+                item: event.item,
+                slot: event.slot,
+                bookshelf_count: event.bookshelf_count,
+                level_requirement: event.level_requirement,
+                enchantment_id: event.enchantment_id,
+                enchantment_level: event.enchantment_level,
+            })
+        })
+    }
+
+    fn on_enchant_item(
+        &self,
+        operation: EnchantingOperation,
+    ) -> PlayerFuture<'_, Option<EnchantingOperation>> {
+        Box::pin(async move {
+            let server = self.world().server.upgrade()?;
+            let player = self.world().get_player_by_id(self.entity_id())?;
+            let event = server
+                .plugin_manager
+                .fire(EnchantItemEvent {
+                    player,
+                    item: operation.item,
+                    slot: operation.slot,
+                    level_cost: operation.level_cost,
+                    lapis_cost: operation.lapis_cost,
+                    enchantments: operation.enchantments,
+                    cancelled: false,
+                })
+                .await;
+            (!event.cancelled).then_some(EnchantingOperation {
+                item: event.item,
+                slot: event.slot,
+                level_cost: event.level_cost,
+                lapis_cost: event.lapis_cost,
+                enchantments: event.enchantments,
+            })
+        })
+    }
+
+    fn on_anvil_prepare(
+        &self,
+        operation: AnvilOperation,
+    ) -> PlayerFuture<'_, Option<AnvilOperation>> {
+        Box::pin(async move {
+            let server = self.world().server.upgrade()?;
+            let player = self.world().get_player_by_id(self.entity_id())?;
+            let event = server
+                .plugin_manager
+                .fire(AnvilPrepareEvent {
+                    player,
+                    input_first: operation.input_first,
+                    input_second: operation.input_second,
+                    output: operation.output,
+                    level_cost: operation.level_cost,
+                    material_cost: operation.material_cost,
+                    cancelled: false,
+                })
+                .await;
+            (!event.cancelled).then_some(AnvilOperation {
+                input_first: event.input_first,
+                input_second: event.input_second,
+                output: event.output,
+                level_cost: event.level_cost,
+                material_cost: event.material_cost,
+            })
+        })
+    }
+
+    fn on_anvil_take(&self, operation: AnvilOperation) -> PlayerFuture<'_, bool> {
+        Box::pin(async move {
+            let Some(server) = self.world().server.upgrade() else {
+                return false;
+            };
+            let Some(player) = self.world().get_player_by_id(self.entity_id()) else {
+                return false;
+            };
+            let event = server
+                .plugin_manager
+                .fire(AnvilRepairEvent {
+                    player,
+                    input_first: operation.input_first,
+                    input_second: operation.input_second,
+                    output: operation.output,
+                    level_cost: operation.level_cost,
+                    material_cost: operation.material_cost,
+                    cancelled: false,
+                })
+                .await;
+            !event.cancelled
+        })
+    }
+
+    fn on_grindstone_prepare(
+        &self,
+        operation: GrindstoneOperation,
+    ) -> PlayerFuture<'_, Option<GrindstoneOperation>> {
+        Box::pin(async move {
+            let server = self.world().server.upgrade()?;
+            let player = self.world().get_player_by_id(self.entity_id())?;
+            let event = server
+                .plugin_manager
+                .fire(GrindstoneEvent {
+                    player,
+                    input_top: operation.input_top,
+                    input_bottom: operation.input_bottom,
+                    output: operation.output,
+                    experience: operation.experience,
+                    cancelled: false,
+                })
+                .await;
+            (!event.cancelled).then_some(GrindstoneOperation {
+                input_top: event.input_top,
+                input_bottom: event.input_bottom,
+                output: event.output,
+                experience: event.experience,
+            })
+        })
+    }
+
+    fn on_grindstone_take(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, bool> {
+        Box::pin(async move {
+            let Some(server) = self.world().server.upgrade() else { return false; };
+            let Some(player) = self.world().get_player_by_id(self.entity_id()) else { return false; };
+            let event = server
+                .plugin_manager
+                .fire(GrindstoneTakeEvent {
+                    player,
+                    input_top: operation.input_top,
+                    input_bottom: operation.input_bottom,
+                    output: operation.output,
+                    experience: operation.experience,
+                    cancelled: false,
+                })
+                .await;
+            !event.cancelled
         })
     }
 }

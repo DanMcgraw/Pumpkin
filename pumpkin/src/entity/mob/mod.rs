@@ -540,11 +540,33 @@ pub trait Mob: EntityBase + Send + Sync {
         false
     }
 
+    fn is_tamed(&self) -> bool {
+        self.get_owner_uuid().is_some()
+    }
+
+    fn set_sitting(&self, _sitting: bool) {}
+
     fn get_base_experience_reward(&self) -> u32 {
         self.get_entity().entity_type.experience_reward
     }
 }
 impl<T: Mob + Send + 'static> EntityBase for T {
+    fn owner_uuid(&self) -> Option<Uuid> {
+        Mob::get_owner_uuid(self)
+    }
+
+    fn is_tamed(&self) -> bool {
+        Mob::is_tamed(self)
+    }
+
+    fn is_sitting(&self) -> bool {
+        Mob::is_sitting(self)
+    }
+
+    fn set_sitting(&self, sitting: bool) {
+        Mob::set_sitting(self, sitting);
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

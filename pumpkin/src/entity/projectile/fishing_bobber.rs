@@ -21,6 +21,7 @@ use pumpkin_util::math::vector3::Vector3;
 pub struct FishingBobberEntity {
     pub entity: Entity,
     pub owner_id: i32,
+    pub owner_uuid: uuid::Uuid,
     pub hooked_entity_id: AtomicI32,
     pub in_ground: AtomicBool,
     pub has_hit: AtomicBool,
@@ -41,6 +42,7 @@ impl FishingBobberEntity {
         Self {
             entity,
             owner_id: owner.living_entity.entity.entity_id,
+            owner_uuid: owner.gameprofile.id,
             hooked_entity_id: AtomicI32::new(0),
             in_ground: AtomicBool::new(false),
             has_hit: AtomicBool::new(false),
@@ -90,15 +92,16 @@ impl FishingBobberEntity {
         }
 
         if self.bite_countdown.load(Ordering::Relaxed) > 0 {
-            let event = PlayerFishEvent::new(
+            let mut event = PlayerFishEvent::new(
                 player.clone(),
                 None,
                 hook_uuid,
-                String::new(),
+                "minecraft:cod".to_string(),
                 PlayerFishState::CaughtFish,
                 Hand::Right,
                 1,
             );
+            event.caught_item = Some(ItemStack::new(1, &Item::COD));
             let event = server.plugin_manager.fire(event).await;
             if event.cancelled {
                 return 0;
@@ -113,9 +116,16 @@ impl FishingBobberEntity {
                 )
                 .await;
 
-            // TODO: Use actual loot tables. For now, just give a raw cod.
-            let _item_stack = ItemStack::new(1, &Item::COD);
-            // player.inventory().add_item(item_stack).await; // Need public add_item
+            if let Some(item_stack) = event.caught_item {
+                pumpkin_inventory::screen_handler::offer_or_drop_stack(
+                    player.as_ref(),
+                    item_stack,
+                )
+                .await;
+            }
+            if event.exp_to_drop > 0 {
+                player.add_experience_points(event.exp_to_drop).await;
+            }
 
             world.play_sound(
                 Sound::EntityExperienceOrbPickup,
@@ -309,6 +319,10 @@ impl FishingBobberEntity {
 impl NBTStorage for FishingBobberEntity {}
 
 impl EntityBase for FishingBobberEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        Some(self.owner_uuid)
+    }
+
     fn get_entity(&self) -> &Entity {
         &self.entity
     }

@@ -45,6 +45,7 @@ pub fn is_projectile(entity_type: &EntityType) -> bool {
 pub struct ThrownItemEntity {
     pub entity: Entity,
     pub owner_id: Option<i32>,
+    pub owner_uuid: Option<uuid::Uuid>,
     pub collides_with_projectiles: bool,
     pub has_hit: AtomicBool,
     pub gravity: f64,
@@ -58,6 +59,7 @@ impl ThrownItemEntity {
         Self {
             entity,
             owner_id: Some(owner.entity_id),
+            owner_uuid: Some(owner.entity_uuid),
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
             gravity,

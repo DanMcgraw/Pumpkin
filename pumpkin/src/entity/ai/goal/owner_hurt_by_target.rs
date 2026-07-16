@@ -24,7 +24,7 @@ impl OwnerHurtByTargetGoal {
 impl Goal for OwnerHurtByTargetGoal {
     fn can_start<'a>(&'a mut self, mob: &'a dyn Mob) -> GoalFuture<'a, bool> {
         Box::pin(async {
-            if mob.is_sitting() {
+            if Mob::is_sitting(mob) {
                 return false;
             }
 

@@ -81,7 +81,7 @@ use pumpkin_data::{
 use pumpkin_data::{BlockDirection, BlockState, HorizontalFacingExt, translation};
 use pumpkin_inventory::crafting::recipe_provider::RecipeProvider;
 use pumpkin_inventory::screen_handler::InventoryPlayer;
-use pumpkin_nbt::{compound::NbtCompound, to_bytes_unnamed};
+use pumpkin_nbt::{compound::NbtCompound, tag::NbtTag, to_bytes_unnamed};
 use pumpkin_protocol::bedrock::client::set_actor_data::{CSetActorData, PropertySyncData};
 use pumpkin_protocol::bedrock::client::start_game::{CStartGame, ServerTelemetryData};
 use pumpkin_protocol::java::client::play::{
@@ -253,6 +253,74 @@ impl PartialEq for World {
 impl Eq for World {}
 
 impl World {
+    /// Reads one namespaced metadata compound attached to a loaded block position.
+    #[must_use]
+    pub fn get_block_metadata(&self, position: &BlockPos, key: &str) -> Option<NbtCompound> {
+        let (chunk_coordinate, _) = position.chunk_and_chunk_relative_position();
+        self.level
+            .read_chunk_sync(&chunk_coordinate, |chunk| {
+                chunk
+                    .custom_block_data
+                    .lock()
+                    .unwrap()
+                    .get(position)
+                    .and_then(|root| root.get_compound(key))
+                    .cloned()
+            })
+            .flatten()
+    }
+
+    /// Stores or removes one bounded, namespaced metadata compound on a loaded block.
+    pub fn set_block_metadata(
+        &self,
+        position: &BlockPos,
+        key: &str,
+        value: Option<NbtCompound>,
+    ) -> Result<(), crate::plugin::api::persistent_data::PluginDataError> {
+        let Some((namespace, component)) = key.split_once(':') else {
+            return Err(crate::plugin::api::persistent_data::PluginDataError::InvalidKey);
+        };
+        if !crate::plugin::api::persistent_data::valid_component(namespace)
+            || !crate::plugin::api::persistent_data::valid_component(component)
+        {
+            return Err(crate::plugin::api::persistent_data::PluginDataError::InvalidKey);
+        }
+        if let Some(value) = &value {
+            let mut encoded = Vec::new();
+            to_bytes_unnamed(value, &mut encoded).map_err(|error| {
+                crate::plugin::api::persistent_data::PluginDataError::Encode(error.to_string())
+            })?;
+            if encoded.len() > crate::plugin::api::persistent_data::MAX_PLAYER_NAMESPACE_BYTES {
+                return Err(crate::plugin::api::persistent_data::PluginDataError::NamespaceTooLarge);
+            }
+        }
+
+        let (chunk_coordinate, _) = position.chunk_and_chunk_relative_position();
+        self.level.read_chunk_sync(&chunk_coordinate, |chunk| {
+            let mut data = chunk.custom_block_data.lock().unwrap();
+            if let Some(value) = &value {
+                data.entry(*position)
+                    .or_default()
+                    .child_tags
+                    .insert(key.into(), NbtTag::Compound(value.clone()));
+            } else if let Some(root) = data.get_mut(position) {
+                root.child_tags.remove(key);
+                if root.is_empty() { data.remove(position); }
+            }
+            chunk.mark_dirty(true);
+        });
+        Ok(())
+    }
+
+    fn clear_block_metadata(&self, position: &BlockPos) {
+        let (chunk_coordinate, _) = position.chunk_and_chunk_relative_position();
+        self.level.read_chunk_sync(&chunk_coordinate, |chunk| {
+            if chunk.custom_block_data.lock().unwrap().remove(position).is_some() {
+                chunk.mark_dirty(true);
+            }
+        });
+    }
+
     pub async fn get_block_state_id_async(&self, position: &BlockPos) -> BlockStateId {
         if !self.is_in_build_limit(*position) {
             return Block::AIR.default_state.id;
@@ -4821,6 +4889,10 @@ impl World {
         let block_moved = flags.contains(BlockFlags::MOVED);
 
         let is_new_block = old_block != new_block;
+
+        if is_new_block {
+            self.clear_block_metadata(position);
+        }
 
         // WorldChunk.java line 305-314
         if is_new_block

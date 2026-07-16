@@ -257,6 +257,7 @@ pub fn from_type(
             let thrown = ThrownItemEntity {
                 entity,
                 owner_id: None,
+                owner_uuid: None,
                 collides_with_projectiles: false,
                 has_hit: AtomicBool::new(false),
                 gravity: WIND_CHARGE_GRAVITY,
@@ -267,6 +268,7 @@ pub fn from_type(
             let thrown = ThrownItemEntity {
                 entity,
                 owner_id: None,
+                owner_uuid: None,
                 collides_with_projectiles: false,
                 has_hit: AtomicBool::new(false),
                 gravity: WIND_CHARGE_GRAVITY,

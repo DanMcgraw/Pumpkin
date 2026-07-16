@@ -25,6 +25,7 @@ use crate::plugin::api::events::entity::projectile_hit::ProjectileHitEvent;
 pub struct TridentEntity {
     pub entity: Entity,
     pub owner_id: Option<i32>,
+    pub owner_uuid: Option<uuid::Uuid>,
     pub item_stack: Arc<Mutex<ItemStack>>,
     pub pickup: ArrowPickup,
     pub in_ground: AtomicBool,
@@ -46,6 +47,7 @@ impl TridentEntity {
         Self {
             entity,
             owner_id,
+            owner_uuid: None,
             item_stack: Arc::new(Mutex::new(ItemStack::new(1, &Item::TRIDENT))),
             pickup: ArrowPickup::Disallowed,
             in_ground: AtomicBool::new(false),
@@ -71,6 +73,7 @@ impl TridentEntity {
         Self {
             entity,
             owner_id: Some(shooter.entity_id),
+            owner_uuid: Some(shooter.entity_uuid),
             item_stack: Arc::new(Mutex::new(item_stack)),
             pickup,
             in_ground: AtomicBool::new(false),
@@ -158,6 +161,10 @@ impl TridentEntity {
 impl NBTStorage for TridentEntity {}
 
 impl EntityBase for TridentEntity {
+    fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
+        self.owner_uuid
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,

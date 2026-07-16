@@ -112,6 +112,46 @@ impl ScreenProperty {
 /// Type alias for async player operations.
 pub type PlayerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// A server-computed enchanting-table offer that may be adjusted by the player implementation.
+#[derive(Clone)]
+pub struct EnchantingOffer {
+    pub item: ItemStack,
+    pub slot: usize,
+    pub bookshelf_count: i32,
+    pub level_requirement: i32,
+    pub enchantment_id: i32,
+    pub enchantment_level: i32,
+}
+
+/// The complete enchanting operation immediately before levels and lapis are consumed.
+#[derive(Clone)]
+pub struct EnchantingOperation {
+    pub item: ItemStack,
+    pub slot: usize,
+    pub level_cost: i32,
+    pub lapis_cost: u8,
+    pub enchantments: Vec<(i32, i32)>,
+}
+
+/// A complete anvil preview/commit operation.
+#[derive(Clone)]
+pub struct AnvilOperation {
+    pub input_first: ItemStack,
+    pub input_second: ItemStack,
+    pub output: ItemStack,
+    pub level_cost: i16,
+    pub material_cost: u8,
+}
+
+/// A complete grindstone preview/commit operation.
+#[derive(Clone)]
+pub struct GrindstoneOperation {
+    pub input_top: ItemStack,
+    pub input_bottom: ItemStack,
+    pub output: ItemStack,
+    pub experience: i32,
+}
+
 /// Interface for player interactions with containers.
 ///
 /// This trait abstracts the player's ability to:
@@ -209,6 +249,50 @@ pub trait InventoryPlayer: Send + Sync {
         _experience: i32,
     ) -> PlayerFuture<'_, ()> {
         Box::pin(async {})
+    }
+
+    /// Allows the server integration layer to mutate or hide an enchanting-table offer.
+    fn on_enchanting_offer(
+        &self,
+        offer: EnchantingOffer,
+    ) -> PlayerFuture<'_, Option<EnchantingOffer>> {
+        Box::pin(async move { Some(offer) })
+    }
+
+    /// Allows the server integration layer to mutate or cancel an enchanting transaction.
+    fn on_enchant_item(
+        &self,
+        operation: EnchantingOperation,
+    ) -> PlayerFuture<'_, Option<EnchantingOperation>> {
+        Box::pin(async move { Some(operation) })
+    }
+
+    /// Allows the server integration layer to mutate or cancel an anvil preview.
+    fn on_anvil_prepare(
+        &self,
+        operation: AnvilOperation,
+    ) -> PlayerFuture<'_, Option<AnvilOperation>> {
+        Box::pin(async move { Some(operation) })
+    }
+
+    /// Allows the server integration layer to cancel an anvil commit before costs are consumed.
+    fn on_anvil_take(&self, operation: AnvilOperation) -> PlayerFuture<'_, bool> {
+        let _ = operation;
+        Box::pin(async { true })
+    }
+
+    /// Allows the server integration layer to mutate or cancel a grindstone preview.
+    fn on_grindstone_prepare(
+        &self,
+        operation: GrindstoneOperation,
+    ) -> PlayerFuture<'_, Option<GrindstoneOperation>> {
+        Box::pin(async move { Some(operation) })
+    }
+
+    /// Allows the server integration layer to cancel a grindstone commit.
+    fn on_grindstone_take(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, bool> {
+        let _ = operation;
+        Box::pin(async { true })
     }
 
     /// Increments a statistic for the player.
