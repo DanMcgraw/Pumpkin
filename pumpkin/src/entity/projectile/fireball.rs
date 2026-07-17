@@ -85,15 +85,14 @@ impl EntityBase for FireballEntity {
             if let ProjectileHit::Entity { ref entity, .. } = hit {
                 let entity_clone = entity.clone();
                 let world = self.get_entity().world.load();
-                let combuster = self
+                let owner = self
                     .thrown
                     .owner_id
-                    .and_then(|id| world.get_entity_by_id(id))
-                    .unwrap_or_else(|| {
-                        world
-                            .get_entity_by_id(self.get_entity().entity_id)
-                            .expect("fireball should exist")
-                    });
+                    .and_then(|id| world.get_entity_by_id(id));
+                let projectile = world
+                    .get_entity_by_id(self.get_entity().entity_id)
+                    .expect("fireball should exist");
+                let combuster = owner.clone().unwrap_or_else(|| projectile.clone());
 
                 tokio::spawn(async move {
                     let server = world.server.upgrade().expect("server is gone");
@@ -105,10 +104,13 @@ impl EntityBase for FireballEntity {
                     }
                     // Fireball does 6.0 damage in vanilla
                     let _ = entity_clone
-                        .damage(
+                        .damage_with_context(
                             entity_clone.as_ref(),
                             6.0,
                             pumpkin_data::damage::DamageType::FIREBALL,
+                            None,
+                            Some(projectile.as_ref()),
+                            owner.as_deref(),
                         )
                         .await;
                 });

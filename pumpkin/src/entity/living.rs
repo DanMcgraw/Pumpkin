@@ -34,8 +34,9 @@ use crate::entity::mob::slime::SlimeEntity;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
 use crate::entity::{EntityBaseFuture, NbtFuture};
 use crate::plugin::api::events::entity::{
+    damage_attribution::DamageAttribution,
     entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
-    entity_death::EntityDeathEvent,
+    entity_death::EntityDeathEvent, player_kill::PlayerKillEntityEvent,
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
 use crate::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent;
@@ -1407,6 +1408,7 @@ impl LivingEntity {
         damage_type: DamageType,
         source: Option<&dyn EntityBase>,
         cause: Option<&dyn EntityBase>,
+        attribution: DamageAttribution,
     ) {
         let world = self.entity.world.load();
         let dyn_self = world
@@ -1435,23 +1437,7 @@ impl LivingEntity {
                     },
                 )
                 .await;
-            let tool = if let Some(cause_ent) = cause {
-                if let Some(player) = cause_ent
-                    .cast_any()
-                    .downcast_ref::<crate::entity::player::Player>()
-                {
-                    let hand_stack = player
-                        .inventory
-                        .get_stack_in_hand(pumpkin_util::Hand::Right)
-                        .await;
-                    let stack_guard = hand_stack.lock().await;
-                    (stack_guard.item_count > 0).then(|| stack_guard.clone())
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            let tool = attribution.weapon.clone();
 
             let is_raining = world.is_raining().await;
             let is_thundering = world.is_thundering().await;
@@ -1480,8 +1466,12 @@ impl LivingEntity {
                 0
             };
 
-            let killer =
-                cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+            let killer = attribution
+                .attacking_player
+                .as_ref()
+                .map(|player| Arc::clone(player) as Arc<dyn EntityBase>)
+                .or_else(|| attribution.attacker.clone())
+                .or_else(|| attribution.projectile_owner.clone());
 
             let server = world.server.upgrade().expect("server is gone");
 
@@ -1517,7 +1507,8 @@ impl LivingEntity {
                         killer.clone(),
                         player_death_event.drops,
                         player_death_event.dropped_exp,
-                    );
+                    )
+                    .with_attribution(attribution.clone());
                     let entity_death_event = server.plugin_manager.fire(entity_death_event).await;
 
                     (entity_death_event.drops, entity_death_event.dropped_exp)
@@ -1531,18 +1522,33 @@ impl LivingEntity {
                     killer,
                     drops,
                     dropped_exp,
-                );
+                )
+                .with_attribution(attribution.clone());
                 let entity_death_event = server.plugin_manager.fire(entity_death_event).await;
                 (entity_death_event.drops, entity_death_event.dropped_exp)
             };
 
             // Apply mutated drops and XP.
             let block_pos = self.entity.block_pos.load();
+            let completion_drops = final_drops.clone();
             for stack in final_drops {
                 world.drop_stack(&block_pos, stack).await;
             }
             if final_exp > 0 {
                 ExperienceOrbEntity::spawn(&world, self.entity.pos.load(), final_exp as u32).await;
+            }
+
+            if let Some(player) = attribution.attacking_player.clone() {
+                server
+                    .plugin_manager
+                    .fire(PlayerKillEntityEvent {
+                        player,
+                        victim: Arc::clone(&dyn_self),
+                        attribution: attribution.clone(),
+                        drops: completion_drops,
+                        dropped_exp: final_exp,
+                    })
+                    .await;
             }
 
             self.entity.pose.store(EntityPose::Dying);
@@ -2429,13 +2435,19 @@ impl EntityBase for LivingEntity {
                 return false;
             };
 
-            if let Some(source) = source {
-                let Some(damager) = world.get_entity_by_id(source.get_entity().entity_id) else {
-                    return false;
-                };
-                let attacker =
-                    cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+            let direct_source = source
+                .and_then(|source| world.get_entity_by_id(source.get_entity().entity_id));
+            let attacker = cause
+                .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+            let attribution = DamageAttribution::capture(
+                &world,
+                damage_type,
+                direct_source.clone(),
+                attacker.clone(),
+            )
+            .await;
 
+            if let Some(damager) = direct_source {
                 let event = EntityDamageByEntityEvent::new(
                     victim_arc,
                     damager,
@@ -2443,7 +2455,8 @@ impl EntityBase for LivingEntity {
                     damage_type,
                     amount,
                     effective_amount,
-                );
+                )
+                .with_attribution(attribution.clone());
                 let event = server.plugin_manager.fire(event).await;
 
                 if event.cancelled {
@@ -2453,8 +2466,13 @@ impl EntityBase for LivingEntity {
                 amount = event.damage;
                 effective_amount = event.final_damage;
             } else {
-                let event =
-                    EntityDamageEvent::new(victim_arc, damage_type, amount, effective_amount);
+                let event = EntityDamageEvent::new(
+                    victim_arc,
+                    damage_type,
+                    amount,
+                    effective_amount,
+                )
+                .with_attribution(attribution.clone());
                 let event = server.plugin_manager.fire(event).await;
 
                 if event.cancelled {
@@ -2618,7 +2636,7 @@ impl EntityBase for LivingEntity {
             if clamped_health <= 0.0
                 && (bypasses_cooldown_protection || !self.try_use_death_protector(caller).await)
             {
-                self.on_death(damage_type, source, cause).await;
+                self.on_death(damage_type, source, cause, attribution).await;
             }
 
             // Armor durability is based on incoming raw damage, not post-absorption remaining.

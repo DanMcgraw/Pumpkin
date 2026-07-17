@@ -1,5 +1,6 @@
 pub mod chunk_entity_load;
 pub mod chunk_entity_unload;
+pub mod damage_attribution;
 pub mod entity_block_form;
 pub mod entity_breed;
 pub mod entity_change_block;
@@ -22,9 +23,11 @@ pub mod explosion_prime;
 pub mod potion_splash;
 pub mod projectile_hit;
 pub mod projectile_launch;
+pub mod player_kill;
 
 pub use chunk_entity_load::ChunkEntityLoadEvent;
 pub use chunk_entity_unload::ChunkEntityUnloadEvent;
+pub use damage_attribution::{AttackKind, DamageAttribution};
 pub use entity_block_form::EntityBlockFormEvent;
 pub use entity_breed::EntityBreedEvent;
 pub use entity_change_block::EntityChangeBlockEvent;
@@ -47,3 +50,4 @@ pub use explosion_prime::ExplosionPrimeEvent;
 pub use potion_splash::PotionSplashEvent;
 pub use projectile_hit::ProjectileHitEvent;
 pub use projectile_launch::ProjectileLaunchEvent;
+pub use player_kill::PlayerKillEntityEvent;

@@ -165,6 +165,10 @@ impl EntityBase for TridentEntity {
         self.owner_uuid
     }
 
+    fn attack_weapon_snapshot(&self) -> EntityBaseFuture<'_, Option<ItemStack>> {
+        Box::pin(async move { Some(self.item_stack.lock().await.clone()) })
+    }
+
     fn tick<'a>(
         &'a self,
         caller: &'a Arc<dyn EntityBase>,
@@ -330,7 +334,8 @@ impl EntityBase for TridentEntity {
                 .get_entity_by_id(entity.entity_id)
                 .expect("trident not found in world");
             let server = world.server.upgrade().expect("server is gone");
-            let hit_event = ProjectileHitEvent::new(caller, hit_entity, hit_block, hit_block_pos);
+            let hit_event =
+                ProjectileHitEvent::new(caller.clone(), hit_entity, hit_block, hit_block_pos);
             let hit_event = server.plugin_manager.fire(hit_event).await;
             if hit_event.cancelled {
                 return;
@@ -383,8 +388,16 @@ impl EntityBase for TridentEntity {
                         }
                     }
 
+                    let owner = self.owner_id.and_then(|id| world.get_entity_by_id(id));
                     target
-                        .damage(&*target, damage as f32, DamageType::TRIDENT)
+                        .damage_with_context(
+                            &*target,
+                            damage as f32,
+                            DamageType::TRIDENT,
+                            None,
+                            Some(caller.as_ref()),
+                            owner.as_deref(),
+                        )
                         .await;
 
                     // Play hit sound

@@ -86,6 +86,7 @@ impl EntityBase for EnderPearlEntity {
                 .thrown
                 .owner_id
                 .and_then(|id| world.get_entity_by_id(id));
+            let projectile = world.get_entity_by_id(self.get_entity().entity_id);
 
             if let (
                 ProjectileHit::Entity {
@@ -94,7 +95,8 @@ impl EntityBase for EnderPearlEntity {
                     ..
                 },
                 Some(owner),
-            ) = (&hit, attacker)
+                Some(projectile),
+            ) = (&hit, attacker.as_ref(), projectile.as_ref())
             {
                 let victim_ref = &**hit_entity;
                 hit_entity
@@ -103,8 +105,8 @@ impl EntityBase for EnderPearlEntity {
                         0.0,
                         DamageType::THROWN,
                         Some(*hit_pos),
-                        Some(owner.get_entity()),
-                        Some(victim_ref),
+                        Some(projectile.as_ref()),
+                        Some(owner.as_ref()),
                     )
                     .await;
             }

@@ -3,6 +3,7 @@ use pumpkin_macros::{Event, cancellable};
 use std::sync::Arc;
 
 use crate::entity::EntityBase;
+use super::damage_attribution::DamageAttribution;
 
 /// Fired when a living entity is damaged by another entity.
 ///
@@ -30,6 +31,9 @@ pub struct EntityDamageByEntityEvent {
 
     /// Final damage to apply.
     pub final_damage: f32,
+
+    /// Authoritative source and weapon snapshot captured for this attack.
+    pub attribution: DamageAttribution,
 }
 
 impl EntityDamageByEntityEvent {
@@ -50,7 +54,14 @@ impl EntityDamageByEntityEvent {
             damage_type,
             damage,
             final_damage,
+            attribution: DamageAttribution::environment(damage_type),
             cancelled: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: DamageAttribution) -> Self {
+        self.attribution = attribution;
+        self
     }
 }

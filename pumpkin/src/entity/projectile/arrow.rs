@@ -55,6 +55,7 @@ pub struct ArrowEntity {
     pub entity: Entity,
     pub owner_id: Option<i32>,
     pub owner_uuid: Option<uuid::Uuid>,
+    pub launch_weapon: std::sync::RwLock<Option<ItemStack>>,
     pub base_damage: f64,
     pub pickup: ArrowPickup,
     pub is_critical: AtomicBool,
@@ -81,6 +82,7 @@ impl ArrowEntity {
             entity,
             owner_id,
             owner_uuid: None,
+            launch_weapon: std::sync::RwLock::new(None),
             base_damage: Self::ARROW_BASE_DAMAGE,
             pickup: ArrowPickup::Disallowed,
             is_critical: AtomicBool::new(false),
@@ -106,6 +108,7 @@ impl ArrowEntity {
             entity,
             owner_id: Some(shooter.entity_id),
             owner_uuid: Some(shooter.entity_uuid),
+            launch_weapon: std::sync::RwLock::new(None),
             base_damage: Self::ARROW_BASE_DAMAGE,
             pickup,
             is_critical: AtomicBool::new(false),
@@ -201,6 +204,11 @@ impl NBTStorage for ArrowEntity {}
 impl EntityBase for ArrowEntity {
     fn projectile_owner_uuid(&self) -> Option<uuid::Uuid> {
         self.owner_uuid
+    }
+
+    fn attack_weapon_snapshot(&self) -> EntityBaseFuture<'_, Option<ItemStack>> {
+        let weapon = self.launch_weapon.read().unwrap().clone();
+        Box::pin(async move { weapon })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -437,8 +445,16 @@ impl EntityBase for ArrowEntity {
                         }
                     }
 
+                    let owner = self.owner_id.and_then(|id| world.get_entity_by_id(id));
                     target
-                        .damage(&*target, damage as f32, DamageType::ARROW)
+                        .damage_with_context(
+                            &*target,
+                            damage as f32,
+                            DamageType::ARROW,
+                            None,
+                            Some(caller.as_ref()),
+                            owner.as_deref(),
+                        )
                         .await;
 
                     if target.get_living_entity().is_some() {

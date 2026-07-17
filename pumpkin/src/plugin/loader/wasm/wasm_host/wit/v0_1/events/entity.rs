@@ -242,6 +242,9 @@ impl ToFromWasmEvent for EntityDamageEvent {
                 damage_type: from_wasm_damage_type(&data.damage_type),
                 damage: data.damage,
                 final_damage: data.final_damage,
+                attribution: crate::plugin::api::events::entity::damage_attribution::DamageAttribution::environment(
+                    from_wasm_damage_type(&data.damage_type),
+                ),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),
@@ -286,6 +289,9 @@ impl ToFromWasmEvent for EntityDamageByEntityEvent {
                 damage_type: from_wasm_damage_type(&data.damage_type),
                 damage: data.damage,
                 final_damage: data.final_damage,
+                attribution: crate::plugin::api::events::entity::damage_attribution::DamageAttribution::environment(
+                    from_wasm_damage_type(&data.damage_type),
+                ),
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),
@@ -333,6 +339,9 @@ impl ToFromWasmEvent for EntityDeathEvent {
                     .map(|drop| consume_item_stack(state, drop))
                     .collect(),
                 dropped_exp: data.dropped_exp,
+                attribution: crate::plugin::api::events::entity::damage_attribution::DamageAttribution::environment(
+                    from_wasm_damage_type(&data.damage_type),
+                ),
             },
             _ => panic!("unexpected event type"),
         }

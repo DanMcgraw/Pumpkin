@@ -514,8 +514,8 @@ impl EntityBase for ShulkerBulletEntity {
                         4.0,
                         DamageType::MOB_PROJECTILE,
                         None,
-                        owner_arc.as_deref(),
                         Some(caller.as_ref()),
+                        owner_arc.as_deref(),
                     )
                     .await;
 

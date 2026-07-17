@@ -171,6 +171,7 @@ impl BowItem {
         // Read enchantments of the held item (bow)
         let held = player.inventory().held_item();
         let stack = held.lock().await;
+        *arrow.launch_weapon.write().unwrap() = Some(stack.clone());
         if let Some(enchantments) =
             stack.get_data_component::<pumpkin_data::data_component_impl::EnchantmentsImpl>()
         {

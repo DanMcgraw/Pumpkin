@@ -133,6 +133,11 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
         None
     }
 
+    /// Owned snapshot of the weapon used to launch this projectile.
+    fn attack_weapon_snapshot(&self) -> EntityBaseFuture<'_, Option<ItemStack>> {
+        Box::pin(async { None })
+    }
+
     /// Vanilla owner identifier for tameable entities.
     fn owner_uuid(&self) -> Option<Uuid> { None }
 

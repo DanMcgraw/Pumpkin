@@ -4,6 +4,7 @@ use pumpkin_macros::Event;
 use std::sync::Arc;
 
 use crate::entity::EntityBase;
+use super::damage_attribution::DamageAttribution;
 
 /// Fired when a living entity dies.
 ///
@@ -25,6 +26,9 @@ pub struct EntityDeathEvent {
 
     /// The amount of experience that will be dropped.
     pub dropped_exp: i32,
+
+    /// Final lethal attack attribution fixed before drops are prepared.
+    pub attribution: DamageAttribution,
 }
 
 impl EntityDeathEvent {
@@ -43,6 +47,13 @@ impl EntityDeathEvent {
             killer,
             drops,
             dropped_exp,
+            attribution: DamageAttribution::environment(damage_type),
         }
+    }
+
+    #[must_use]
+    pub fn with_attribution(mut self, attribution: DamageAttribution) -> Self {
+        self.attribution = attribution;
+        self
     }
 }

@@ -181,6 +181,7 @@ impl CrossbowItem {
                     };
 
                     let arrow = ArrowEntity::new_shot(arrow_entity, player.get_entity(), pickup);
+                    *arrow.launch_weapon.write().unwrap() = Some(stack.clone());
                     arrow.set_velocity_from_rotation(pitch, t_yaw, 0.0, 3.15, 1.0);
                     let arrow_arc: Arc<dyn EntityBase> = Arc::new(arrow);
 
