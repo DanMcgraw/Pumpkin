@@ -519,6 +519,10 @@ impl Context {
 
     /// Asynchronously registers an event handler for a specific event type.
     ///
+    /// Set `blocking` for handlers that need to cancel or change a mutable
+    /// prepare/commit event. Non-blocking handlers receive only the finalized
+    /// immutable event and must copy owned data before offloading work.
+    ///
     /// # Type Parameters
     /// - `E`: The event type that the handler will respond to.
     /// - `H`: The type of the event handler.

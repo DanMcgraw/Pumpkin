@@ -1,3 +1,12 @@
+//! Native plugin events use explicit transaction timing terminology:
+//!
+//! - names containing `Attempt` describe input received before validation;
+//! - names containing `Prepare` expose a cancellable candidate result;
+//! - names containing `Commit` run after revalidation and before mutation;
+//! - names containing `Complete` are immutable success notifications;
+//! - legacy names without a phase retain their documented timing and must not be
+//!   treated as authoritative completion unless their type documentation says so.
+
 use std::any::Any;
 use std::sync::Arc;
 

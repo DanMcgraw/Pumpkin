@@ -2,11 +2,15 @@ pub mod context;
 pub mod events;
 pub mod gui;
 pub mod persistent_data;
+pub mod transaction;
 
 use std::{pin::Pin, sync::Arc};
 
 pub use context::*;
 pub use events::*;
+pub use transaction::{
+    PluginGuiSessionId, PluginTransactionId, TransactionContext, TransactionPhase,
+};
 
 /// Struct representing metadata for a plugin.
 ///

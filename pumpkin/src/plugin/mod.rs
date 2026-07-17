@@ -32,7 +32,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Bump this whenever the public plugin API or any event layout changes in a way
 /// that makes old binary plugins incompatible.
-pub const PLUGIN_API_VERSION: u32 = 11;
+pub const PLUGIN_API_VERSION: u32 = 12;
 
 const PLUGIN_DIR: &str = "./plugins";
 
@@ -1033,7 +1033,14 @@ impl PluginManager {
         }
     }
 
-    /// Fire an event to all registered handlers
+    /// Fires an event to all registered handlers.
+    ///
+    /// Blocking handlers run in priority order and are the only handlers allowed
+    /// to cancel or mutate the event. Non-blocking handlers run afterward with an
+    /// immutable, finalized view and are intended for observation or for copying
+    /// owned snapshots into background work. Gameplay callers must not hold entity,
+    /// inventory, screen-handler, or world locks across this call unless that lock
+    /// order is explicitly documented by the event's owning subsystem.
     pub async fn fire<E: Payload + Send + Sync + 'static>(&self, mut event: E) -> E {
         if let Some(server) = self.server.read().await.as_ref() {
             let handlers = self.handlers.read().await;
