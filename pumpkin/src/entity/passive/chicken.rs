@@ -8,6 +8,9 @@ use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::{entity::EntityType, item::Item};
 use pumpkin_util::math::vector3::Vector3;
+use crate::plugin::api::events::entity::entity_feed::{
+    FeedOutcome, FeedPurpose, complete_feed, prepare_feed,
+};
 use rand::RngExt;
 
 use crate::entity::{
@@ -119,11 +122,20 @@ impl Mob for ChickenEntity {
         Box::pin(async move {
             let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
-                item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+                let entity = &self.mob_entity.living_entity.entity;
+                let Some(feed) = prepare_feed(
+                    entity,
+                    player,
+                    item_stack,
+                    FeedPurpose::EnterLoveMode,
+                )
+                .await else {
+                    return true;
+                };
+                item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);
 
                 self.mob_entity
                     .set_love_ticks(600, Some(player.gameprofile.id));
-                let entity = &self.mob_entity.living_entity.entity;
                 let world = entity.world.load();
                 let pos = entity.pos.load();
 
@@ -139,6 +151,7 @@ impl Mob for ChickenEntity {
                     SoundCategory::Neutral,
                     &entity.pos.load(),
                 );
+                complete_feed(feed, FeedOutcome::EnteredLoveMode).await;
                 return true;
             }
             false

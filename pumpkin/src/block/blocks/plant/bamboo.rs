@@ -9,6 +9,7 @@ use pumpkin_data::tag::{self};
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_macros::pumpkin_block;
 use pumpkin_util::math::position::BlockPos;
+use pumpkin_util::Hand;
 use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::{BlockAccessor, BlockFlags};
 use rand::RngExt;
@@ -20,6 +21,10 @@ use crate::block::{
     UseWithItemArgs,
 };
 use crate::plugin::api::events::block::block_grow::fire_block_grow;
+use crate::plugin::api::events::block::bone_meal::{
+    BoneMealApplyCompleteEvent, BoneMealApplyPrepareEvent,
+};
+use crate::plugin::api::transaction::TransactionContext;
 use crate::world::World;
 
 #[pumpkin_block("minecraft:bamboo")]
@@ -66,9 +71,55 @@ impl BlockBehaviour for BambooBlock {
         args: UseWithItemArgs<'a>,
     ) -> BlockFuture<'a, BlockActionResult> {
         Box::pin(async move {
-            let lock = args.item_stack.lock().await;
-            if lock.get_item() == &Item::BONE_MEAL {
-                bone_meal(Arc::clone(args.world), args.position).await;
+            let is_bone_meal = args.item_stack.lock().await.get_item() == &Item::BONE_MEAL;
+            if is_bone_meal {
+                let state_before = args.world.get_block_state(args.position).id;
+                let transaction = TransactionContext::new(
+                    args.player
+                        .tick_counter
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+                let prepare = args
+                    .server
+                    .plugin_manager
+                    .fire(BoneMealApplyPrepareEvent {
+                        transaction,
+                        player: Arc::clone(args.player),
+                        world: Arc::clone(args.world),
+                        position: *args.position,
+                        hand: Hand::Right,
+                        state_before,
+                        cancelled: false,
+                    })
+                    .await;
+                if prepare.cancelled {
+                    return BlockActionResult::Success;
+                }
+
+                if !bone_meal(Arc::clone(args.world), args.position).await {
+                    return BlockActionResult::Pass;
+                }
+
+                let consumed_count = if args.player.gamemode.load() == pumpkin_util::GameMode::Creative {
+                    0
+                } else {
+                    args.item_stack.lock().await.decrement(1);
+                    1
+                };
+                let state_after = args.world.get_block_state(args.position).id;
+                args.server
+                    .plugin_manager
+                    .fire(BoneMealApplyCompleteEvent {
+                        transaction,
+                        player: Arc::clone(args.player),
+                        world: Arc::clone(args.world),
+                        position: *args.position,
+                        state_before,
+                        state_after,
+                        consumed_count,
+                        growth_occurred: true,
+                    })
+                    .await;
                 return BlockActionResult::Success;
             }
             BlockActionResult::Pass
@@ -237,11 +288,12 @@ fn count_bamboo_above(world: &World, pos: &BlockPos) -> usize {
     bamboo_count
 }
 
-async fn bone_meal(world: Arc<World>, position: &BlockPos) {
+async fn bone_meal(world: Arc<World>, position: &BlockPos) -> bool {
     let bamboo_below = count_bamboo_below(&world, position);
 
     let growth_amount = rand::rng().random_range(1..=3);
 
+    let mut grew = false;
     for (bamboo_above, _) in (count_bamboo_above(&world, position)..).zip(0..growth_amount) {
         let current_total_height = bamboo_above + bamboo_below + 1;
 
@@ -249,16 +301,18 @@ async fn bone_meal(world: Arc<World>, position: &BlockPos) {
         let next_state = world.get_block_state(&next_pos);
 
         if !next_state.is_air() || current_total_height >= 16 {
-            return;
+            return grew;
         }
 
         let next_props = BambooLikeProperties::from_state_id(next_state.id, &Block::BAMBOO);
         if next_props.stage == 1 {
-            return;
+            return grew;
         }
 
         update_leaves_and_grow(Arc::clone(&world), position).await;
+        grew = true;
     }
+    grew
 }
 
 impl PlantBlockBase for BambooBlock {

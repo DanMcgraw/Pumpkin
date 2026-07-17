@@ -17,6 +17,12 @@ use crate::entity::{
     player::Player,
 };
 use pumpkin_nbt::compound::NbtCompound;
+use crate::plugin::api::events::entity::{
+    entity_feed::{FeedOutcome, FeedPurpose, complete_feed, prepare_feed},
+    entity_product::{
+        AnimalProductCollectCompleteEvent, AnimalProductKind, replace_collected_container,
+    },
+};
 
 const TEMPT_ITEMS: &[&Item] = &[&Item::WHEAT];
 
@@ -78,13 +84,40 @@ impl Mob for CowEntity {
         item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {
+            let entity = &self.mob_entity.living_entity.entity;
+            if item_stack.item == &Item::BUCKET
+                && entity.age.load(std::sync::atomic::Ordering::Relaxed) >= 0
+                && let Some(target) = entity.world.load().get_entity_by_id(entity.entity_id)
+            {
+                let tool_before = item_stack.clone();
+                let output = ItemStack::new(1, &Item::MILK_BUCKET);
+                replace_collected_container(player, item_stack, output.clone()).await;
+                AnimalProductCollectCompleteEvent::fire(
+                    Arc::clone(player),
+                    target,
+                    AnimalProductKind::Milk,
+                    tool_before,
+                    item_stack.clone(),
+                    vec![output],
+                )
+                .await;
+                return true;
+            }
             let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
-                item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+                let Some(feed) = prepare_feed(
+                    entity,
+                    player,
+                    item_stack,
+                    FeedPurpose::EnterLoveMode,
+                )
+                .await else {
+                    return true;
+                };
+                item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);
 
                 self.mob_entity
                     .set_love_ticks(600, Some(player.gameprofile.id));
-                let entity = &self.mob_entity.living_entity.entity;
                 let world = entity.world.load();
                 let pos = entity.pos.load();
 
@@ -100,6 +133,7 @@ impl Mob for CowEntity {
                     SoundCategory::Neutral,
                     &entity.pos.load(),
                 );
+                complete_feed(feed, FeedOutcome::EnteredLoveMode).await;
                 return true;
             }
             false

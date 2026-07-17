@@ -5,6 +5,7 @@ use pumpkin_macros::{Event, cancellable};
 use pumpkin_util::Hand;
 
 use crate::entity::player::Player;
+use crate::plugin::api::transaction::TransactionContext;
 
 use super::PlayerEvent;
 
@@ -12,6 +13,7 @@ use super::PlayerEvent;
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct PlayerItemUseFinishEvent {
+    pub transaction: TransactionContext,
     pub player: Arc<Player>,
     pub item: ItemStack,
     pub hand: Hand,
@@ -26,6 +28,7 @@ pub struct PlayerItemUseFinishEvent {
 impl PlayerItemUseFinishEvent {
     #[must_use]
     pub fn new(
+        transaction: TransactionContext,
         player: Arc<Player>,
         item: ItemStack,
         hand: Hand,
@@ -34,6 +37,7 @@ impl PlayerItemUseFinishEvent {
         result_item: ItemStack,
     ) -> Self {
         Self {
+            transaction,
             player,
             item,
             hand,

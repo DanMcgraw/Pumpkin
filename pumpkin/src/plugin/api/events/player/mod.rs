@@ -29,6 +29,7 @@ pub mod player_interact_entity_event;
 pub mod player_interact_event;
 pub mod player_interact_unknown_entity_event;
 pub mod player_item_use_finish;
+pub mod player_item_use_complete;
 pub mod player_join;
 pub mod player_leave;
 pub mod player_login;

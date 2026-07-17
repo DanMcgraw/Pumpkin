@@ -1,14 +1,18 @@
 use std::sync::{Arc, Weak};
 
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::{entity::EntityType, item::Item, item_stack::ItemStack};
 
 use crate::entity::{
-    Entity, NBTStorage,
+    Entity, EntityBaseFuture, NBTStorage,
     ai::goal::{
         look_around::RandomLookAroundGoal, look_at_entity::LookAtEntityGoal, swim::SwimGoal,
         wander_around::WanderAroundGoal,
     },
     mob::{Mob, MobEntity},
+    player::Player,
+};
+use crate::plugin::api::events::entity::entity_product::{
+    AnimalProductCollectCompleteEvent, AnimalProductKind, replace_collected_container,
 };
 
 /// Represents a Mooshroom, a fungal variant of cows that can be milked for mushroom stew.
@@ -49,5 +53,36 @@ impl NBTStorage for MooshroomEntity {}
 impl Mob for MooshroomEntity {
     fn get_mob_entity(&self) -> &MobEntity {
         &self.mob_entity
+    }
+
+    fn mob_interact<'a>(
+        &'a self,
+        player: &'a Arc<Player>,
+        item_stack: &'a mut ItemStack,
+    ) -> EntityBaseFuture<'a, bool> {
+        Box::pin(async move {
+            let entity = &self.mob_entity.living_entity.entity;
+            if item_stack.item != &Item::BOWL
+                || entity.age.load(std::sync::atomic::Ordering::Relaxed) < 0
+            {
+                return false;
+            }
+            let Some(target) = entity.world.load().get_entity_by_id(entity.entity_id) else {
+                return false;
+            };
+            let tool_before = item_stack.clone();
+            let output = ItemStack::new(1, &Item::MUSHROOM_STEW);
+            replace_collected_container(player, item_stack, output.clone()).await;
+            AnimalProductCollectCompleteEvent::fire(
+                Arc::clone(player),
+                target,
+                AnimalProductKind::MushroomStew,
+                tool_before,
+                item_stack.clone(),
+                vec![output],
+            )
+            .await;
+            true
+        })
     }
 }

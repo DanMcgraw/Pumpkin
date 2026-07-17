@@ -25,6 +25,12 @@ use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_util::math::vector3::Vector3;
+use rand::RngExt;
+
+use crate::plugin::api::events::entity::{
+    entity_feed::{FeedOutcome, FeedPurpose, complete_feed, prepare_feed},
+    entity_product::{AnimalProductCollectCompleteEvent, AnimalProductKind},
+};
 
 const TEMPT_ITEMS: &[&Item] = &[&Item::WHEAT];
 
@@ -105,6 +111,27 @@ impl SheepEntity {
     }
 }
 
+fn wool_for_color(color: u8) -> &'static Item {
+    match color {
+        1 => &Item::ORANGE_WOOL,
+        2 => &Item::MAGENTA_WOOL,
+        3 => &Item::LIGHT_BLUE_WOOL,
+        4 => &Item::YELLOW_WOOL,
+        5 => &Item::LIME_WOOL,
+        6 => &Item::PINK_WOOL,
+        7 => &Item::GRAY_WOOL,
+        8 => &Item::LIGHT_GRAY_WOOL,
+        9 => &Item::CYAN_WOOL,
+        10 => &Item::PURPLE_WOOL,
+        11 => &Item::BLUE_WOOL,
+        12 => &Item::BROWN_WOOL,
+        13 => &Item::GREEN_WOOL,
+        14 => &Item::RED_WOOL,
+        15 => &Item::BLACK_WOOL,
+        _ => &Item::WHITE_WOOL,
+    }
+}
+
 impl NBTStorage for SheepEntity {
     fn write_nbt<'a>(&'a self, nbt: &'a mut NbtCompound) -> NbtFuture<'a, ()> {
         Box::pin(async {
@@ -146,13 +173,48 @@ impl Mob for SheepEntity {
         item_stack: &'a mut ItemStack,
     ) -> EntityBaseFuture<'a, bool> {
         Box::pin(async move {
+            let entity = &self.mob_entity.living_entity.entity;
+            if item_stack.item == &Item::SHEARS
+                && !self.is_sheared()
+                && entity.age.load(std::sync::atomic::Ordering::Relaxed) >= 0
+                && let Some(target) = entity.world.load().get_entity_by_id(entity.entity_id)
+            {
+                let tool_before = item_stack.clone();
+                self.set_sheared(true);
+                let output = ItemStack::new(
+                    rand::rng().random_range(1..=3),
+                    wool_for_color(self.get_color()),
+                );
+                entity.world.load().drop_stack(&entity.block_pos.load(), output.clone()).await;
+                if player.gamemode.load() != pumpkin_util::GameMode::Creative {
+                    let _ = item_stack.damage_item(1);
+                }
+                AnimalProductCollectCompleteEvent::fire(
+                    Arc::clone(player),
+                    target,
+                    AnimalProductKind::Shear,
+                    tool_before,
+                    item_stack.clone(),
+                    vec![output],
+                )
+                .await;
+                return true;
+            }
             let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
-                item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+                let Some(feed) = prepare_feed(
+                    entity,
+                    player,
+                    item_stack,
+                    FeedPurpose::EnterLoveMode,
+                )
+                .await else {
+                    return true;
+                };
+                item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);
 
                 self.mob_entity
                     .set_love_ticks(600, Some(player.gameprofile.id));
-                let entity = &self.mob_entity.living_entity.entity;
                 let world = entity.world.load();
                 let pos = entity.pos.load();
 
@@ -168,6 +230,7 @@ impl Mob for SheepEntity {
                     SoundCategory::Neutral,
                     &entity.pos.load(),
                 );
+                complete_feed(feed, FeedOutcome::EnteredLoveMode).await;
                 return true;
             }
             false

@@ -17,6 +17,9 @@ use crate::entity::{
     passive::tameable::Tameable,
 };
 use crate::plugin::api::events::entity::entity_tame::EntityTameEvent;
+use crate::plugin::api::events::entity::entity_feed::{
+    FeedOutcome, FeedPurpose, complete_feed, prepare_feed,
+};
 
 const TEMPT_ITEMS: &[&Item] = &[&Item::COD, &Item::SALMON];
 
@@ -110,16 +113,23 @@ impl Mob for CatEntity {
             if self.tameable.is_tamed() || !TEMPT_ITEMS.contains(&item_stack.item) {
                 return false;
             }
-            item_stack.decrement_unless_creative(player.gamemode.load(), 1);
+            let entity = &self.mob_entity.living_entity.entity;
+            let Some(feed) = prepare_feed(entity, player, item_stack, FeedPurpose::TameAttempt).await
+            else {
+                return true;
+            };
+            item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);
             if !rand::random_bool(1.0 / 3.0) {
+                complete_feed(feed, FeedOutcome::TameFailed).await;
                 return true;
             }
-            let entity = &self.mob_entity.living_entity.entity;
             let world = entity.world.load();
             let Some(server) = world.server.upgrade() else {
+                complete_feed(feed, FeedOutcome::TameFailed).await;
                 return true;
             };
             let Some(animal) = world.get_entity_by_id(entity.entity_id) else {
+                complete_feed(feed, FeedOutcome::TameFailed).await;
                 return true;
             };
             let event = server
@@ -127,6 +137,7 @@ impl Mob for CatEntity {
                 .fire(EntityTameEvent::new(animal, player.clone()))
                 .await;
             if event.cancelled {
+                complete_feed(feed, FeedOutcome::TameFailed).await;
                 return true;
             }
             self.tameable.set_owner(Some(player.gameprofile.id));
@@ -137,6 +148,7 @@ impl Mob for CatEntity {
                 7,
                 Particle::Heart,
             );
+            complete_feed(feed, FeedOutcome::TameSucceeded).await;
             true
         })
     }

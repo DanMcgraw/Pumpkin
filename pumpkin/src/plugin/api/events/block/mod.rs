@@ -1,6 +1,7 @@
 pub mod block_break;
 pub mod block_broken;
 pub mod block_burn;
+pub mod bone_meal;
 pub mod block_can_build;
 pub mod block_damage;
 pub mod block_drop_item;

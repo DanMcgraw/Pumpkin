@@ -39,6 +39,8 @@ use crate::plugin::api::events::entity::{
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
 use crate::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent;
+use crate::plugin::api::events::player::player_item_use_complete::PlayerItemUseCompleteEvent;
+use crate::plugin::api::transaction::TransactionContext;
 use crate::server::Server;
 use crate::world::chunker::{get_view_distance, is_within_view_distance};
 use crate::world::loot::{LootContextParameters, LootTableExt};
@@ -2737,6 +2739,7 @@ impl EntityBase for LivingEntity {
                     } else {
                         ItemStack::EMPTY.clone()
                     };
+                    let mut item_transaction = None;
 
                     if let Some(player) = caller.get_player()
                         && let Some(player) = self
@@ -2746,10 +2749,14 @@ impl EntityBase for LivingEntity {
                             .get_player_by_uuid(player.gameprofile.id)
                         && let Some(server) = self.entity.world.load().server.upgrade()
                     {
+                        let transaction = TransactionContext::new(
+                            player.tick_counter.load(Ordering::Relaxed),
+                        );
                         let event = server
                             .plugin_manager
                             .fire(PlayerItemUseFinishEvent::new(
-                                player,
+                                transaction,
+                                Arc::clone(&player),
                                 item.clone(),
                                 active_hand,
                                 nutrition,
@@ -2764,6 +2771,7 @@ impl EntityBase for LivingEntity {
                         nutrition = event.nutrition;
                         saturation = event.saturation;
                         result_item = event.result_item;
+                        item_transaction = Some((transaction, player));
                     }
 
                     // Consume item
@@ -2941,6 +2949,35 @@ impl EntityBase for LivingEntity {
                     );
                     if let Some(player) = caller.get_player() {
                         player.sync_bedrock_main_inventory().await;
+                    }
+                    if let Some((transaction, player)) = item_transaction
+                        && let Some(server) = self.entity.world.load().server.upgrade()
+                    {
+                        let after = self
+                            .get_stack_in_hand(caller.as_ref(), active_hand)
+                            .await
+                            .lock()
+                            .await
+                            .clone();
+                        let remaining_same_item = if after.item == item.item {
+                            after.item_count
+                        } else {
+                            0
+                        };
+                        server
+                            .plugin_manager
+                            .fire(PlayerItemUseCompleteEvent {
+                                transaction,
+                                player,
+                                item_before: item.clone(),
+                                item_after: after,
+                                consumed_count: item.item_count.saturating_sub(remaining_same_item),
+                                hand: active_hand,
+                                nutrition,
+                                saturation,
+                                applied_potion_effects: is_potion,
+                            })
+                            .await;
                     }
                 }
             }
