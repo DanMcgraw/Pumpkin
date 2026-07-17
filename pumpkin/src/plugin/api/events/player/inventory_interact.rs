@@ -6,6 +6,7 @@ use pumpkin_inventory::screen_handler::ClickType;
 use pumpkin_macros::{Event, cancellable};
 
 use super::PlayerEvent;
+use crate::plugin::api::gui::PluginGuiEventContext;
 
 /// Event that is triggered when a player clicks in an inventory.
 #[cancellable]
@@ -35,6 +36,9 @@ pub struct InventoryClickEvent {
 
     /// If the `ClickType` is `NUMBER_KEY`, this field will return the index of the pressed key (0-8).
     pub hotbar_button: i32,
+
+    /// Ownership attribution for a plugin-created screen.
+    pub plugin_gui: Option<PluginGuiEventContext>,
 }
 
 impl InventoryClickEvent {
@@ -74,8 +78,15 @@ impl InventoryClickEvent {
             clicked_item,
             cursor,
             hotbar_button,
+            plugin_gui: None,
             cancelled: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_plugin_gui(mut self, context: PluginGuiEventContext) -> Self {
+        self.plugin_gui = Some(context);
+        self
     }
 }
 

@@ -6,6 +6,7 @@ use pumpkin_inventory::screen_handler::ClickType;
 use pumpkin_macros::{Event, cancellable};
 
 use super::PlayerEvent;
+use crate::plugin::api::gui::PluginGuiEventContext;
 
 /// Fired when a player drags items across multiple inventory slots.
 #[cancellable]
@@ -25,6 +26,9 @@ pub struct InventoryDragEvent {
 
     /// The click type of the drag (left/right/middle).
     pub click_type: ClickType,
+
+    /// Ownership attribution for a plugin-created screen.
+    pub plugin_gui: Option<PluginGuiEventContext>,
 }
 
 impl InventoryDragEvent {
@@ -44,8 +48,15 @@ impl InventoryDragEvent {
             slots,
             cursor,
             click_type,
+            plugin_gui: None,
             cancelled: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_plugin_gui(mut self, context: PluginGuiEventContext) -> Self {
+        self.plugin_gui = Some(context);
+        self
     }
 }
 

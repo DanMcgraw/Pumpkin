@@ -110,6 +110,7 @@ impl ToFromWasmEvent for InventoryCloseEvent {
             Event::InventoryCloseEvent(data) => Self {
                 player: consume_player(state, &data.player),
                 window_type: None, // We don't change window_type from WASM
+                plugin_gui: None,
             },
             _ => panic!("unexpected event type"),
         }
@@ -157,6 +158,7 @@ impl ToFromWasmEvent for InventoryClickEvent {
                 clicked_item: None, // We don't change clicked_item from WASM
                 cursor: None,       // We don't change cursor from WASM
                 hotbar_button: data.hotbar_button,
+                plugin_gui: None,
                 cancelled: data.cancelled,
             },
             _ => panic!("unexpected event type"),

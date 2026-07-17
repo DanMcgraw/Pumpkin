@@ -944,6 +944,18 @@ impl PluginManager {
             plugins.remove(index)
         };
 
+        if let Some(server) = self.server.read().await.clone() {
+            for world in server.worlds.load().iter() {
+                for player in world.players.load().iter() {
+                    if player.plugin_gui_owner().await.as_deref() == Some(name) {
+                        player
+                            .close_plugin_gui(api::gui::PluginGuiCloseReason::PluginUnload)
+                            .await;
+                    }
+                }
+            }
+        }
+
         if let Some(mut instance) = plugin.instance.take() {
             instance.on_unload(plugin.context.clone()).await.ok();
         }

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use tokio::sync::Mutex;
 use wasmtime::component::Resource;
 
-use crate::plugin::api::gui::PluginScreenHandler;
+use crate::plugin::api::gui::{
+    PassthroughPluginGuiHandler, PluginIdentity, open_plugin_gui_inventory_owned,
+};
 use crate::plugin::loader::wasm::wasm_host::wit::v0_1::pumpkin::plugin::forms::Form;
 use crate::plugin::loader::wasm::wasm_host::wit::v0_1::pumpkin::plugin::java_dialogs::{
     Action, AfterAction, Dialog, DialogBody, DialogInput, LinkLabel, LinkType,
@@ -1036,20 +1037,23 @@ impl pumpkin::plugin::player::HostPlayer for PluginHostState {
             .get::<GuiResource>(&Resource::new_own(gui.rep()))
             .map_err(|_| wasmtime::Error::msg("invalid gui resource handle"))?;
         let gui = gui_res.provider.lock().await;
-
-        player.increment_screen_handler_sync_id();
-        let sync_id = player.screen_handler_sync_id.load(Ordering::Relaxed);
-        let screen_handler = Arc::new(Mutex::new(PluginScreenHandler::new(
-            sync_id,
+        let owner = PluginIdentity::new(
+            self.plugin_name
+                .clone()
+                .unwrap_or_else(|| "wasm-plugin".to_string()),
+        );
+        open_plugin_gui_inventory_owned(
+            player,
+            owner,
             gui.window_type,
-            &gui.inventory,
+            gui.title.clone(),
+            Arc::clone(&gui.inventory),
             gui.allow_grab_items,
             gui.allow_put_items,
-        )));
-
-        player
-            .open_handled_screen_direct(screen_handler, gui.title.clone())
-            .await;
+            Arc::new(PassthroughPluginGuiHandler),
+        )
+        .await
+        .map_err(|error| wasmtime::Error::msg(error.to_string()))?;
         Ok(())
     }
 

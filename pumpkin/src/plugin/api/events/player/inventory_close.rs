@@ -5,6 +5,7 @@ use pumpkin_data::screen::WindowType;
 use pumpkin_macros::Event;
 
 use super::PlayerEvent;
+use crate::plugin::api::gui::PluginGuiEventContext;
 
 /// Event that is triggered when a player closes an inventory.
 #[derive(Event, Clone)]
@@ -14,6 +15,9 @@ pub struct InventoryCloseEvent {
 
     /// The window type of the inventory that was closed.
     pub window_type: Option<WindowType>,
+
+    /// Ownership attribution for a plugin-created screen.
+    pub plugin_gui: Option<PluginGuiEventContext>,
 }
 
 impl InventoryCloseEvent {
@@ -31,7 +35,14 @@ impl InventoryCloseEvent {
         Self {
             player: Arc::clone(player),
             window_type,
+            plugin_gui: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_plugin_gui(mut self, context: PluginGuiEventContext) -> Self {
+        self.plugin_gui = Some(context);
+        self
     }
 }
 

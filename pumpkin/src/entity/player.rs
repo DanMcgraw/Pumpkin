@@ -120,6 +120,10 @@ use crate::entity::{EntityBaseFuture, NbtFuture, TeleportFuture};
 use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
 use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
+use crate::plugin::api::gui::{
+    PluginGuiClickContext, PluginGuiCloseReason, PluginGuiDragContext, PluginGuiInputResult,
+    PluginScreenHandler,
+};
 use crate::plugin::player::craft_item::CraftItemEvent;
 use crate::plugin::player::anvil_prepare::AnvilPrepareEvent;
 use crate::plugin::player::anvil_repair::AnvilRepairEvent;
@@ -3321,6 +3325,7 @@ impl Player {
             };
 
             'after: {
+                self.close_plugin_gui(PluginGuiCloseReason::WorldChange).await;
                 // TODO: this is duplicate code from world
                 let position = event.position;
                 let yaw = event.yaw;
@@ -5121,26 +5126,73 @@ impl Player {
         self.on_handled_screen_closed().await;
     }
 
+    /// Closes the current plugin GUI with an explicit, owner-visible reason.
+    pub async fn close_plugin_gui(self: &Arc<Self>, reason: PluginGuiCloseReason) {
+        let current = self.current_screen_handler.lock().await.clone();
+        let mut screen = current.lock().await;
+        let is_plugin_gui = if let Some(handler) = screen
+            .as_any_mut()
+            .downcast_mut::<PluginScreenHandler>()
+        {
+            handler.set_close_reason(reason);
+            true
+        } else {
+            false
+        };
+        drop(screen);
+        if is_plugin_gui {
+            self.close_handled_screen().await;
+        }
+    }
+
+    /// Returns the opaque identity of the currently open plugin GUI, if any.
+    pub async fn plugin_gui_session(&self) -> Option<crate::plugin::api::PluginGuiSessionId> {
+        let current = self.current_screen_handler.lock().await.clone();
+        let screen = current.lock().await;
+        screen
+            .as_any()
+            .downcast_ref::<PluginScreenHandler>()
+            .map(|handler| handler.event_context.session_id)
+    }
+
+    pub async fn plugin_gui_owner(&self) -> Option<String> {
+        let current = self.current_screen_handler.lock().await.clone();
+        let screen = current.lock().await;
+        screen
+            .as_any()
+            .downcast_ref::<PluginScreenHandler>()
+            .map(|handler| handler.event_context.owner_plugin.name().to_owned())
+    }
+
     pub async fn on_handled_screen_closed(self: &Arc<Self>) {
         let current_screen_handler: Arc<Mutex<dyn ScreenHandler>> =
             self.current_screen_handler.lock().await.clone();
 
-        let window_type = {
+        let (window_type, plugin_gui) = {
             let mut handler = current_screen_handler.lock().await;
             let wt = handler.window_type();
+            let plugin_gui = handler
+                .as_any()
+                .downcast_ref::<PluginScreenHandler>()
+                .map(|handler| handler.event_context.clone());
             handler.on_closed(self.as_ref()).await;
-            wt
+            (wt, plugin_gui)
         };
 
         if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
             server
                 .plugin_manager
-                .fire(
-                    crate::plugin::api::events::player::inventory_close::InventoryCloseEvent::new(
-                        self,
-                        window_type,
-                    ),
-                )
+                .fire({
+                    let event = crate::plugin::api::events::player::inventory_close::InventoryCloseEvent::new(
+                            self,
+                            window_type,
+                        );
+                    if let Some(context) = plugin_gui {
+                        event.with_plugin_gui(context)
+                    } else {
+                        event
+                    }
+                })
                 .await;
         }
 
@@ -5198,7 +5250,11 @@ impl Player {
             .as_any()
             .is::<PlayerScreenHandler>()
         {
-            self.close_handled_screen().await;
+            if self.plugin_gui_session().await.is_some() {
+                self.close_plugin_gui(PluginGuiCloseReason::Replaced).await;
+            } else {
+                self.close_handled_screen().await;
+            }
         }
 
         self.increment_screen_handler_sync_id();
@@ -5276,7 +5332,7 @@ impl Player {
         self: &Arc<Self>,
         screen_handler: Arc<Mutex<dyn ScreenHandler>>,
         title: TextComponent,
-    ) {
+    ) -> bool {
         if !self
             .current_screen_handler
             .lock()
@@ -5286,7 +5342,11 @@ impl Player {
             .as_any()
             .is::<PlayerScreenHandler>()
         {
-            self.close_handled_screen().await;
+            if self.plugin_gui_session().await.is_some() {
+                self.close_plugin_gui(PluginGuiCloseReason::Replaced).await;
+            } else {
+                self.close_handled_screen().await;
+            }
         }
 
         let screen_handler_temp = screen_handler.lock().await;
@@ -5294,15 +5354,25 @@ impl Player {
         let window_type = screen_handler_temp
             .window_type()
             .expect("Can't open PlayerScreenHandler");
+        let plugin_gui = screen_handler_temp
+            .as_any()
+            .downcast_ref::<PluginScreenHandler>()
+            .map(|handler| handler.event_context.clone());
         drop(screen_handler_temp);
 
         if let Some(server) = self.living_entity.entity.world.load().server.upgrade() {
+            let event = InventoryOpenEvent::new(self, window_type, None);
+            let event = if let Some(context) = plugin_gui {
+                event.with_plugin_gui(context)
+            } else {
+                event
+            };
             let event = server
                 .plugin_manager
-                .fire(InventoryOpenEvent::new(self, window_type, None))
+                .fire(event)
                 .await;
             if event.cancelled {
-                return;
+                return false;
             }
         }
 
@@ -5340,6 +5410,7 @@ impl Player {
         self.on_screen_handler_opened(screen_handler.clone()).await;
         *self.current_screen_handler.lock().await = screen_handler;
         self.open_container_pos.store(None);
+        true
     }
 
     #[allow(clippy::too_many_lines)]
@@ -5447,18 +5518,65 @@ impl Player {
             SlotActionType::PickupAll => ClickType::DoubleClick,
         };
 
-        send_cancellable! {{
-            server;
-            InventoryClickEvent::new(
-                self,
-                screen_handler.window_type(),
-                click_type,
+        let plugin_gui = screen_handler
+            .as_any()
+            .downcast_ref::<PluginScreenHandler>()
+            .map(|handler| (handler.event_context.clone(), Arc::clone(&handler.handler)));
+
+        if let Some((context, handler)) = &plugin_gui {
+            let callback_context = PluginGuiClickContext {
+                session_id: context.session_id,
+                player: Arc::clone(self),
                 slot,
                 raw_slot,
-                clicked_item,
-                cursor_item,
-                i32::from(hotbar_button),
-            );
+                is_container_slot: slot >= 0 && i32::from(slot) < container_slots as i32,
+                click_type: click_type.clone(),
+                hotbar_button: i32::from(hotbar_button),
+                cursor: cursor_item.clone().unwrap_or_else(|| ItemStack::EMPTY.clone()),
+                clicked_stack: clicked_item.clone(),
+                revision: packet.revision.0,
+                sync_id,
+            };
+
+            drop(screen_handler);
+            let result = handler.on_click(callback_context).await;
+            let current = self.current_screen_handler.lock().await.clone();
+            if !Arc::ptr_eq(&current, &screen_handler_arc) {
+                return;
+            }
+            screen_handler = screen_handler_arc.lock().await;
+            let session_is_current = screen_handler
+                .as_any()
+                .downcast_ref::<PluginScreenHandler>()
+                .is_some_and(|open| open.event_context.session_id == context.session_id);
+            if !session_is_current {
+                return;
+            }
+            if result == PluginGuiInputResult::Cancel {
+                screen_handler.cancel().await;
+                return;
+            }
+        }
+
+        let inventory_click_event = InventoryClickEvent::new(
+            self,
+            screen_handler.window_type(),
+            click_type,
+            slot,
+            raw_slot,
+            clicked_item,
+            cursor_item,
+            i32::from(hotbar_button),
+        );
+        let inventory_click_event = if let Some((context, _)) = &plugin_gui {
+            inventory_click_event.with_plugin_gui(context.clone())
+        } else {
+            inventory_click_event
+        };
+
+        send_cancellable! {{
+            server;
+            inventory_click_event;
             'after: {}
             'cancelled: {
                 screen_handler.cancel().await;
@@ -5524,7 +5642,7 @@ impl Player {
                         2 => ClickType::Middle,
                         _ => ClickType::Left,
                     };
-                    let slots = screen_handler
+                    let slots: Vec<i16> = screen_handler
                         .get_behaviour()
                         .drag_slots
                         .iter()
@@ -5539,15 +5657,53 @@ impl Player {
                             .clone(),
                     );
 
+                    if let Some((context, handler)) = &plugin_gui {
+                        let callback_context = PluginGuiDragContext {
+                            session_id: context.session_id,
+                            player: Arc::clone(self),
+                            slots: slots.clone(),
+                            cursor: cursor.clone().unwrap_or_else(|| ItemStack::EMPTY.clone()),
+                            click_type: drag_click_type.clone(),
+                            revision: packet.revision.0,
+                            sync_id,
+                        };
+                        drop(screen_handler);
+                        let result = handler.on_drag(callback_context).await;
+                        let current = self.current_screen_handler.lock().await.clone();
+                        if !Arc::ptr_eq(&current, &screen_handler_arc) {
+                            return;
+                        }
+                        screen_handler = screen_handler_arc.lock().await;
+                        let session_is_current = screen_handler
+                            .as_any()
+                            .downcast_ref::<PluginScreenHandler>()
+                            .is_some_and(|open| {
+                                open.event_context.session_id == context.session_id
+                            });
+                        if !session_is_current {
+                            return;
+                        }
+                        if result == PluginGuiInputResult::Cancel {
+                            screen_handler.cancel().await;
+                            return;
+                        }
+                    }
+
+                    let drag_event = InventoryDragEvent::new(
+                        self,
+                        screen_handler.window_type(),
+                        slots,
+                        cursor,
+                        drag_click_type,
+                    );
+                    let drag_event = if let Some((context, _)) = &plugin_gui {
+                        drag_event.with_plugin_gui(context.clone())
+                    } else {
+                        drag_event
+                    };
                     let event = server
                         .plugin_manager
-                        .fire(InventoryDragEvent::new(
-                            self,
-                            screen_handler.window_type(),
-                            slots,
-                            cursor,
-                            drag_click_type,
-                        ))
+                        .fire(drag_event)
                         .await;
                     if event.cancelled {
                         screen_handler.cancel().await;

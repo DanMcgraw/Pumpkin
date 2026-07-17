@@ -4473,6 +4473,13 @@ impl World {
             new_list
         });
         if let Some(ref player) = removed_player {
+            if fire_event {
+                player
+                    .close_plugin_gui(
+                        crate::plugin::api::gui::PluginGuiCloseReason::Disconnect,
+                    )
+                    .await;
+            }
             let uuid = player.gameprofile.id;
             let entity_id = player.entity_id();
 

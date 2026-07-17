@@ -115,6 +115,22 @@ impl Context {
         self.server.get_player_by_name(player_name)
     }
 
+    /// Opens a protected, ownership-routed native plugin GUI.
+    pub async fn open_plugin_gui(
+        &self,
+        player: Arc<Player>,
+        spec: super::gui::PluginGuiSpec,
+        handler: Arc<dyn super::gui::PluginGuiHandler>,
+    ) -> Result<super::gui::PluginGuiHandle, super::gui::PluginGuiError> {
+        super::gui::open_plugin_gui_owned(
+            player,
+            super::gui::PluginIdentity::new(self.metadata.name.clone()),
+            spec,
+            handler,
+        )
+        .await
+    }
+
     /// Reads a value in this plugin's namespace from online or offline player data.
     pub async fn get_player_data(
         &self,

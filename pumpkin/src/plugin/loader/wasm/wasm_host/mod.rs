@@ -270,6 +270,7 @@ impl WasmPlugin {
         }
 
         store.data_mut().permissions = filtered_permissions;
+        store.data_mut().plugin_name = Some(metadata.name.clone());
         store.data_mut().wasi_ctx = builder.build();
 
         store.data_mut().server = Some(context.server.clone());
