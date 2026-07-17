@@ -4,6 +4,7 @@ use pumpkin_data::item_stack::ItemStack;
 use pumpkin_macros::{Event, cancellable};
 
 use crate::entity::player::Player;
+use crate::plugin::api::transaction::TransactionContext;
 
 use super::PlayerEvent;
 
@@ -11,6 +12,8 @@ use super::PlayerEvent;
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct GrindstoneEvent {
+    pub transaction: TransactionContext,
+    pub screen_sync_id: u8,
     pub player: Arc<Player>,
     pub input_top: ItemStack,
     pub input_bottom: ItemStack,
@@ -28,11 +31,31 @@ impl PlayerEvent for GrindstoneEvent {
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct GrindstoneTakeEvent {
+    pub transaction: TransactionContext,
+    pub screen_sync_id: u8,
     pub player: Arc<Player>,
     pub input_top: ItemStack,
     pub input_bottom: ItemStack,
     pub output: ItemStack,
     pub experience: i32,
+}
+
+/// Fired after the grindstone output, input consumption, and experience commit.
+#[derive(Event, Clone)]
+pub struct GrindstoneCompleteEvent {
+    pub transaction: TransactionContext,
+    pub screen_sync_id: u8,
+    pub player: Arc<Player>,
+    pub input_top: ItemStack,
+    pub input_bottom: ItemStack,
+    pub output: ItemStack,
+    pub experience: i32,
+}
+
+impl PlayerEvent for GrindstoneCompleteEvent {
+    fn get_player(&self) -> &Arc<Player> {
+        &self.player
+    }
 }
 
 impl PlayerEvent for GrindstoneTakeEvent {

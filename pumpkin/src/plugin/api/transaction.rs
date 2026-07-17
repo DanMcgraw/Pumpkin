@@ -18,6 +18,16 @@ impl PluginTransactionId {
     pub(crate) fn allocate() -> Self {
         Self(allocate_id(&NEXT_TRANSACTION_ID, "plugin transaction"))
     }
+
+    #[must_use]
+    pub(crate) const fn into_internal(self) -> u64 {
+        self.0
+    }
+
+    #[must_use]
+    pub(crate) const fn from_internal(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 /// Opaque identity for one open instance of a plugin-owned GUI.
@@ -56,6 +66,18 @@ impl TransactionContext {
         Self {
             id: PluginTransactionId::allocate(),
             initiated_tick,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn from_internal(id: u64, initiated_tick: i32) -> Option<Self> {
+        if id == 0 {
+            None
+        } else {
+            Some(Self {
+                id: PluginTransactionId::from_internal(id),
+                initiated_tick,
+            })
         }
     }
 }
@@ -179,5 +201,17 @@ mod tests {
         assert!(commit_cancelled.finish_prepare(false));
         assert!(!commit_cancelled.finish_commit(true));
         assert!(!commit_cancelled.complete());
+    }
+
+    #[test]
+    fn internal_round_trip_preserves_context_and_rejects_sentinel() {
+        let original = super::TransactionContext::new(91);
+        let restored = super::TransactionContext::from_internal(
+            original.id.into_internal(),
+            original.initiated_tick,
+        );
+
+        assert_eq!(restored, Some(original));
+        assert_eq!(super::TransactionContext::from_internal(0, 91), None);
     }
 }

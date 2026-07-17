@@ -115,6 +115,9 @@ pub type PlayerFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// A server-computed enchanting-table offer that may be adjusted by the player implementation.
 #[derive(Clone)]
 pub struct EnchantingOffer {
+    pub transaction_id: u64,
+    pub transaction_tick: i32,
+    pub screen_sync_id: u8,
     pub item: ItemStack,
     pub slot: usize,
     pub bookshelf_count: i32,
@@ -126,6 +129,9 @@ pub struct EnchantingOffer {
 /// The complete enchanting operation immediately before levels and lapis are consumed.
 #[derive(Clone)]
 pub struct EnchantingOperation {
+    pub transaction_id: u64,
+    pub transaction_tick: i32,
+    pub screen_sync_id: u8,
     pub item: ItemStack,
     pub slot: usize,
     pub level_cost: i32,
@@ -136,6 +142,9 @@ pub struct EnchantingOperation {
 /// A complete anvil preview/commit operation.
 #[derive(Clone)]
 pub struct AnvilOperation {
+    pub transaction_id: u64,
+    pub transaction_tick: i32,
+    pub screen_sync_id: u8,
     pub input_first: ItemStack,
     pub input_second: ItemStack,
     pub output: ItemStack,
@@ -146,6 +155,9 @@ pub struct AnvilOperation {
 /// A complete grindstone preview/commit operation.
 #[derive(Clone)]
 pub struct GrindstoneOperation {
+    pub transaction_id: u64,
+    pub transaction_tick: i32,
+    pub screen_sync_id: u8,
     pub input_top: ItemStack,
     pub input_bottom: ItemStack,
     pub output: ItemStack,
@@ -267,6 +279,12 @@ pub trait InventoryPlayer: Send + Sync {
         Box::pin(async move { Some(operation) })
     }
 
+    /// Observes a successfully committed enchanting transaction.
+    fn on_enchant_item_complete(&self, operation: EnchantingOperation) -> PlayerFuture<'_, ()> {
+        let _ = operation;
+        Box::pin(async {})
+    }
+
     /// Allows the server integration layer to mutate or cancel an anvil preview.
     fn on_anvil_prepare(
         &self,
@@ -281,6 +299,12 @@ pub trait InventoryPlayer: Send + Sync {
         Box::pin(async { true })
     }
 
+    /// Observes a successfully committed anvil transaction.
+    fn on_anvil_complete(&self, operation: AnvilOperation) -> PlayerFuture<'_, ()> {
+        let _ = operation;
+        Box::pin(async {})
+    }
+
     /// Allows the server integration layer to mutate or cancel a grindstone preview.
     fn on_grindstone_prepare(
         &self,
@@ -293,6 +317,12 @@ pub trait InventoryPlayer: Send + Sync {
     fn on_grindstone_take(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, bool> {
         let _ = operation;
         Box::pin(async { true })
+    }
+
+    /// Observes a successfully committed grindstone transaction.
+    fn on_grindstone_complete(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, ()> {
+        let _ = operation;
+        Box::pin(async {})
     }
 
     /// Increments a statistic for the player.

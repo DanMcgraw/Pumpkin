@@ -16,6 +16,8 @@ pub struct GrindstoneScreenHandler {
     pub inventory: Arc<dyn Inventory>,
     behaviour: ScreenHandlerBehaviour,
     experience: i32,
+    transaction_id: u64,
+    transaction_tick: i32,
 }
 
 impl GrindstoneScreenHandler {
@@ -28,6 +30,8 @@ impl GrindstoneScreenHandler {
             inventory: inventory.clone(),
             behaviour: ScreenHandlerBehaviour::new(sync_id, Some(WindowType::Grindstone)),
             experience: 0,
+            transaction_id: 0,
+            transaction_tick: 0,
         };
         for slot in 0..3 {
             handler.add_slot(Arc::new(NormalSlot::new(inventory.clone(), slot)));
@@ -44,6 +48,7 @@ impl GrindstoneScreenHandler {
         if source.is_empty() || (!top.is_empty() && !bottom.is_empty() && top.item != bottom.item) {
             self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
             self.experience = 0;
+            self.transaction_id = 0;
             return;
         }
 
@@ -64,6 +69,9 @@ impl GrindstoneScreenHandler {
         output.set_repair_cost_level(0);
 
         let operation = GrindstoneOperation {
+            transaction_id: 0,
+            transaction_tick: 0,
+            screen_sync_id: self.behaviour.sync_id,
             input_top: top,
             input_bottom: bottom,
             output,
@@ -71,9 +79,12 @@ impl GrindstoneScreenHandler {
         };
         if let Some(operation) = player.on_grindstone_prepare(operation).await {
             self.experience = operation.experience.clamp(0, 10_000);
+            self.transaction_id = operation.transaction_id;
+            self.transaction_tick = operation.transaction_tick;
             self.inventory.set_stack(2, operation.output).await;
         } else {
             self.experience = 0;
+            self.transaction_id = 0;
             self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
         }
     }
@@ -116,21 +127,34 @@ impl ScreenHandler for GrindstoneScreenHandler {
     ) -> ScreenHandlerFuture<'a, ()> {
         Box::pin(async move {
             if slot_index == 2 {
+                if self.transaction_id == 0 {
+                    self.send_content_updates().await;
+                    return;
+                }
                 let output = self.inventory.get_stack(2).await.lock().await.clone();
                 if !output.is_empty() {
                     let operation = GrindstoneOperation {
+                        transaction_id: self.transaction_id,
+                        transaction_tick: self.transaction_tick,
+                        screen_sync_id: self.behaviour.sync_id,
                         input_top: self.inventory.get_stack(0).await.lock().await.clone(),
                         input_bottom: self.inventory.get_stack(1).await.lock().await.clone(),
                         output,
                         experience: self.experience,
                     };
-                    if !player.on_grindstone_take(operation).await {
+                    if !player.on_grindstone_take(operation.clone()).await {
                         self.send_content_updates().await;
                         return;
                     }
                     self.inventory.set_stack(0, ItemStack::EMPTY.clone()).await;
                     self.inventory.set_stack(1, ItemStack::EMPTY.clone()).await;
                     player.award_experience(self.experience).await;
+                    self.internal_on_slot_click(slot_index, button, action_type, player)
+                        .await;
+                    self.update_result(player).await;
+                    self.send_content_updates().await;
+                    player.on_grindstone_complete(operation).await;
+                    return;
                 }
             }
             self.internal_on_slot_click(slot_index, button, action_type, player)
@@ -150,16 +174,19 @@ impl ScreenHandler for GrindstoneScreenHandler {
         Box::pin(async move {
             if slot_index == 2 {
                 let result = self.inventory.get_stack(2).await.lock().await.clone();
-                if result.is_empty() {
+                if result.is_empty() || self.transaction_id == 0 {
                     return ItemStack::EMPTY.clone();
                 }
                 let operation = GrindstoneOperation {
+                    transaction_id: self.transaction_id,
+                    transaction_tick: self.transaction_tick,
+                    screen_sync_id: self.behaviour.sync_id,
                     input_top: self.inventory.get_stack(0).await.lock().await.clone(),
                     input_bottom: self.inventory.get_stack(1).await.lock().await.clone(),
                     output: result.clone(),
                     experience: self.experience,
                 };
-                if !player.on_grindstone_take(operation).await {
+                if !player.on_grindstone_take(operation.clone()).await {
                     return ItemStack::EMPTY.clone();
                 }
                 let output_slot = self.inventory.get_stack(2).await;
@@ -181,6 +208,7 @@ impl ScreenHandler for GrindstoneScreenHandler {
                 player.award_experience(self.experience).await;
                 self.update_result(player).await;
                 self.send_content_updates().await;
+                player.on_grindstone_complete(operation).await;
                 return result;
             }
 

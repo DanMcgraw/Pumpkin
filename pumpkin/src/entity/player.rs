@@ -119,27 +119,28 @@ use crate::data::SaveJSONConfiguration;
 use crate::entity::{EntityBaseFuture, NbtFuture, TeleportFuture};
 use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
-use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
 use crate::plugin::api::gui::{
     PluginGuiClickContext, PluginGuiCloseReason, PluginGuiDragContext, PluginGuiInputResult,
     PluginScreenHandler,
 };
-use crate::plugin::player::craft_item::CraftItemEvent;
+use crate::plugin::api::transaction::TransactionContext;
+use crate::plugin::entity::entity_combust_by_entity::EntityCombustByEntityEvent;
 use crate::plugin::player::anvil_prepare::AnvilPrepareEvent;
-use crate::plugin::player::anvil_repair::AnvilRepairEvent;
-use crate::plugin::player::enchant_item::EnchantItemEvent;
+use crate::plugin::player::anvil_repair::{AnvilCompleteEvent, AnvilRepairEvent};
+use crate::plugin::player::craft_item::CraftItemEvent;
+use crate::plugin::player::enchant_item::{EnchantItemCompleteEvent, EnchantItemEvent};
 use crate::plugin::player::enchant_item_generate::EnchantItemGenerateEvent;
 use crate::plugin::player::exp_change::PlayerExpChangeEvent;
 use crate::plugin::player::fish::{PlayerFishEvent, PlayerFishState};
 use crate::plugin::player::furnace_extract::FurnaceExtractEvent;
-use crate::plugin::player::grindstone::{GrindstoneEvent, GrindstoneTakeEvent};
+use crate::plugin::player::grindstone::{
+    GrindstoneCompleteEvent, GrindstoneEvent, GrindstoneTakeEvent,
+};
 use crate::plugin::player::inventory_drag::InventoryDragEvent;
 use crate::plugin::player::inventory_interact::InventoryClickEvent;
 use crate::plugin::player::inventory_open::InventoryOpenEvent;
+use crate::plugin::player::player_attack::{PlayerAttackDamageEvent, PlayerAttackValidateEvent};
 use crate::plugin::player::player_change_world::PlayerChangeWorldEvent;
-use crate::plugin::player::player_attack::{
-    PlayerAttackDamageEvent, PlayerAttackValidateEvent,
-};
 use crate::plugin::player::player_drop_item::PlayerDropItemEvent;
 use crate::plugin::player::player_gamemode_change::PlayerGamemodeChangeEvent;
 use crate::plugin::player::player_interact_event::{InteractAction, PlayerInteractEvent};
@@ -1668,8 +1669,8 @@ impl Player {
         );
 
         if victim.get_living_entity().is_some() {
-            let mut knockback_strength = (1.0 + f64::from(knockback_level))
-                * f64::from(knockback_multiplier);
+            let mut knockback_strength =
+                (1.0 + f64::from(knockback_level)) * f64::from(knockback_multiplier);
             if matches!(attack_type, AttackType::Knockback) {
                 knockback_strength += f64::from(knockback_multiplier);
             }
@@ -1684,8 +1685,7 @@ impl Player {
                 {
                     for (enchantment, level) in enchantments.enchantment.iter() {
                         if **enchantment == Enchantment::SWEEPING_EDGE {
-                            sweep_damage +=
-                                damage as f32 * (*level as f32 / (*level as f32 + 1.0));
+                            sweep_damage += damage as f32 * (*level as f32 / (*level as f32 + 1.0));
                         }
                     }
                 }
@@ -3776,10 +3776,8 @@ impl Player {
         let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
             return;
         };
-        if !client
-            .allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Bootstrap)
-            && !client
-                .allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Gameplay)
+        if !client.allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Bootstrap)
+            && !client.allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Gameplay)
         {
             return;
         }
@@ -5130,15 +5128,13 @@ impl Player {
     pub async fn close_plugin_gui(self: &Arc<Self>, reason: PluginGuiCloseReason) {
         let current = self.current_screen_handler.lock().await.clone();
         let mut screen = current.lock().await;
-        let is_plugin_gui = if let Some(handler) = screen
-            .as_any_mut()
-            .downcast_mut::<PluginScreenHandler>()
-        {
-            handler.set_close_reason(reason);
-            true
-        } else {
-            false
-        };
+        let is_plugin_gui =
+            if let Some(handler) = screen.as_any_mut().downcast_mut::<PluginScreenHandler>() {
+                handler.set_close_reason(reason);
+                true
+            } else {
+                false
+            };
         drop(screen);
         if is_plugin_gui {
             self.close_handled_screen().await;
@@ -5232,7 +5228,9 @@ impl Player {
             .as_any_mut()
             .downcast_mut::<pumpkin_inventory::anvil::AnvilScreenHandler>()
         {
-            anvil_handler.update_item_name(packet.item_name, self.as_ref()).await;
+            anvil_handler
+                .update_item_name(packet.item_name, self.as_ref())
+                .await;
         }
     }
 
@@ -5367,10 +5365,7 @@ impl Player {
             } else {
                 event
             };
-            let event = server
-                .plugin_manager
-                .fire(event)
-                .await;
+            let event = server.plugin_manager.fire(event).await;
             if event.cancelled {
                 return false;
             }
@@ -5532,7 +5527,9 @@ impl Player {
                 is_container_slot: slot >= 0 && i32::from(slot) < container_slots as i32,
                 click_type: click_type.clone(),
                 hotbar_button: i32::from(hotbar_button),
-                cursor: cursor_item.clone().unwrap_or_else(|| ItemStack::EMPTY.clone()),
+                cursor: cursor_item
+                    .clone()
+                    .unwrap_or_else(|| ItemStack::EMPTY.clone()),
                 clicked_stack: clicked_item.clone(),
                 revision: packet.revision.0,
                 sync_id,
@@ -5701,10 +5698,7 @@ impl Player {
                     } else {
                         drag_event
                     };
-                    let event = server
-                        .plugin_manager
-                        .fire(drag_event)
-                        .await;
+                    let event = server.plugin_manager.fire(drag_event).await;
                     if event.cancelled {
                         screen_handler.cancel().await;
                         return;
@@ -7099,9 +7093,12 @@ impl InventoryPlayer for Player {
         Box::pin(async move {
             let server = self.world().server.upgrade()?;
             let player = self.world().get_player_by_id(self.entity_id())?;
+            let transaction = TransactionContext::new(self.tick_counter.load(Ordering::Relaxed));
             let event = server
                 .plugin_manager
                 .fire(EnchantItemGenerateEvent {
+                    transaction,
+                    screen_sync_id: offer.screen_sync_id,
                     player,
                     item: offer.item,
                     slot: offer.slot,
@@ -7113,6 +7110,9 @@ impl InventoryPlayer for Player {
                 })
                 .await;
             (!event.cancelled).then_some(EnchantingOffer {
+                transaction_id: transaction.id.into_internal(),
+                transaction_tick: transaction.initiated_tick,
+                screen_sync_id: offer.screen_sync_id,
                 item: event.item,
                 slot: event.slot,
                 bookshelf_count: event.bookshelf_count,
@@ -7130,9 +7130,15 @@ impl InventoryPlayer for Player {
         Box::pin(async move {
             let server = self.world().server.upgrade()?;
             let player = self.world().get_player_by_id(self.entity_id())?;
+            let transaction = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            )?;
             let event = server
                 .plugin_manager
                 .fire(EnchantItemEvent {
+                    transaction,
+                    screen_sync_id: operation.screen_sync_id,
                     player,
                     item: operation.item,
                     slot: operation.slot,
@@ -7143,12 +7149,43 @@ impl InventoryPlayer for Player {
                 })
                 .await;
             (!event.cancelled).then_some(EnchantingOperation {
+                transaction_id: transaction.id.into_internal(),
+                transaction_tick: transaction.initiated_tick,
+                screen_sync_id: operation.screen_sync_id,
                 item: event.item,
                 slot: event.slot,
                 level_cost: event.level_cost,
                 lapis_cost: event.lapis_cost,
                 enchantments: event.enchantments,
             })
+        })
+    }
+
+    fn on_enchant_item_complete(&self, operation: EnchantingOperation) -> PlayerFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(transaction) = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            ) else {
+                return;
+            };
+            if let Some(server) = self.world().server.upgrade()
+                && let Some(player) = self.world().get_player_by_id(self.entity_id())
+            {
+                server
+                    .plugin_manager
+                    .fire(EnchantItemCompleteEvent {
+                        transaction,
+                        screen_sync_id: operation.screen_sync_id,
+                        player,
+                        item: operation.item,
+                        slot: operation.slot,
+                        level_cost: operation.level_cost,
+                        lapis_cost: operation.lapis_cost,
+                        enchantments: operation.enchantments,
+                    })
+                    .await;
+            }
         })
     }
 
@@ -7159,9 +7196,12 @@ impl InventoryPlayer for Player {
         Box::pin(async move {
             let server = self.world().server.upgrade()?;
             let player = self.world().get_player_by_id(self.entity_id())?;
+            let transaction = TransactionContext::new(self.tick_counter.load(Ordering::Relaxed));
             let event = server
                 .plugin_manager
                 .fire(AnvilPrepareEvent {
+                    transaction,
+                    screen_sync_id: operation.screen_sync_id,
                     player,
                     input_first: operation.input_first,
                     input_second: operation.input_second,
@@ -7172,6 +7212,9 @@ impl InventoryPlayer for Player {
                 })
                 .await;
             (!event.cancelled).then_some(AnvilOperation {
+                transaction_id: transaction.id.into_internal(),
+                transaction_tick: transaction.initiated_tick,
+                screen_sync_id: operation.screen_sync_id,
                 input_first: event.input_first,
                 input_second: event.input_second,
                 output: event.output,
@@ -7189,9 +7232,17 @@ impl InventoryPlayer for Player {
             let Some(player) = self.world().get_player_by_id(self.entity_id()) else {
                 return false;
             };
+            let Some(transaction) = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            ) else {
+                return false;
+            };
             let event = server
                 .plugin_manager
                 .fire(AnvilRepairEvent {
+                    transaction,
+                    screen_sync_id: operation.screen_sync_id,
                     player,
                     input_first: operation.input_first,
                     input_second: operation.input_second,
@@ -7205,6 +7256,34 @@ impl InventoryPlayer for Player {
         })
     }
 
+    fn on_anvil_complete(&self, operation: AnvilOperation) -> PlayerFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(transaction) = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            ) else {
+                return;
+            };
+            if let Some(server) = self.world().server.upgrade()
+                && let Some(player) = self.world().get_player_by_id(self.entity_id())
+            {
+                server
+                    .plugin_manager
+                    .fire(AnvilCompleteEvent {
+                        transaction,
+                        screen_sync_id: operation.screen_sync_id,
+                        player,
+                        input_first: operation.input_first,
+                        input_second: operation.input_second,
+                        output: operation.output,
+                        level_cost: operation.level_cost,
+                        material_cost: operation.material_cost,
+                    })
+                    .await;
+            }
+        })
+    }
+
     fn on_grindstone_prepare(
         &self,
         operation: GrindstoneOperation,
@@ -7212,9 +7291,12 @@ impl InventoryPlayer for Player {
         Box::pin(async move {
             let server = self.world().server.upgrade()?;
             let player = self.world().get_player_by_id(self.entity_id())?;
+            let transaction = TransactionContext::new(self.tick_counter.load(Ordering::Relaxed));
             let event = server
                 .plugin_manager
                 .fire(GrindstoneEvent {
+                    transaction,
+                    screen_sync_id: operation.screen_sync_id,
                     player,
                     input_top: operation.input_top,
                     input_bottom: operation.input_bottom,
@@ -7224,6 +7306,9 @@ impl InventoryPlayer for Player {
                 })
                 .await;
             (!event.cancelled).then_some(GrindstoneOperation {
+                transaction_id: transaction.id.into_internal(),
+                transaction_tick: transaction.initiated_tick,
+                screen_sync_id: operation.screen_sync_id,
                 input_top: event.input_top,
                 input_bottom: event.input_bottom,
                 output: event.output,
@@ -7234,11 +7319,23 @@ impl InventoryPlayer for Player {
 
     fn on_grindstone_take(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, bool> {
         Box::pin(async move {
-            let Some(server) = self.world().server.upgrade() else { return false; };
-            let Some(player) = self.world().get_player_by_id(self.entity_id()) else { return false; };
+            let Some(server) = self.world().server.upgrade() else {
+                return false;
+            };
+            let Some(player) = self.world().get_player_by_id(self.entity_id()) else {
+                return false;
+            };
+            let Some(transaction) = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            ) else {
+                return false;
+            };
             let event = server
                 .plugin_manager
                 .fire(GrindstoneTakeEvent {
+                    transaction,
+                    screen_sync_id: operation.screen_sync_id,
                     player,
                     input_top: operation.input_top,
                     input_bottom: operation.input_bottom,
@@ -7248,6 +7345,33 @@ impl InventoryPlayer for Player {
                 })
                 .await;
             !event.cancelled
+        })
+    }
+
+    fn on_grindstone_complete(&self, operation: GrindstoneOperation) -> PlayerFuture<'_, ()> {
+        Box::pin(async move {
+            let Some(transaction) = TransactionContext::from_internal(
+                operation.transaction_id,
+                operation.transaction_tick,
+            ) else {
+                return;
+            };
+            if let Some(server) = self.world().server.upgrade()
+                && let Some(player) = self.world().get_player_by_id(self.entity_id())
+            {
+                server
+                    .plugin_manager
+                    .fire(GrindstoneCompleteEvent {
+                        transaction,
+                        screen_sync_id: operation.screen_sync_id,
+                        player,
+                        input_top: operation.input_top,
+                        input_bottom: operation.input_bottom,
+                        output: operation.output,
+                        experience: operation.experience,
+                    })
+                    .await;
+            }
         })
     }
 }

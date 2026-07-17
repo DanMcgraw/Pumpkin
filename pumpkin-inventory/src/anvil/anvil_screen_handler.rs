@@ -20,6 +20,8 @@ pub struct AnvilScreenHandler {
     pub rename_text: String,
     pub repair_cost: i16,
     material_cost: u8,
+    transaction_id: u64,
+    transaction_tick: i32,
 }
 
 impl AnvilScreenHandler {
@@ -49,6 +51,8 @@ impl AnvilScreenHandler {
             rename_text: String::new(),
             repair_cost: 0,
             material_cost: 0,
+            transaction_id: 0,
+            transaction_tick: 0,
         };
 
         // Anvil specific slots: 2 input, 1 output
@@ -78,6 +82,7 @@ impl AnvilScreenHandler {
             self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
             self.set_repair_cost(0).await;
             self.material_cost = 0;
+            self.transaction_id = 0;
             return;
         }
 
@@ -158,6 +163,9 @@ impl AnvilScreenHandler {
                 input_a.repair_cost_level().max(input_b.repair_cost_level()) + 1,
             );
             let operation = AnvilOperation {
+                transaction_id: 0,
+                transaction_tick: 0,
+                screen_sync_id: self.behaviour.sync_id,
                 input_first: input_a,
                 input_second: input_b,
                 output: result_item,
@@ -166,15 +174,19 @@ impl AnvilScreenHandler {
             };
             if let Some(operation) = player.on_anvil_prepare(operation).await {
                 self.material_cost = operation.material_cost;
+                self.transaction_id = operation.transaction_id;
+                self.transaction_tick = operation.transaction_tick;
                 self.inventory.set_stack(2, operation.output).await;
                 self.set_repair_cost(operation.level_cost.max(0)).await;
             } else {
                 self.material_cost = 0;
+                self.transaction_id = 0;
                 self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
                 self.set_repair_cost(0).await;
             }
         } else {
             self.material_cost = 0;
+            self.transaction_id = 0;
             self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
             self.set_repair_cost(0).await;
         }
@@ -233,19 +245,23 @@ impl ScreenHandler for AnvilScreenHandler {
             if slot_index == 2 {
                 let result = self.inventory.get_stack(2).await.lock().await.clone();
                 if result.is_empty()
+                    || self.transaction_id == 0
                     || (!player.is_creative()
                         && player.experience_level() < self.repair_cost as i32)
                 {
                     return ItemStack::EMPTY.clone();
                 }
                 let operation = AnvilOperation {
+                    transaction_id: self.transaction_id,
+                    transaction_tick: self.transaction_tick,
+                    screen_sync_id: self.behaviour.sync_id,
                     input_first: self.inventory.get_stack(0).await.lock().await.clone(),
                     input_second: self.inventory.get_stack(1).await.lock().await.clone(),
                     output: result.clone(),
                     level_cost: self.repair_cost,
                     material_cost: self.material_cost,
                 };
-                if !player.on_anvil_take(operation).await {
+                if !player.on_anvil_take(operation.clone()).await {
                     return ItemStack::EMPTY.clone();
                 }
                 let output_slot = self.inventory.get_stack(2).await;
@@ -273,6 +289,7 @@ impl ScreenHandler for AnvilScreenHandler {
                 material.lock().await.decrement(self.material_cost);
                 self.update_result_slot(player).await;
                 self.send_content_updates().await;
+                player.on_anvil_complete(operation).await;
                 return result;
             }
 
@@ -328,12 +345,17 @@ impl ScreenHandler for AnvilScreenHandler {
         player: &'a dyn InventoryPlayer,
     ) -> ScreenHandlerFuture<'a, ()> {
         Box::pin(async move {
+            let mut completed_operation = None;
             if slot_index == 2 {
+                if self.transaction_id == 0 {
+                    self.send_content_updates().await;
+                    return;
+                }
                 // Taking from output slot
                 let result_slot = self.get_behaviour().slots[2].clone();
                 if result_slot.has_stack().await {
                     let result_stack = result_slot.get_cloned_stack().await;
-                    if !result_stack.is_empty() {
+                    if !result_stack.is_empty() && self.transaction_id != 0 {
                         if player.experience_level() >= self.repair_cost as i32
                             || player.is_creative()
                         {
@@ -342,13 +364,16 @@ impl ScreenHandler for AnvilScreenHandler {
                             let input_second =
                                 self.inventory.get_stack(1).await.lock().await.clone();
                             let operation = AnvilOperation {
+                                transaction_id: self.transaction_id,
+                                transaction_tick: self.transaction_tick,
+                                screen_sync_id: self.behaviour.sync_id,
                                 input_first,
                                 input_second,
                                 output: result_stack,
                                 level_cost: self.repair_cost,
                                 material_cost: self.material_cost,
                             };
-                            if !player.on_anvil_take(operation).await {
+                            if !player.on_anvil_take(operation.clone()).await {
                                 self.send_content_updates().await;
                                 return;
                             }
@@ -375,6 +400,7 @@ impl ScreenHandler for AnvilScreenHandler {
                             }
                             drop(input_b);
                             self.get_behaviour().slots[1].mark_dirty().await;
+                            completed_operation = Some(operation);
                         } else {
                             // Cancel click
                             self.send_content_updates().await;
@@ -389,6 +415,9 @@ impl ScreenHandler for AnvilScreenHandler {
             if slot_index == 0 || slot_index == 1 || slot_index == 2 {
                 self.update_result_slot(player).await;
                 self.send_content_updates().await;
+            }
+            if let Some(operation) = completed_operation {
+                player.on_anvil_complete(operation).await;
             }
         })
     }

@@ -29,6 +29,8 @@ pub struct EnchantingTableScreenHandler {
     pub enchantment_level: [i32; 3],
     pub enchantment_seed: i32,
     pub bookshelf_count: i32,
+    offer_transaction_ids: [u64; 3],
+    offer_transaction_ticks: [i32; 3],
 }
 
 impl EnchantingTableScreenHandler {
@@ -47,6 +49,8 @@ impl EnchantingTableScreenHandler {
             enchantment_level: [-1; 3],
             enchantment_seed,
             bookshelf_count,
+            offer_transaction_ids: [0; 3],
+            offer_transaction_ticks: [0; 3],
         };
 
         // Enchanting slots: 0 is item, 1 is lapis
@@ -68,6 +72,7 @@ impl EnchantingTableScreenHandler {
                 self.level_requirements[i] = 0;
                 self.enchantment_id[i] = -1;
                 self.enchantment_level[i] = -1;
+                self.offer_transaction_ids[i] = 0;
             }
         } else {
             let enchantability = item
@@ -79,6 +84,7 @@ impl EnchantingTableScreenHandler {
                     self.level_requirements[i] = 0;
                     self.enchantment_id[i] = -1;
                     self.enchantment_level[i] = -1;
+                    self.offer_transaction_ids[i] = 0;
                 }
             } else {
                 let mut random = pumpkin_util::random::xoroshiro128::Xoroshiro::from_seed(
@@ -100,6 +106,9 @@ impl EnchantingTableScreenHandler {
                         );
                         if let Some(first) = enchantments.first() {
                             let offer = EnchantingOffer {
+                                transaction_id: 0,
+                                transaction_tick: 0,
+                                screen_sync_id: self.behaviour.sync_id,
                                 item: item.clone(),
                                 slot: i,
                                 bookshelf_count: self.bookshelf_count,
@@ -111,18 +120,23 @@ impl EnchantingTableScreenHandler {
                                 self.level_requirements[i] = offer.level_requirement.max(1);
                                 self.enchantment_id[i] = offer.enchantment_id;
                                 self.enchantment_level[i] = offer.enchantment_level.max(1);
+                                self.offer_transaction_ids[i] = offer.transaction_id;
+                                self.offer_transaction_ticks[i] = offer.transaction_tick;
                             } else {
                                 self.level_requirements[i] = 0;
                                 self.enchantment_id[i] = -1;
                                 self.enchantment_level[i] = -1;
+                                self.offer_transaction_ids[i] = 0;
                             }
                         } else {
                             self.enchantment_id[i] = -1;
                             self.enchantment_level[i] = -1;
+                            self.offer_transaction_ids[i] = 0;
                         }
                     } else {
                         self.enchantment_id[i] = -1;
                         self.enchantment_level[i] = -1;
+                        self.offer_transaction_ids[i] = 0;
                     }
                 }
             }
@@ -320,7 +334,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             }
 
             let level_req = self.level_requirements[id as usize];
-            if level_req <= 0 {
+            if level_req <= 0 || self.offer_transaction_ids[id as usize] == 0 {
                 return false;
             }
             if player.experience_level() < level_req && !player.is_creative() {
@@ -356,6 +370,9 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             }
 
             let operation = EnchantingOperation {
+                transaction_id: self.offer_transaction_ids[id as usize],
+                transaction_tick: self.offer_transaction_ticks[id as usize],
+                screen_sync_id: self.behaviour.sync_id,
                 item: item_stack.clone(),
                 slot: id as usize,
                 level_cost: id + 1,
@@ -368,7 +385,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             drop(item_stack);
             drop(lapis_stack);
 
-            let Some(operation) = player.on_enchant_item(operation).await else {
+            let Some(mut operation) = player.on_enchant_item(operation).await else {
                 return false;
             };
             let level_cost = operation.level_cost.clamp(0, level_req);
@@ -392,7 +409,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             }
 
             *item_stack = operation.item;
-            for (enchantment_id, level) in operation.enchantments {
+            for &(enchantment_id, level) in &operation.enchantments {
                 if let Some(enchantment) = Enchantment::from_id(enchantment_id as u8) {
                     item_stack
                         .add_enchantment(enchantment, level.clamp(1, enchantment.max_level) as u16);
@@ -403,6 +420,8 @@ impl ScreenHandler for EnchantingTableScreenHandler {
             // Otherwise, update_enchantments will try to lock slot 0 again and deadlock!
             drop(item_stack);
             drop(lapis_stack);
+
+            operation.item = item_slot.lock().await.clone();
 
             // Update seed
             player.set_enchantment_seed(rand::random()).await;
@@ -418,6 +437,7 @@ impl ScreenHandler for EnchantingTableScreenHandler {
                     1,
                 )
                 .await;
+            player.on_enchant_item_complete(operation).await;
 
             true
         })

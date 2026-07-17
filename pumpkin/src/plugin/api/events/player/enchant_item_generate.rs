@@ -4,6 +4,7 @@ use pumpkin_data::item_stack::ItemStack;
 use pumpkin_macros::{Event, cancellable};
 
 use crate::entity::player::Player;
+use crate::plugin::api::transaction::TransactionContext;
 
 use super::PlayerEvent;
 
@@ -11,6 +12,8 @@ use super::PlayerEvent;
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct EnchantItemGenerateEvent {
+    pub transaction: TransactionContext,
+    pub screen_sync_id: u8,
     pub player: Arc<Player>,
     pub item: ItemStack,
     pub slot: usize,
