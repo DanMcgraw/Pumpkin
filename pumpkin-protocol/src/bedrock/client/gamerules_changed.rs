@@ -41,7 +41,7 @@ impl PacketWrite for GameRules {
     }
 }
 
-/// Gamerules embedded in `StartGame` use a signed VarInt for integer values,
+/// Gamerules embedded in `StartGame` use a signed `VarInt` for integer values,
 /// unlike the fixed-width integer used by `GameRulesChanged`.
 #[derive(Debug, Clone, Default)]
 pub struct StartGameRules {
@@ -126,7 +126,7 @@ impl PacketWrite for GameRuleValue {
 }
 
 impl GameRuleValue {
-    fn write_start_game<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
+    fn write_start_game<W: Write>(self, writer: &mut W) -> Result<(), Error> {
         match self {
             Self::Bool(value) => {
                 VarUInt(1).write(writer)?;
@@ -134,7 +134,7 @@ impl GameRuleValue {
             }
             Self::Int(value) => {
                 VarUInt(2).write(writer)?;
-                VarInt(*value).write(writer)
+                VarInt(value).write(writer)
             }
             Self::Float(value) => {
                 VarUInt(3).write(writer)?;

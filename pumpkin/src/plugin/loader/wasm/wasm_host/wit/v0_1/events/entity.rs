@@ -41,6 +41,10 @@ use crate::plugin::{
 use pumpkin_data::BlockStateId;
 use pumpkin_util::math::vector2::Vector2;
 
+#[expect(
+    clippy::single_option_map,
+    reason = "this adapter centralizes the legacy static-string conversion used by two events"
+)]
 fn wasm_reason_to_static(reason: Option<String>) -> Option<&'static str> {
     reason.map(|reason| Box::leak(reason.into_boxed_str()) as &'static str)
 }

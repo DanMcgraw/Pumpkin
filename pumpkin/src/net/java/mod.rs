@@ -155,7 +155,7 @@ impl OutgoingPacket {
         }
     }
 
-    fn chunk_batch(data: Vec<Bytes>, completion: oneshot::Sender<()>) -> Self {
+    const fn chunk_batch(data: Vec<Bytes>, completion: oneshot::Sender<()>) -> Self {
         Self {
             data,
             completion: Some(completion),
@@ -744,6 +744,10 @@ impl JavaClient {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the task owns the complete priority and batching state machine"
+    )]
     pub fn start_outgoing_packet_task(&mut self) {
         const MAX_BATCH_SIZE: usize = 64;
 

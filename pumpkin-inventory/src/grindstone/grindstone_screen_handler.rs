@@ -21,6 +21,10 @@ pub struct GrindstoneScreenHandler {
 }
 
 impl GrindstoneScreenHandler {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "accepts coercion from concrete inventory Arc types at screen construction"
+    )]
     pub fn new(
         sync_id: u8,
         player_inventory: &Arc<PlayerInventory>,
@@ -44,7 +48,7 @@ impl GrindstoneScreenHandler {
     async fn update_result(&mut self, player: &dyn InventoryPlayer) {
         let top = self.inventory.get_stack(0).await.lock().await.clone();
         let bottom = self.inventory.get_stack(1).await.lock().await.clone();
-        let source = if !top.is_empty() { &top } else { &bottom };
+        let source = if top.is_empty() { &bottom } else { &top };
         if source.is_empty() || (!top.is_empty() && !bottom.is_empty() && top.item != bottom.item) {
             self.inventory.set_stack(2, ItemStack::EMPTY.clone()).await;
             self.experience = 0;

@@ -524,7 +524,7 @@ impl NetherPortal {
             for dx in -1..=1 {
                 for dz in -1..=1 {
                     let chunk_coordinate = Vector2::new(chunk_x + dx, chunk_z + dz);
-                    let _ = world
+                    let () = world
                         .level
                         .get_or_fetch_chunk(chunk_coordinate, |_| ())
                         .await;

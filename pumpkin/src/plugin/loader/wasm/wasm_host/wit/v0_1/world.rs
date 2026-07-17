@@ -50,6 +50,10 @@ pub(crate) const fn from_wasm_block_direction(dir: WitBlockDirection) -> Interna
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "direction conversion tests stay adjacent to the conversion helpers"
+)]
 mod tests {
     use super::*;
 

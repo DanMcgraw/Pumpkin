@@ -49,7 +49,7 @@ const ARG_OPERATION: &str = "operation";
 const ARG_SOURCE: &str = "source";
 const ARG_SOURCE_OBJECTIVE: &str = "sourceObjective";
 
-fn scoreboard_argument(kind: ScoreboardArgumentKind) -> ScoreboardArgumentConsumer {
+const fn scoreboard_argument(kind: ScoreboardArgumentKind) -> ScoreboardArgumentConsumer {
     ScoreboardArgumentConsumer(kind)
 }
 
@@ -146,16 +146,17 @@ fn score_with_value(
     objective: &ScoreboardObjective<'static>,
     value: i32,
 ) -> ScoreboardScore<'static> {
-    if let Some(existing) = scoreboard.score(holder, objective.name) {
-        let mut score = existing.clone();
-        score.value = VarInt(value);
-        score
-    } else {
-        ScoreboardScore::new(leak(holder), objective.name, VarInt(value), None, None)
-    }
+    scoreboard.score(holder, objective.name).map_or_else(
+        || ScoreboardScore::new(leak(holder), objective.name, VarInt(value), None, None),
+        |existing| {
+            let mut score = existing.clone();
+            score.value = VarInt(value);
+            score
+        },
+    )
 }
 
-fn bounded_score(min: Option<i32>) -> BoundedNumArgumentConsumer<i32> {
+const fn bounded_score(min: Option<i32>) -> BoundedNumArgumentConsumer<i32> {
     let consumer = BoundedNumArgumentConsumer::new().name(ARG_SCORE);
     if let Some(min) = min {
         consumer.min(min)
@@ -595,7 +596,7 @@ impl CommandExecutor for MutateScoreExecutor {
             let mut scoreboard = world.scoreboard.lock().await;
             let objective = writable_objective_or_error(&scoreboard, objective_name)?;
             let holders = expanded_holders(&scoreboard, score_holders(args, ARG_TARGETS)?)?;
-            let mut result = 0_i32;
+            let mut result = 0i32;
             for holder in &holders {
                 let old = scoreboard
                     .score(holder, objective_name)
@@ -924,7 +925,7 @@ impl CommandExecutor for OperationExecutor {
             let source_objective = objective_or_error(&scoreboard, source_objective_name)?;
             let targets = expanded_holders(&scoreboard, score_holders(args, ARG_TARGETS)?)?;
             let sources = expanded_holders(&scoreboard, score_holders(args, ARG_SOURCE)?)?;
-            let mut result = 0_i32;
+            let mut result = 0i32;
             for target in &targets {
                 for source in &sources {
                     let target_value = scoreboard
@@ -1035,6 +1036,7 @@ fn player_number_format_tree() -> crate::command::tree::builder::NonLeafNodeBuil
     )
 }
 
+#[expect(clippy::too_many_lines, reason = "declarative scoreboard command tree")]
 pub fn init_command_tree() -> CommandTree {
     CommandTree::new(NAMES, DESCRIPTION)
         .then(

@@ -903,7 +903,7 @@ impl BedrockClient {
     }
 
     /// Claims responsibility for persisting the connected player while this
-    /// RakNet session is being replaced. The normal connection teardown checks
+    /// `RakNet` session is being replaced. The normal connection teardown checks
     /// this flag so both paths cannot truncate and rewrite the same player file.
     pub fn claim_replacement_player_snapshot(&self) {
         self.replacement_player_snapshot_claimed
@@ -1332,6 +1332,10 @@ impl BedrockClient {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "packet dispatch remains centralized so protocol IDs and state checks stay together"
+    )]
     pub async fn handle_play_packet(
         &self,
         player: &Arc<Player>,

@@ -944,7 +944,8 @@ impl PluginManager {
             plugins.remove(index)
         };
 
-        if let Some(server) = self.server.read().await.clone() {
+        let server = self.server.read().await.clone();
+        if let Some(server) = server {
             for world in server.worlds.load().iter() {
                 for player in world.players.load().iter() {
                     if player.plugin_gui_owner().await.as_deref() == Some(name) {
@@ -1038,11 +1039,9 @@ impl PluginManager {
     /// Synchronously checks if any handlers are registered for a given event type.
     #[must_use]
     pub fn has_handlers<E: Payload + Send + Sync + 'static>(&self) -> bool {
-        if let Ok(handlers) = self.handlers.try_read() {
-            handlers.contains_key(E::get_name_static())
-        } else {
-            true
-        }
+        self.handlers
+            .try_read()
+            .map_or(true, |handlers| handlers.contains_key(E::get_name_static()))
     }
 
     /// Fires an event to all registered handlers.

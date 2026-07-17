@@ -58,6 +58,7 @@ use arc_swap::ArcSwap;
 use border::Worldborder;
 use bytes::BufMut;
 use explosion::Explosion;
+use futures::FutureExt;
 use pumpkin_config::BasicConfiguration;
 use pumpkin_data::block_properties::{blocks_movement, is_air};
 use pumpkin_data::block_rotation::{Mirror, Rotation};
@@ -271,6 +272,10 @@ impl World {
     }
 
     /// Stores or removes one bounded, namespaced metadata compound on a loaded block.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the metadata setter takes ownership of the optional payload at the API boundary"
+    )]
     pub fn set_block_metadata(
         &self,
         position: &BlockPos,
@@ -436,8 +441,6 @@ impl World {
                     return false;
                 };
 
-                use futures::FutureExt;
-
                 let make_fut = || {
                     let event =
                         crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
@@ -449,12 +452,10 @@ impl World {
                     async move { manager.fire(event).await.cancelled }
                 };
 
-                if let Some(res) = make_fut().now_or_never() {
-                    res
-                } else {
+                make_fut().now_or_never().unwrap_or_else(|| {
                     warn!("Chunk unload event fell back to block_on!");
                     runtime.block_on(make_fut())
-                }
+                })
             };
             *level.chunk_unload_callback.write().unwrap() = Some(Box::new(callback));
 
@@ -564,7 +565,7 @@ impl World {
 
     async fn save_all_block_entities(&self) {
         let mut block_entities = Vec::new();
-        for chunk_block_entities in self.block_entities.iter() {
+        for chunk_block_entities in &self.block_entities {
             block_entities.extend(chunk_block_entities.values().cloned());
         }
         self.save_block_entities(block_entities).await;
@@ -572,7 +573,7 @@ impl World {
 
     async fn save_dirty_block_entities(&self) {
         let mut block_entities = Vec::new();
-        for chunk_block_entities in self.block_entities.iter() {
+        for chunk_block_entities in &self.block_entities {
             block_entities.extend(
                 chunk_block_entities
                     .values()
@@ -1083,7 +1084,7 @@ impl World {
         };
 
         let players = self.players.load();
-        let player_count = players.len();
+        let _player_count = players.len();
         let players_cache = Arc::new(
             players
                 .iter()
@@ -1116,7 +1117,7 @@ impl World {
         };
 
         let entities_to_tick = self.collect_entity_tick_candidates();
-        let entity_count = entities_to_tick.len();
+        let _entity_count = entities_to_tick.len();
         let server_for_entities = server.clone();
 
         let entity_future = async move {
@@ -1170,7 +1171,7 @@ impl World {
                 block_entities.extend(chunk_block_entities.values().cloned());
             }
         }
-        let block_entity_count = block_entities.len();
+        let _block_entity_count = block_entities.len();
 
         let world_for_be = self.clone();
         let block_entity_future = async move {
@@ -1191,7 +1192,7 @@ impl World {
             t.elapsed()
         };
 
-        let (chunk_elapsed, player_elapsed, entity_elapsed, block_entity_elapsed) = tokio::join!(
+        let (_chunk_elapsed, _player_elapsed, _entity_elapsed, _block_entity_elapsed) = tokio::join!(
             chunk_future,
             player_future,
             entity_future,
@@ -1215,6 +1216,10 @@ impl World {
             .insert(position, block_state_id);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the flush keeps Java and Bedrock block update batching in one consistency boundary"
+    )]
     pub async fn flush_block_updates(&self) {
         let mut block_state_updates_by_chunk_section: HashMap<
             Vector3<i32>,
@@ -3803,7 +3808,7 @@ impl World {
         center_chunk: Vector2<i32>,
     ) {
         #[cfg(debug_assertions)]
-        let inst = std::time::Instant::now();
+        let _inst = std::time::Instant::now();
 
         // Sort such that the first chunks are closest to the center.
         let mut chunks = chunks;
@@ -5373,6 +5378,10 @@ impl World {
         self.game_event_dispatcher.unregister(id)
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the public emission API owns the context for a single event occurrence"
+    )]
     pub fn emit_game_event(
         &self,
         event: pumpkin_data::game_event::GameEvent,
@@ -6307,8 +6316,6 @@ impl WorldPortalExt for WorldPortal {
             return true;
         };
 
-        use futures::FutureExt;
-
         let make_fut = || {
             let event =
                 crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
@@ -6321,15 +6328,13 @@ impl WorldPortalExt for WorldPortal {
             async move { !manager.fire(event).await.cancelled }
         };
 
-        if let Some(res) = make_fut().now_or_never() {
-            res
-        } else {
+        make_fut().now_or_never().unwrap_or_else(|| {
             warn!(
                 "Feature generate event fell back to block_on! feature: {:?}",
                 feature
             );
             runtime.block_on(make_fut())
-        }
+        })
     }
 }
 

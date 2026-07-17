@@ -21,6 +21,7 @@ pub struct CLevelChunk<'a> {
 }
 
 /// Replaces a previously sent chunk with an empty column on the Bedrock client.
+///
 /// Bedrock has no dedicated chunk-unload packet; an empty `LevelChunk` is the
 /// protocol-compatible invalidation used when a chunk leaves the publisher
 /// radius.

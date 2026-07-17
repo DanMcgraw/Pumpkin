@@ -80,8 +80,12 @@ use pumpkin_nbt::tag::NbtTag;
 use pumpkin_protocol::IdOr;
 use pumpkin_protocol::SoundEvent;
 use pumpkin_protocol::bedrock::client::container_open::CContainerOpen;
+use pumpkin_protocol::bedrock::client::inventory_content::CInventoryContent;
+use pumpkin_protocol::bedrock::client::inventory_slot::CInventorySlot;
+use pumpkin_protocol::bedrock::network_item::{ContainerName, FullContainerName};
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::codec::var_long::VarLong;
+use pumpkin_protocol::codec::var_uint::VarUInt;
 use pumpkin_protocol::codec::var_ulong::VarULong;
 use pumpkin_protocol::java::client::play::{
     Animation, CActionBar, CAwardStats, CChangeDifficulty, CCloseContainer, CCombatDeath,
@@ -226,8 +230,8 @@ pub struct MiningTarget {
 
 pub const DATA_VERSION: i32 = 4903; // 26.2
 
-/// Pumpkin's RakNet sender does not yet have a congestion window. Sending the
-/// normal Java batch of large, fragmented LevelChunk packets in one tick can
+/// Pumpkin's `RakNet` sender does not yet have a congestion window. Sending the
+/// normal Java batch of large, fragmented `LevelChunk` packets in one tick can
 /// overflow Bedrock's split-packet reassembly and leave collision-only chunks.
 const BEDROCK_CHUNKS_PER_TICK: usize = 1;
 
@@ -3305,6 +3309,10 @@ impl Player {
     }
 
     /// Teleports the player to a different world or dimension with an optional position, yaw, and pitch.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "coordinates cross-world player migration"
+    )]
     pub async fn teleport_world(
         self: &Arc<Self>,
         new_world: Arc<World>,
@@ -3497,7 +3505,7 @@ impl Player {
                         // whereas Pumpkin stores the entity at its feet.
                         let network_position = position.add_raw(
                             0.0,
-                            f64::from(entity.get_eye_height()),
+                            entity.get_eye_height(),
                             0.0,
                         );
                         client
@@ -3530,7 +3538,7 @@ impl Player {
         entity
             .pos
             .load()
-            .add_raw(0.0, f64::from(entity.get_eye_height()), 0.0)
+            .add_raw(0.0, entity.get_eye_height(), 0.0)
             .to_f32_lossy()
     }
 
@@ -3789,12 +3797,6 @@ impl Player {
         {
             return;
         }
-        use pumpkin_protocol::bedrock::{
-            client::inventory_content::CInventoryContent,
-            network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
-        };
-        use pumpkin_protocol::codec::var_uint::VarUInt;
-
         let slots = futures::future::join_all(
             self.inventory
                 .main_inventory
@@ -3898,12 +3900,6 @@ impl Player {
         if !client.allows_packet_group(crate::net::bedrock::state::BedrockPacketGroup::Gameplay) {
             return;
         }
-        use pumpkin_protocol::bedrock::{
-            client::inventory_content::CInventoryContent,
-            network_item::{ContainerName, FullContainerName, NetworkItemStackDescriptor},
-        };
-        use pumpkin_protocol::codec::var_uint::VarUInt;
-
         let slots = futures::future::join_all(
             self.inventory
                 .main_inventory
@@ -4039,7 +4035,7 @@ impl Player {
         )]
     }
 
-    fn bedrock_attribute_packet(
+    const fn bedrock_attribute_packet(
         &self,
         attributes: Vec<pumpkin_protocol::bedrock::client::update_attributes::Attribute>,
     ) -> pumpkin_protocol::bedrock::client::update_attributes::CUpdateAttributes {
@@ -5136,13 +5132,13 @@ impl Player {
     pub async fn close_plugin_gui(self: &Arc<Self>, reason: PluginGuiCloseReason) {
         let current = self.current_screen_handler.lock().await.clone();
         let mut screen = current.lock().await;
-        let is_plugin_gui =
-            if let Some(handler) = screen.as_any_mut().downcast_mut::<PluginScreenHandler>() {
+        let is_plugin_gui = screen
+            .as_any_mut()
+            .downcast_mut::<PluginScreenHandler>()
+            .is_some_and(|handler| {
                 handler.set_close_reason(reason);
                 true
-            } else {
-                false
-            };
+            });
         drop(screen);
         if is_plugin_gui {
             self.close_handled_screen().await;
@@ -5533,7 +5529,7 @@ impl Player {
                 slot,
                 raw_slot,
                 is_container_slot: slot >= 0 && i32::from(slot) < container_slots as i32,
-                click_type: click_type.clone(),
+                click_type,
                 hotbar_button: i32::from(hotbar_button),
                 cursor: cursor_item
                     .clone()
@@ -5668,7 +5664,7 @@ impl Player {
                             player: Arc::clone(self),
                             slots: slots.clone(),
                             cursor: cursor.clone().unwrap_or_else(|| ItemStack::EMPTY.clone()),
-                            click_type: drag_click_type.clone(),
+                            click_type: drag_click_type,
                             revision: packet.revision.0,
                             sync_id,
                         };
@@ -6742,14 +6738,6 @@ impl InventoryPlayer for Player {
                     ) {
                         return;
                     }
-                    use pumpkin_protocol::bedrock::{
-                        client::inventory_content::CInventoryContent,
-                        network_item::{
-                            ContainerName, FullContainerName, NetworkItemStackDescriptor,
-                        },
-                    };
-                    use pumpkin_protocol::codec::var_uint::VarUInt;
-
                     let window_id = packet.window_id.0 as u32;
                     if window_id == 0 {
                         // Java's player screen is crafting/armour, main inventory,
@@ -6829,14 +6817,6 @@ impl InventoryPlayer for Player {
                     java.enqueue_packet(packet).await;
                 }
                 ClientPlatform::Bedrock(bedrock) => {
-                    use pumpkin_protocol::bedrock::{
-                        client::inventory_slot::CInventorySlot,
-                        network_item::{
-                            ContainerName, FullContainerName, NetworkItemStackDescriptor,
-                        },
-                    };
-                    use pumpkin_protocol::codec::var_uint::VarUInt;
-
                     let window_id = packet.window_id;
                     tracing::debug!(
                         "enqueue_slot_packet: window_id={}, slot={}",
@@ -6961,14 +6941,6 @@ impl InventoryPlayer for Player {
                     ) {
                         return;
                     }
-                    use pumpkin_protocol::bedrock::{
-                        client::inventory_slot::CInventorySlot,
-                        network_item::{
-                            ContainerName, FullContainerName, NetworkItemStackDescriptor,
-                        },
-                    };
-                    use pumpkin_protocol::codec::var_uint::VarUInt;
-
                     tracing::debug!(
                         "enqueue_slot_set_packet: slot={}, sending CInventorySlot to Bedrock client",
                         packet.slot.0

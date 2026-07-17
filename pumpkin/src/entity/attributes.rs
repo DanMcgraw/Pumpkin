@@ -89,6 +89,10 @@ impl AttributeInstance {
 }
 
 /// Send updates for multiple attributes in a single packet for the given living entity.
+#[expect(
+    clippy::too_many_lines,
+    reason = "builds paired Java and Bedrock attribute packets"
+)]
 pub async fn send_attribute_updates_for_living(
     living: &crate::entity::living::LivingEntity,
     attributes: Vec<Attributes>,

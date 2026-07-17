@@ -259,7 +259,7 @@ impl PacketRead for ItemStackWrapper {
 }
 
 impl ItemStackWrapper {
-    /// Builds the item carried by an AddItemActor packet.
+    /// Builds the item carried by an `AddItemActor` packet.
     ///
     /// Network stack IDs belong to a session's inventory transaction state.
     /// Geyser omits them for item actors, so a dropped item must not inherit the

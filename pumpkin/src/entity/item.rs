@@ -456,6 +456,10 @@ impl ItemEntity {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "the motion regression test stays adjacent to the synchronization implementation"
+)]
 mod tests {
     use super::ItemEntity;
 

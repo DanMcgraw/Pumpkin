@@ -58,7 +58,7 @@ impl Scoreboard {
         id
     }
 
-    fn allocate_bedrock_id(&mut self) -> i64 {
+    const fn allocate_bedrock_id(&mut self) -> i64 {
         let id = self.next_bedrock_id;
         self.next_bedrock_id = self.next_bedrock_id.saturating_add(1);
         id
@@ -287,6 +287,10 @@ impl Scoreboard {
         }
     }
 
+    #[expect(
+        clippy::unused_async,
+        reason = "the mutation API stays async-compatible with objective update and removal operations"
+    )]
     pub async fn add_objective(
         &mut self,
         world: &World,
@@ -374,7 +378,7 @@ impl Scoreboard {
 
         let bedrock_ids = self.displayed_instances_for(name);
         for (_, objective_name) in &bedrock_ids {
-            Self::broadcast_bedrock_objective_remove(world, &objective_name).await;
+            Self::broadcast_bedrock_objective_remove(world, objective_name).await;
         }
 
         self.objectives.remove(name);
@@ -1039,6 +1043,10 @@ impl CollisionRule {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "score identity tests stay adjacent to the scoreboard implementation"
+)]
 mod tests {
     use super::Scoreboard;
 

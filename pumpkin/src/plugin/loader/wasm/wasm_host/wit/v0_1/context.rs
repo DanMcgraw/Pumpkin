@@ -47,8 +47,7 @@ enum EventRoute {
     Player,
 }
 
-#[expect(clippy::too_many_lines)]
-fn event_route(event_type: &EventType) -> EventRoute {
+const fn event_route(event_type: EventType) -> EventRoute {
     match event_type {
         EventType::PacketReceivedEvent
         | EventType::PacketSentEvent
@@ -380,6 +379,10 @@ async fn register_inventory_event(
         }
     }
 }
+#[expect(
+    clippy::too_many_lines,
+    reason = "the exhaustive WIT event mapping is kept in one auditable dispatch table"
+)]
 async fn register_entity_event(
     resource: &ContextResource,
     handler: &Arc<WasmPluginEventHandler>,
@@ -537,6 +540,10 @@ async fn register_server_event(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "route tests stay adjacent to the route table before generated host implementations"
+)]
 mod tests {
     use super::{EventRoute, event_route};
     use crate::plugin::loader::wasm::wasm_host::wit::v0_1::pumpkin::plugin::event::EventType;
@@ -552,7 +559,7 @@ mod tests {
             EventType::FurnaceBurnEvent,
             EventType::FurnaceSmeltEvent,
         ] {
-            assert_eq!(event_route(&event_type), EventRoute::Block);
+            assert_eq!(event_route(event_type), EventRoute::Block);
         }
     }
 
@@ -576,14 +583,14 @@ mod tests {
             EventType::EntityPickupItemEvent,
             EventType::EntityCombustByEntityEvent,
         ] {
-            assert_eq!(event_route(&event_type), EventRoute::Entity);
+            assert_eq!(event_route(event_type), EventRoute::Entity);
         }
     }
 
     #[test]
     fn newly_exposed_inventory_events_route_to_inventory_registration() {
         assert_eq!(
-            event_route(&EventType::InventoryMoveItemEvent),
+            event_route(EventType::InventoryMoveItemEvent),
             EventRoute::Inventory
         );
     }
@@ -600,7 +607,7 @@ mod tests {
             EventType::InventoryClickEvent,
             EventType::InventoryCloseEvent,
         ] {
-            assert_eq!(event_route(&event_type), EventRoute::Player);
+            assert_eq!(event_route(event_type), EventRoute::Player);
         }
     }
 }
@@ -663,7 +670,7 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
         let resource = self.get_context(&context)?;
         let handler = Arc::new(WasmPluginEventHandler { handler_id, plugin });
 
-        match event_route(&event_type) {
+        match event_route(event_type) {
             EventRoute::Server => {
                 register_server_event(resource, &handler, priority, blocking, event_type).await;
             }

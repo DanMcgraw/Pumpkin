@@ -113,6 +113,10 @@ impl GameEventDispatcher {
         listeners.len() != old_len
     }
 
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "events are lightweight enum values and emission conceptually consumes the occurrence"
+    )]
     pub fn emit(&self, event: GameEvent, position: Vector3<f64>, context: &GameEventContext) {
         let radius_squared = notification_radius_squared(&event);
         let mut listeners = self

@@ -27,7 +27,7 @@ pub struct PlayerItemUseFinishEvent {
 
 impl PlayerItemUseFinishEvent {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         transaction: TransactionContext,
         player: Arc<Player>,
         item: ItemStack,

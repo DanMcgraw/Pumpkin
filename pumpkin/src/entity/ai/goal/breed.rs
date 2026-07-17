@@ -86,9 +86,7 @@ impl BreedGoal {
             .expect("breeding mate should exist");
         let initiated_tick = world.get_world_age().await.clamp(0, i64::from(i32::MAX)) as i32;
         let transaction = TransactionContext::new(initiated_tick);
-        let mut experience = 0;
-
-        if let Some(server) = world.server.upgrade() {
+        let experience = if let Some(server) = world.server.upgrade() {
             let event = server
                 .plugin_manager
                 .fire(EntityBreedEvent::new_with_transaction(
@@ -104,8 +102,10 @@ impl BreedGoal {
             if event.cancelled {
                 return;
             }
-            experience = event.experience.max(0);
-        }
+            event.experience.max(0)
+        } else {
+            0
+        };
 
         mob_entity.reset_love_ticks();
         mob_entity

@@ -72,6 +72,10 @@ impl AnvilScreenHandler {
         self.send_content_updates().await;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "mirrors the ordered vanilla anvil calculation"
+    )]
     pub async fn update_result_slot(&mut self, player: &dyn InventoryPlayer) {
         let input_a = {
             let lock = self.inventory.get_stack(0).await;
@@ -91,8 +95,8 @@ impl AnvilScreenHandler {
             lock.lock().await.clone()
         };
         let mut result_item = input_a.clone();
-        let mut operation_cost = 0_i32;
-        let mut material_cost = 0_u8;
+        let mut operation_cost = 0i32;
+        let mut material_cost = 0u8;
         let mut changed = false;
 
         if !input_b.is_empty() {
@@ -154,7 +158,7 @@ impl AnvilScreenHandler {
         }
 
         if changed {
-            let prior_work = |level: i32| 2_i32.saturating_pow(level.min(15) as u32) - 1;
+            let prior_work = |level: i32| 2i32.saturating_pow(level.min(15) as u32) - 1;
             let cost = (operation_cost
                 + prior_work(input_a.repair_cost_level())
                 + prior_work(input_b.repair_cost_level()))

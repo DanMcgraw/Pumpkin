@@ -257,7 +257,7 @@ mod tests {
             // block runtime id, extra-data length.
             0, 0, 0, 0, 0, 0, 0, 0,
         ];
-        for value in [1.0_f32, 2.0, 3.0, 0.25, 0.5, 0.75] {
+        for value in [1.0f32, 2.0, 3.0, 0.25, 0.5, 0.75] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
 

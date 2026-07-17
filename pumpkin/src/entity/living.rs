@@ -2744,9 +2744,7 @@ impl EntityBase for LivingEntity {
                     } else {
                         ItemStack::EMPTY.clone()
                     };
-                    let mut item_transaction = None;
-
-                    if let Some(player) = caller.get_player()
+                    let item_transaction = if let Some(player) = caller.get_player()
                         && let Some(player) = self
                             .entity
                             .world
@@ -2775,8 +2773,10 @@ impl EntityBase for LivingEntity {
                         nutrition = event.nutrition;
                         saturation = event.saturation;
                         result_item = event.result_item;
-                        item_transaction = Some((transaction, player));
-                    }
+                        Some((transaction, player))
+                    } else {
+                        None
+                    };
 
                     // Consume item
                     if item.get_data_component::<FoodImpl>().is_some()
@@ -3039,7 +3039,7 @@ fn should_remove_after_death(entity_type: &EntityType, death_time: u8) -> bool {
     death_time == 20 && entity_type != &EntityType::PLAYER
 }
 
-fn update_active_item_flags(current: u8, using_item: bool, off_hand_active: bool) -> u8 {
+const fn update_active_item_flags(current: u8, using_item: bool, off_hand_active: bool) -> u8 {
     let mut flags = current & !(LivingEntity::USING_ITEM_FLAG | LivingEntity::OFF_HAND_ACTIVE_FLAG);
     if using_item {
         flags |= LivingEntity::USING_ITEM_FLAG;

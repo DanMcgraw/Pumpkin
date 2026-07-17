@@ -35,7 +35,6 @@ impl ScoreHoldersArgumentConsumer {
     }
 
     fn resolve(
-        &self,
         sender: &CommandSender,
         server: &Server,
         raw_arg: RawArg<'_>,
@@ -82,7 +81,7 @@ impl ArgumentConsumer for ScoreHoldersArgumentConsumer {
         let Some(raw_arg) = args.pop() else {
             return Box::pin(async { None });
         };
-        let resolved = self.resolve(sender, server, raw_arg).ok();
+        let resolved = Self::resolve(sender, server, raw_arg).ok();
         Box::pin(async move { resolved.map(Arg::ScoreHolders) })
     }
 
@@ -95,7 +94,7 @@ impl ArgumentConsumer for ScoreHoldersArgumentConsumer {
         let Some(raw_arg) = args.pop() else {
             return Box::pin(async { Ok(None) });
         };
-        let resolved = self.resolve(sender, server, raw_arg);
+        let resolved = Self::resolve(sender, server, raw_arg);
         Box::pin(async move { resolved.map(|holders| Some(Arg::ScoreHolders(holders))) })
     }
 

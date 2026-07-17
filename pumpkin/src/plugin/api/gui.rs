@@ -114,21 +114,15 @@ pub struct PluginGuiCloseContext {
 
 /// Direct, ownership-routed callbacks for a native plugin GUI session.
 pub trait PluginGuiHandler: Send + Sync {
-    fn on_click<'a>(
-        &'a self,
-        _context: PluginGuiClickContext,
-    ) -> BoxFuture<'a, PluginGuiInputResult> {
+    fn on_click(&self, _context: PluginGuiClickContext) -> BoxFuture<'_, PluginGuiInputResult> {
         Box::pin(async { PluginGuiInputResult::Cancel })
     }
 
-    fn on_drag<'a>(
-        &'a self,
-        _context: PluginGuiDragContext,
-    ) -> BoxFuture<'a, PluginGuiInputResult> {
+    fn on_drag(&self, _context: PluginGuiDragContext) -> BoxFuture<'_, PluginGuiInputResult> {
         Box::pin(async { PluginGuiInputResult::Cancel })
     }
 
-    fn on_close<'a>(&'a self, _context: PluginGuiCloseContext) -> BoxFuture<'a, ()> {
+    fn on_close(&self, _context: PluginGuiCloseContext) -> BoxFuture<'_, ()> {
         Box::pin(async {})
     }
 }
@@ -136,17 +130,11 @@ pub trait PluginGuiHandler: Send + Sync {
 pub(crate) struct PassthroughPluginGuiHandler;
 
 impl PluginGuiHandler for PassthroughPluginGuiHandler {
-    fn on_click<'a>(
-        &'a self,
-        _context: PluginGuiClickContext,
-    ) -> BoxFuture<'a, PluginGuiInputResult> {
+    fn on_click(&self, _context: PluginGuiClickContext) -> BoxFuture<'_, PluginGuiInputResult> {
         Box::pin(async { PluginGuiInputResult::AllowVanilla })
     }
 
-    fn on_drag<'a>(
-        &'a self,
-        _context: PluginGuiDragContext,
-    ) -> BoxFuture<'a, PluginGuiInputResult> {
+    fn on_drag(&self, _context: PluginGuiDragContext) -> BoxFuture<'_, PluginGuiInputResult> {
         Box::pin(async { PluginGuiInputResult::AllowVanilla })
     }
 }
@@ -320,6 +308,10 @@ pub struct PluginScreenHandler {
 
 impl PluginScreenHandler {
     #[must_use]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "constructing an owned GUI session requires its policy, identity, and handler inputs"
+    )]
     pub(crate) fn new(
         sync_id: u8,
         window_type: WindowType,
@@ -357,7 +349,7 @@ impl PluginScreenHandler {
         handler
     }
 
-    pub(crate) fn set_close_reason(&mut self, reason: PluginGuiCloseReason) {
+    pub(crate) const fn set_close_reason(&mut self, reason: PluginGuiCloseReason) {
         self.close_reason = reason;
     }
 }
@@ -409,13 +401,11 @@ impl ScreenHandler for PluginScreenHandler {
 #[must_use]
 pub(crate) const fn window_slot_count(window_type: WindowType) -> usize {
     match window_type {
-        WindowType::Generic9x1 => 9,
+        WindowType::Generic9x1 | WindowType::Generic3x3 | WindowType::Crafter3x3 => 9,
         WindowType::Generic9x2 => 18,
-        WindowType::Generic9x3 => 27,
         WindowType::Generic9x4 => 36,
         WindowType::Generic9x5 => 45,
         WindowType::Generic9x6 => 54,
-        WindowType::Generic3x3 | WindowType::Crafter3x3 => 9,
         WindowType::Hopper => 5,
         _ => 27,
     }

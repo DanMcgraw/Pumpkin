@@ -3646,6 +3646,10 @@ impl Flag {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "the focused regression tests stay adjacent to the entity logic they cover"
+)]
 mod tests {
     use super::*;
 

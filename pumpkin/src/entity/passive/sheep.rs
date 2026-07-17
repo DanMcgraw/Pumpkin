@@ -111,7 +111,7 @@ impl SheepEntity {
     }
 }
 
-fn wool_for_color(color: u8) -> &'static Item {
+const fn wool_for_color(color: u8) -> &'static Item {
     match color {
         1 => &Item::ORANGE_WOOL,
         2 => &Item::MAGENTA_WOOL,

@@ -345,11 +345,10 @@ mod tests {
         )
         .unwrap();
 
-        {
-            let mut data = logger.data.lock().unwrap();
-            writeln!(data.file.as_mut().unwrap(), "before rotation").unwrap();
-            data.last_rotate_time -= Duration::days(1);
-        }
+        let mut data = logger.data.lock().unwrap();
+        writeln!(data.file.as_mut().unwrap(), "before rotation").unwrap();
+        data.last_rotate_time -= Duration::days(1);
+        drop(data);
 
         logger.rotate_log().unwrap();
 
@@ -364,11 +363,10 @@ mod tests {
             .unwrap();
         assert_eq!(archived_text, "before rotation\n");
 
-        {
-            let mut data = logger.data.lock().unwrap();
-            writeln!(data.file.as_mut().unwrap(), "after rotation").unwrap();
-            data.file.as_mut().unwrap().flush().unwrap();
-        }
+        let mut data = logger.data.lock().unwrap();
+        writeln!(data.file.as_mut().unwrap(), "after rotation").unwrap();
+        data.file.as_mut().unwrap().flush().unwrap();
+        drop(data);
         assert_eq!(
             std::fs::read_to_string(temp_dir.path().join("latest.log")).unwrap(),
             "after rotation\n"

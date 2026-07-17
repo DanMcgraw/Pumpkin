@@ -79,6 +79,10 @@ const fn should_complete_bedrock_respawn(pending: bool, dead: bool) -> bool {
     pending && !dead
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "the predicate mirrors independent flags from the Bedrock movement packet"
+)]
 const fn should_process_bedrock_fall(
     position_changed: bool,
     was_on_ground: bool,
@@ -113,7 +117,7 @@ fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
     }
 }
 
-fn client_stack_matches_authoritative(client: &ItemStack, authoritative: &ItemStack) -> bool {
+const fn client_stack_matches_authoritative(client: &ItemStack, authoritative: &ItemStack) -> bool {
     client.is_empty()
         || (client.item.id == authoritative.item.id
             && client.item_count == authoritative.item_count)
@@ -2351,6 +2355,10 @@ fn record_update(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::items_after_test_module,
+    reason = "the protocol regression tests precede private inventory response helpers"
+)]
 mod inventory_stack_response_tests {
     use pumpkin_data::{item::Item, item_stack::ItemStack};
     use pumpkin_protocol::bedrock::{
@@ -2387,7 +2395,7 @@ mod inventory_stack_response_tests {
     fn held_item_validation_accepts_omitted_descriptor_but_checks_supplied_data() {
         let authoritative = ItemStack::new(4, &Item::APPLE);
         assert!(client_stack_matches_authoritative(
-            &ItemStack::EMPTY,
+            ItemStack::EMPTY,
             &authoritative
         ));
         assert!(client_stack_matches_authoritative(

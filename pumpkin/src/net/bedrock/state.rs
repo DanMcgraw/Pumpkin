@@ -43,9 +43,8 @@ impl BedrockSessionState {
         self as u8 == next as u8
             || matches!(
                 (self, next),
-                (Self::Initializing, Self::Playing)
+                (Self::Initializing | Self::ChangingDimension, Self::Playing)
                     | (Self::Playing, Self::ChangingDimension | Self::Dead)
-                    | (Self::ChangingDimension, Self::Playing)
                     | (Self::Dead, Self::Respawning)
                     | (Self::Respawning, Self::Playing | Self::ChangingDimension)
                     | (_, Self::Disconnected)
@@ -92,7 +91,7 @@ pub const fn recovery_replay_pending(
         && replayed_epoch < recovery_epoch
 }
 
-/// Initial join is the only lifecycle that emits PlayerSpawn from chunk
+/// Initial join is the only lifecycle that emits `PlayerSpawn` from chunk
 /// progress. Dimension changes complete it explicitly after the client ack.
 #[must_use]
 pub const fn should_send_initial_player_spawn(
@@ -130,6 +129,10 @@ pub fn game_rules(registry: &GameRuleRegistry) -> StartGameRules {
 
 /// Maps one Pumpkin gamerule to its Bedrock name and typed value.
 #[must_use]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the typed gamerule view is a small copyable value returned by the registry"
+)]
 pub fn game_rule(
     rule: &PumpkinGameRule,
     value: PumpkinGameRuleValue<&i64, &bool>,
