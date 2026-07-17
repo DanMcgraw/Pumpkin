@@ -246,6 +246,7 @@ impl Ord for HeapNode {
 pub struct ChunkManager {
     chunks_per_tick: usize,
     center: Vector2<i32>,
+    /// Ticket radius, including the one-chunk generation margin.
     view_distance: u8,
     chunk_listener: Receiver<(Vector2<i32>, Weak<ChunkData>)>,
     chunk_sent: HashMap<Vector2<i32>, Weak<ChunkData>>,
@@ -260,7 +261,26 @@ pub struct ChunkManager {
 impl ChunkManager {
     pub const NOTCHIAN_BATCHES_WITHOUT_ACK_UNTIL_PAUSE: u8 = 10;
     const MAX_CHUNKS_PER_TICK: usize = 16;
+    const CHUNK_LOADING_MARGIN: u8 = 1;
     const ACK_STALL_FALLBACK_DELAY: Duration = Duration::from_millis(250);
+
+    #[must_use]
+    const fn client_view_distance(loading_view_distance: u8) -> u8 {
+        loading_view_distance.saturating_sub(Self::CHUNK_LOADING_MARGIN)
+    }
+
+    #[must_use]
+    fn is_within_client_view(
+        position: Vector2<i32>,
+        center: Vector2<i32>,
+        loading_view_distance: u8,
+    ) -> bool {
+        let Some(view_distance) = NonZeroU8::new(Self::client_view_distance(loading_view_distance))
+        else {
+            return false;
+        };
+        Cylindrical::new(center, view_distance).is_within_distance(position.x, position.y)
+    }
 
     #[must_use]
     pub fn new(
@@ -318,7 +338,7 @@ impl ChunkManager {
     pub fn pull_new_chunks(&mut self) {
         while let Ok((pos, chunk_weak)) = self.chunk_listener.try_recv() {
             let dst = Self::chebyshev(pos, self.center);
-            if dst > i32::from(self.view_distance) {
+            if !Self::is_within_client_view(pos, self.center, self.view_distance) {
                 continue;
             }
             if let Some(chunk) = chunk_weak.upgrade()
@@ -341,7 +361,7 @@ impl ChunkManager {
         loading_chunks: &[Vector2<i32>],
         unloading_chunks: &[Vector2<i32>],
     ) {
-        view_distance += 1; // Margin for loading
+        view_distance = view_distance.saturating_add(Self::CHUNK_LOADING_MARGIN);
         let old_center = self.center;
         let old_view_distance = self.view_distance;
 
@@ -362,16 +382,21 @@ impl ChunkManager {
 
         self.center = center;
         self.view_distance = view_distance;
-        let view_distance_i32 = i32::from(view_distance);
+        // The extra ticket radius keeps generation ahead of the player, but it
+        // must never enter the send queue. Bedrock only renders chunks inside
+        // NetworkChunkPublisherUpdate's advertised (non-margin) radius. If a
+        // margin chunk is sent early, it is marked sent and is not replayed
+        // when the player moves into range, leaving collision-only terrain
+        // until reconnect.
         let unloading_chunks: HashSet<Vector2<i32>> = unloading_chunks.iter().copied().collect();
 
         self.chunk_sent.retain(|pos, _| {
-            (pos.x - center.x).abs().max((pos.y - center.y).abs()) <= view_distance_i32
+            Self::is_within_client_view(*pos, center, view_distance)
                 && !unloading_chunks.contains(pos)
         });
 
         self.entity_chunk_queue.retain(|(pos, _)| {
-            (pos.x - center.x).abs().max((pos.y - center.y).abs()) <= view_distance_i32
+            Self::is_within_client_view(*pos, center, view_distance)
                 && !unloading_chunks.contains(pos)
         });
 
@@ -380,8 +405,9 @@ impl ChunkManager {
             .drain()
             .filter_map(|node| {
                 let dst = Self::chebyshev(node.1, center);
-                (dst <= view_distance_i32 && !unloading_chunks.contains(&node.1))
-                    .then(|| HeapNode(dst, node.1, node.2))
+                (Self::is_within_client_view(node.1, center, view_distance)
+                    && !unloading_chunks.contains(&node.1))
+                .then(|| HeapNode(dst, node.1, node.2))
             })
             .collect();
 
@@ -519,7 +545,11 @@ mod chunk_manager_tests {
         bedrock_initial_position_matches, can_start_food_use, client_load_is_ready,
         entity_data_flag, entity_data_key, observe_bedrock_input_tick,
     };
-    use pumpkin_util::{math::vector3::Vector3, text::TextComponent, translation::Locale};
+    use pumpkin_util::{
+        math::{vector2::Vector2, vector3::Vector3},
+        text::TextComponent,
+        translation::Locale,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     #[test]
@@ -531,6 +561,23 @@ mod chunk_manager_tests {
         assert_eq!(ChunkManager::validated_chunks_per_tick(100.0), 16);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::NAN), 1);
         assert_eq!(ChunkManager::validated_chunks_per_tick(f32::INFINITY), 1);
+    }
+
+    #[test]
+    fn chunk_loading_margin_is_not_part_of_client_send_radius() {
+        assert_eq!(ChunkManager::client_view_distance(0), 0);
+        assert_eq!(ChunkManager::client_view_distance(1), 0);
+        assert_eq!(ChunkManager::client_view_distance(9), 8);
+        assert!(ChunkManager::is_within_client_view(
+            Vector2::new(9, 0),
+            Vector2::new(0, 0),
+            9,
+        ));
+        assert!(!ChunkManager::is_within_client_view(
+            Vector2::new(9, 9),
+            Vector2::new(0, 0),
+            9,
+        ));
     }
 
     #[test]
