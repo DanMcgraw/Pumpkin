@@ -2,8 +2,8 @@ use pumpkin_data::damage::DamageType;
 use pumpkin_macros::{Event, cancellable};
 use std::sync::Arc;
 
-use crate::entity::EntityBase;
 use super::damage_attribution::DamageAttribution;
+use crate::entity::EntityBase;
 
 /// Fired when a living entity is damaged.
 ///

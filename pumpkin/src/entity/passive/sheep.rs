@@ -185,7 +185,11 @@ impl Mob for SheepEntity {
                     rand::rng().random_range(1..=3),
                     wool_for_color(self.get_color()),
                 );
-                entity.world.load().drop_stack(&entity.block_pos.load(), output.clone()).await;
+                entity
+                    .world
+                    .load()
+                    .drop_stack(&entity.block_pos.load(), output.clone())
+                    .await;
                 if player.gamemode.load() != pumpkin_util::GameMode::Creative {
                     let _ = item_stack.damage_item(1);
                 }
@@ -202,13 +206,9 @@ impl Mob for SheepEntity {
             }
             let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
-                let Some(feed) = prepare_feed(
-                    entity,
-                    player,
-                    item_stack,
-                    FeedPurpose::EnterLoveMode,
-                )
-                .await else {
+                let Some(feed) =
+                    prepare_feed(entity, player, item_stack, FeedPurpose::EnterLoveMode).await
+                else {
                     return true;
                 };
                 item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);

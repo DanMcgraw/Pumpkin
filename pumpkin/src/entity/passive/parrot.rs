@@ -14,10 +14,10 @@ use crate::entity::{
     mob::{Mob, MobEntity},
     passive::tameable::Tameable,
 };
-use crate::plugin::api::events::entity::entity_tame::EntityTameEvent;
 use crate::plugin::api::events::entity::entity_feed::{
     FeedOutcome, FeedPurpose, complete_feed, prepare_feed,
 };
+use crate::plugin::api::events::entity::entity_tame::EntityTameEvent;
 
 const TAME_ITEMS: &[&Item] = &[
     &Item::WHEAT_SEEDS,
@@ -112,7 +112,8 @@ impl Mob for ParrotEntity {
                 return false;
             }
             let entity = &self.mob_entity.living_entity.entity;
-            let Some(feed) = prepare_feed(entity, player, item_stack, FeedPurpose::TameAttempt).await
+            let Some(feed) =
+                prepare_feed(entity, player, item_stack, FeedPurpose::TameAttempt).await
             else {
                 return true;
             };

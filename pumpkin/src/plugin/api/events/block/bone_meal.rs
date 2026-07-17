@@ -4,9 +4,7 @@ use pumpkin_data::BlockStateId;
 use pumpkin_macros::{Event, cancellable};
 use pumpkin_util::{Hand, math::position::BlockPos};
 
-use crate::{
-    entity::player::Player, plugin::api::transaction::TransactionContext, world::World,
-};
+use crate::{entity::player::Player, plugin::api::transaction::TransactionContext, world::World};
 
 #[cancellable]
 #[derive(Event, Clone)]

@@ -3,8 +3,8 @@ use pumpkin_data::item_stack::ItemStack;
 use pumpkin_macros::Event;
 use std::sync::Arc;
 
-use crate::entity::EntityBase;
 use super::damage_attribution::DamageAttribution;
+use crate::entity::EntityBase;
 
 /// Fired when a living entity dies.
 ///

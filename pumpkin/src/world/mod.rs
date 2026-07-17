@@ -291,7 +291,9 @@ impl World {
                 crate::plugin::api::persistent_data::PluginDataError::Encode(error.to_string())
             })?;
             if encoded.len() > crate::plugin::api::persistent_data::MAX_PLAYER_NAMESPACE_BYTES {
-                return Err(crate::plugin::api::persistent_data::PluginDataError::NamespaceTooLarge);
+                return Err(
+                    crate::plugin::api::persistent_data::PluginDataError::NamespaceTooLarge,
+                );
             }
         }
 
@@ -305,7 +307,9 @@ impl World {
                     .insert(key.into(), NbtTag::Compound(value.clone()));
             } else if let Some(root) = data.get_mut(position) {
                 root.child_tags.remove(key);
-                if root.is_empty() { data.remove(position); }
+                if root.is_empty() {
+                    data.remove(position);
+                }
             }
             chunk.mark_dirty(true);
         });
@@ -315,7 +319,13 @@ impl World {
     fn clear_block_metadata(&self, position: &BlockPos) {
         let (chunk_coordinate, _) = position.chunk_and_chunk_relative_position();
         self.level.read_chunk_sync(&chunk_coordinate, |chunk| {
-            if chunk.custom_block_data.lock().unwrap().remove(position).is_some() {
+            if chunk
+                .custom_block_data
+                .lock()
+                .unwrap()
+                .remove(position)
+                .is_some()
+            {
                 chunk.mark_dirty(true);
             }
         });
@@ -429,9 +439,12 @@ impl World {
                 use futures::FutureExt;
 
                 let make_fut = || {
-                    let event = crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
-                        world.clone(), chunk.clone(), pos,
-                    );
+                    let event =
+                        crate::plugin::api::events::world::chunk_unload::ChunkUnloadEvent::new(
+                            world.clone(),
+                            chunk.clone(),
+                            pos,
+                        );
                     let manager = server.plugin_manager.clone();
                     async move { manager.fire(event).await.cancelled }
                 };
@@ -1239,7 +1252,8 @@ impl World {
                 );
 
                 // Send Layer 1 block update to Bedrock clients in that chunk
-                let is_waterlogged = pumpkin_world::chunk::palette::is_submerged_or_waterlogged(block_state_id);
+                let is_waterlogged =
+                    pumpkin_world::chunk::palette::is_submerged_or_waterlogged(block_state_id);
                 let layer1_block_id = if is_waterlogged {
                     BlockState::to_be_network_id(pumpkin_data::Block::WATER.default_state.id)
                 } else {
@@ -1285,9 +1299,14 @@ impl World {
                                     ),
                                 );
 
-                                let is_waterlogged = pumpkin_world::chunk::palette::is_submerged_or_waterlogged(*block_state_id);
+                                let is_waterlogged =
+                                    pumpkin_world::chunk::palette::is_submerged_or_waterlogged(
+                                        *block_state_id,
+                                    );
                                 let layer1_block_id = if is_waterlogged {
-                                    BlockState::to_be_network_id(pumpkin_data::Block::WATER.default_state.id)
+                                    BlockState::to_be_network_id(
+                                        pumpkin_data::Block::WATER.default_state.id,
+                                    )
                                 } else {
                                     BlockState::to_be_network_id(pumpkin_data::BlockStateId::AIR)
                                 };
@@ -1953,10 +1972,7 @@ impl World {
             .send_game_packet(&Weather::bedrock_rain_packet(rain_level))
             .await;
         client
-            .send_game_packet(&Weather::bedrock_thunder_packet(
-                rain_level,
-                thunder_level,
-            ))
+            .send_game_packet(&Weather::bedrock_thunder_packet(rain_level, thunder_level))
             .await;
     }
 
@@ -4475,9 +4491,7 @@ impl World {
         if let Some(ref player) = removed_player {
             if fire_event {
                 player
-                    .close_plugin_gui(
-                        crate::plugin::api::gui::PluginGuiCloseReason::Disconnect,
-                    )
+                    .close_plugin_gui(crate::plugin::api::gui::PluginGuiCloseReason::Disconnect)
                     .await;
             }
             let uuid = player.gameprofile.id;
@@ -4821,7 +4835,10 @@ impl World {
 
         let (event_id, data) = match progress {
             -1 => (LevelEvent::BlockStopBreak, 0),
-            0 => (LevelEvent::BlockStartBreak, bedrock_break_data(bedrock_break_rate)),
+            0 => (
+                LevelEvent::BlockStartBreak,
+                bedrock_break_data(bedrock_break_rate),
+            ),
             _ => (
                 LevelEvent::BlockUpdateBreak,
                 bedrock_break_data(bedrock_break_rate),
@@ -6293,12 +6310,13 @@ impl WorldPortalExt for WorldPortal {
         use futures::FutureExt;
 
         let make_fut = || {
-            let event = crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
-                self.0.clone(),
-                Vector2::new(chunk_x, chunk_z),
-                feature,
-                *origin,
-            );
+            let event =
+                crate::plugin::api::events::world::feature_generate::FeatureGenerateEvent::new(
+                    self.0.clone(),
+                    Vector2::new(chunk_x, chunk_z),
+                    feature,
+                    *origin,
+                );
             let manager = server.plugin_manager.clone();
             async move { !manager.fire(event).await.cancelled }
         };
@@ -6306,7 +6324,10 @@ impl WorldPortalExt for WorldPortal {
         if let Some(res) = make_fut().now_or_never() {
             res
         } else {
-            warn!("Feature generate event fell back to block_on! feature: {:?}", feature);
+            warn!(
+                "Feature generate event fell back to block_on! feature: {:?}",
+                feature
+            );
             runtime.block_on(make_fut())
         }
     }

@@ -69,9 +69,9 @@ impl DamageAttribution {
             .as_ref()
             .and_then(|entity| world.get_player_by_uuid(entity.get_entity().entity_uuid))
             .or_else(|| {
-                projectile_owner.as_ref().and_then(|entity| {
-                    world.get_player_by_uuid(entity.get_entity().entity_uuid)
-                })
+                projectile_owner
+                    .as_ref()
+                    .and_then(|entity| world.get_player_by_uuid(entity.get_entity().entity_uuid))
             })
             .or_else(|| {
                 attacker.as_ref().and_then(|entity| {
@@ -99,7 +99,10 @@ impl DamageAttribution {
             || damage_type == DamageType::PLAYER_EXPLOSION
         {
             AttackKind::Explosion
-        } else if attacker.as_ref().is_some_and(|entity| entity.owner_uuid().is_some()) {
+        } else if attacker
+            .as_ref()
+            .is_some_and(|entity| entity.owner_uuid().is_some())
+        {
             AttackKind::Pet
         } else if attacker.is_some() || direct_source.is_some() {
             AttackKind::Melee

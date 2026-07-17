@@ -114,9 +114,7 @@ impl Weather {
             let rain_stopped = self.old_rain_level > 0.0 && self.rain_level <= 0.0;
             let thunder_level_unchanged =
                 (self.old_thunder_level - self.thunder_level).abs() <= f32::EPSILON;
-            if thunder_level_unchanged
-                && self.thunder_level > 0.0
-                && (rain_started || rain_stopped)
+            if thunder_level_unchanged && self.thunder_level > 0.0 && (rain_started || rain_stopped)
             {
                 world.broadcast_packet_bedrock_sync(&Self::bedrock_thunder_packet(
                     self.rain_level,

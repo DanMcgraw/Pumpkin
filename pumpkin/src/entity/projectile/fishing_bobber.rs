@@ -117,11 +117,8 @@ impl FishingBobberEntity {
                 .await;
 
             if let Some(item_stack) = event.caught_item {
-                pumpkin_inventory::screen_handler::offer_or_drop_stack(
-                    player.as_ref(),
-                    item_stack,
-                )
-                .await;
+                pumpkin_inventory::screen_handler::offer_or_drop_stack(player.as_ref(), item_stack)
+                    .await;
             }
             if event.exp_to_drop > 0 {
                 player.add_experience_points(event.exp_to_drop).await;

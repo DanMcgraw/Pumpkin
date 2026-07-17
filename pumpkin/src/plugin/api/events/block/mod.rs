@@ -1,7 +1,6 @@
 pub mod block_break;
 pub mod block_broken;
 pub mod block_burn;
-pub mod bone_meal;
 pub mod block_can_build;
 pub mod block_damage;
 pub mod block_drop_item;
@@ -12,6 +11,7 @@ pub mod block_piston_extend;
 pub mod block_piston_retract;
 pub mod block_place;
 pub mod block_redstone;
+pub mod bone_meal;
 pub mod brew;
 pub mod furnace_burn;
 pub mod furnace_smelt;

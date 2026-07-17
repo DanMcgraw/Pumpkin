@@ -1,13 +1,13 @@
 use std::sync::{Arc, Weak};
 
+use crate::plugin::api::events::entity::entity_feed::{
+    FeedOutcome, FeedPurpose, complete_feed, prepare_feed,
+};
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_data::{entity::EntityType, item::Item};
 use pumpkin_util::math::vector3::Vector3;
-use crate::plugin::api::events::entity::entity_feed::{
-    FeedOutcome, FeedPurpose, complete_feed, prepare_feed,
-};
 
 use crate::entity::{
     Entity, EntityBase, EntityBaseFuture, NBTStorage, NbtFuture,
@@ -89,13 +89,9 @@ impl Mob for PigEntity {
             let is_food = PIG_FOOD.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
                 let entity = &self.mob_entity.living_entity.entity;
-                let Some(feed) = prepare_feed(
-                    entity,
-                    player,
-                    item_stack,
-                    FeedPurpose::EnterLoveMode,
-                )
-                .await else {
+                let Some(feed) =
+                    prepare_feed(entity, player, item_stack, FeedPurpose::EnterLoveMode).await
+                else {
                     return true;
                 };
                 item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);

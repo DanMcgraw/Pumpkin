@@ -1,7 +1,7 @@
 pub mod context;
 pub mod events;
-pub mod gui;
 pub mod growth;
+pub mod gui;
 pub mod persistent_data;
 pub mod transaction;
 

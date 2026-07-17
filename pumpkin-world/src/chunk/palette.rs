@@ -899,7 +899,10 @@ impl PalettedContainer<BlockStateId, 16> {
     pub fn get_bedrock_layer1(&self) -> Option<BeNetworkSerialization<u16>> {
         let has_submerged = match self {
             Self::Homogeneous(id) => is_submerged_or_waterlogged(*id),
-            Self::Heterogeneous(data) => data.palette.iter().any(|&id| is_submerged_or_waterlogged(id)),
+            Self::Heterogeneous(data) => data
+                .palette
+                .iter()
+                .any(|&id| is_submerged_or_waterlogged(id)),
         };
 
         if !has_submerged {
@@ -911,7 +914,11 @@ impl PalettedContainer<BlockStateId, 16> {
 
         let layer1_container = match self {
             Self::Homogeneous(id) => {
-                let layer1_val = if is_submerged_or_waterlogged(*id) { water_id } else { air_id };
+                let layer1_val = if is_submerged_or_waterlogged(*id) {
+                    water_id
+                } else {
+                    air_id
+                };
                 Self::Homogeneous(layer1_val)
             }
             Self::Heterogeneous(data) => {

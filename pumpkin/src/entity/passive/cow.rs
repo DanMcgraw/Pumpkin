@@ -16,13 +16,13 @@ use crate::entity::{
     mob::{Mob, MobEntity},
     player::Player,
 };
-use pumpkin_nbt::compound::NbtCompound;
 use crate::plugin::api::events::entity::{
     entity_feed::{FeedOutcome, FeedPurpose, complete_feed, prepare_feed},
     entity_product::{
         AnimalProductCollectCompleteEvent, AnimalProductKind, replace_collected_container,
     },
 };
+use pumpkin_nbt::compound::NbtCompound;
 
 const TEMPT_ITEMS: &[&Item] = &[&Item::WHEAT];
 
@@ -105,13 +105,9 @@ impl Mob for CowEntity {
             }
             let is_food = TEMPT_ITEMS.iter().any(|i| i.id == item_stack.item.id);
             if is_food && self.is_breeding_ready() && !self.is_in_love() {
-                let Some(feed) = prepare_feed(
-                    entity,
-                    player,
-                    item_stack,
-                    FeedPurpose::EnterLoveMode,
-                )
-                .await else {
+                let Some(feed) =
+                    prepare_feed(entity, player, item_stack, FeedPurpose::EnterLoveMode).await
+                else {
                     return true;
                 };
                 item_stack.decrement_unless_creative(player.gamemode.load(), feed.consume_count);

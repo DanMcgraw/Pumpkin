@@ -659,11 +659,11 @@ impl NetherPortal {
                                         floor_pos.0.z,
                                     ));
 
-                                    let is_ideal = Self::is_valid_portal_pos(
-                                        world, floor_pos, check_axis, -1,
-                                    ) && Self::is_valid_portal_pos(
-                                        world, floor_pos, check_axis, 1,
-                                    );
+                                    let is_ideal =
+                                        Self::is_valid_portal_pos(world, floor_pos, check_axis, -1)
+                                            && Self::is_valid_portal_pos(
+                                                world, floor_pos, check_axis, 1,
+                                            );
 
                                     if is_ideal {
                                         if ideal_pos.is_none()
@@ -752,7 +752,6 @@ impl NetherPortal {
 
         true
     }
-
 
     pub async fn build_portal_frame(
         world: &Arc<World>,

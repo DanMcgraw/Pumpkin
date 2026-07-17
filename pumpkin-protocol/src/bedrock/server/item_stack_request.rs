@@ -295,14 +295,14 @@ mod tests {
     #[test]
     fn reads_drop_request_from_inventory() {
         let packet = SItemStackRequest::read(&mut Cursor::new([
-            1, // request count
-            2, // request id 1, zig-zag encoded
-            1, // action count
-            3, // Drop
-            1, // item count
+            1,  // request count
+            2,  // request id 1, zig-zag encoded
+            1,  // action count
+            3,  // Drop
+            1,  // item count
             29, // Inventory FullContainerName
-            0, // no dynamic container id
-            0, // hotbar slot 0
+            0,  // no dynamic container id
+            0,  // hotbar slot 0
             246, 1, // stack id 123, zig-zag encoded
             0, // not random
             0, // no filter strings
@@ -319,7 +319,10 @@ mod tests {
             panic!("expected drop action");
         };
         assert_eq!(*count, 1);
-        assert_eq!(source.container_name.container_name, ContainerName::Inventory);
+        assert_eq!(
+            source.container_name.container_name,
+            ContainerName::Inventory
+        );
         assert_eq!(source.slot_id, 0);
         assert_eq!(source.stack_id.0, 123);
         assert!(!randomly);

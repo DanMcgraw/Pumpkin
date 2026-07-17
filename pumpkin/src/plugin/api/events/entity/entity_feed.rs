@@ -98,7 +98,14 @@ pub(crate) async fn prepare_feed(
 }
 
 pub(crate) async fn complete_feed(transaction: FeedTransaction, outcome: FeedOutcome) {
-    if let Some(server) = transaction.target.get_entity().world.load().server.upgrade() {
+    if let Some(server) = transaction
+        .target
+        .get_entity()
+        .world
+        .load()
+        .server
+        .upgrade()
+    {
         server
             .plugin_manager
             .fire(EntityFeedCompleteEvent {

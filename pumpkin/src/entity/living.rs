@@ -34,13 +34,13 @@ use crate::entity::mob::slime::SlimeEntity;
 use crate::entity::player::statistics::{CustomStatistic, StatisticCategory};
 use crate::entity::{EntityBaseFuture, NbtFuture};
 use crate::plugin::api::events::entity::{
-    damage_attribution::DamageAttribution,
-    entity_damage::EntityDamageEvent, entity_damage_by_entity::EntityDamageByEntityEvent,
-    entity_death::EntityDeathEvent, player_kill::PlayerKillEntityEvent,
+    damage_attribution::DamageAttribution, entity_damage::EntityDamageEvent,
+    entity_damage_by_entity::EntityDamageByEntityEvent, entity_death::EntityDeathEvent,
+    player_kill::PlayerKillEntityEvent,
 };
 use crate::plugin::api::events::player::player_death::PlayerDeathEvent;
-use crate::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent;
 use crate::plugin::api::events::player::player_item_use_complete::PlayerItemUseCompleteEvent;
+use crate::plugin::api::events::player::player_item_use_finish::PlayerItemUseFinishEvent;
 use crate::plugin::api::transaction::TransactionContext;
 use crate::server::Server;
 use crate::world::chunker::{get_view_distance, is_within_view_distance};
@@ -435,21 +435,15 @@ impl LivingEntity {
         self.update_attribute(attribute, |instance| {
             instance.add_or_replace_modifier(modifier);
         });
-        crate::entity::attributes::send_attribute_updates_for_living(
-            self,
-            vec![attribute.clone()],
-        )
-        .await;
+        crate::entity::attributes::send_attribute_updates_for_living(self, vec![attribute.clone()])
+            .await;
     }
 
     /// Removes an attribute modifier by its stable, namespaced identifier.
     pub async fn remove_attribute_modifier(&self, attribute: &Attributes, id: &str) {
         self.update_attribute(attribute, |instance| instance.remove_modifier(id));
-        crate::entity::attributes::send_attribute_updates_for_living(
-            self,
-            vec![attribute.clone()],
-        )
-        .await;
+        crate::entity::attributes::send_attribute_updates_for_living(self, vec![attribute.clone()])
+            .await;
     }
 
     /// Removes all modifiers owned by one plugin namespace and returns the count removed.
@@ -495,10 +489,7 @@ impl LivingEntity {
             .map_or(attribute.default_value, AttributeInstance::value)
     }
 
-    fn entity_type_attribute_base(
-        entity_type: &'static EntityType,
-        attribute: &Attributes,
-    ) -> f64 {
+    fn entity_type_attribute_base(entity_type: &'static EntityType, attribute: &Attributes) -> f64 {
         entity_type
             .attributes
             .iter()
@@ -2435,10 +2426,10 @@ impl EntityBase for LivingEntity {
                 return false;
             };
 
-            let direct_source = source
-                .and_then(|source| world.get_entity_by_id(source.get_entity().entity_id));
-            let attacker = cause
-                .and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
+            let direct_source =
+                source.and_then(|source| world.get_entity_by_id(source.get_entity().entity_id));
+            let attacker =
+                cause.and_then(|cause| world.get_entity_by_id(cause.get_entity().entity_id));
             let attribution = DamageAttribution::capture(
                 &world,
                 damage_type,
@@ -2466,13 +2457,9 @@ impl EntityBase for LivingEntity {
                 amount = event.damage;
                 effective_amount = event.final_damage;
             } else {
-                let event = EntityDamageEvent::new(
-                    victim_arc,
-                    damage_type,
-                    amount,
-                    effective_amount,
-                )
-                .with_attribution(attribution.clone());
+                let event =
+                    EntityDamageEvent::new(victim_arc, damage_type, amount, effective_amount)
+                        .with_attribution(attribution.clone());
                 let event = server.plugin_manager.fire(event).await;
 
                 if event.cancelled {
@@ -2767,9 +2754,8 @@ impl EntityBase for LivingEntity {
                             .get_player_by_uuid(player.gameprofile.id)
                         && let Some(server) = self.entity.world.load().server.upgrade()
                     {
-                        let transaction = TransactionContext::new(
-                            player.tick_counter.load(Ordering::Relaxed),
-                        );
+                        let transaction =
+                            TransactionContext::new(player.tick_counter.load(Ordering::Relaxed));
                         let event = server
                             .plugin_manager
                             .fire(PlayerItemUseFinishEvent::new(
@@ -2869,8 +2855,15 @@ impl EntityBase for LivingEntity {
 
                     // Handle potion consumption
                     if is_potion {
-                        let effects = crate::item::potion::PotionContents::read_potion_effects(item);
-                        crate::item::potion::PotionContents::apply_effects_to(self, effects, 1.0, crate::item::potion::PotionApplicationSource::Normal).await;
+                        let effects =
+                            crate::item::potion::PotionContents::read_potion_effects(item);
+                        crate::item::potion::PotionContents::apply_effects_to(
+                            self,
+                            effects,
+                            1.0,
+                            crate::item::potion::PotionApplicationSource::Normal,
+                        )
+                        .await;
                     }
 
                     if let Some(player) = caller.get_player() {

@@ -1,6 +1,5 @@
 use crate::{
-    bedrock::network_item::NetworkItemStackDescriptor,
-    codec::var_ulong::VarULong,
+    bedrock::network_item::NetworkItemStackDescriptor, codec::var_ulong::VarULong,
     serial::PacketRead,
 };
 use pumpkin_macros::packet;

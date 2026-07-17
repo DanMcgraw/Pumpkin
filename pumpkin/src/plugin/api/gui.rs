@@ -16,9 +16,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    entity::player::Player,
-    plugin::BoxFuture,
-    plugin::api::transaction::PluginGuiSessionId,
+    entity::player::Player, plugin::BoxFuture, plugin::api::transaction::PluginGuiSessionId,
 };
 
 /// Public, stable identity of the plugin that owns a GUI session.
@@ -513,9 +511,7 @@ mod tests {
         let owner = PluginIdentity::new("test-plugin");
         assert_eq!(owner.name(), "test-plugin");
 
-        let sessions: HashSet<_> = (0..128)
-            .map(|_| PluginGuiSessionId::allocate())
-            .collect();
+        let sessions: HashSet<_> = (0..128).map(|_| PluginGuiSessionId::allocate()).collect();
         assert_eq!(sessions.len(), 128);
     }
 }

@@ -8,8 +8,8 @@ use pumpkin_data::tag::Taggable;
 use pumpkin_data::tag::{self};
 use pumpkin_data::{Block, BlockDirection};
 use pumpkin_macros::pumpkin_block;
-use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::Hand;
+use pumpkin_util::math::position::BlockPos;
 use pumpkin_world::tick::TickPriority;
 use pumpkin_world::world::{BlockAccessor, BlockFlags};
 use rand::RngExt;
@@ -100,12 +100,13 @@ impl BlockBehaviour for BambooBlock {
                     return BlockActionResult::Pass;
                 }
 
-                let consumed_count = if args.player.gamemode.load() == pumpkin_util::GameMode::Creative {
-                    0
-                } else {
-                    args.item_stack.lock().await.decrement(1);
-                    1
-                };
+                let consumed_count =
+                    if args.player.gamemode.load() == pumpkin_util::GameMode::Creative {
+                        0
+                    } else {
+                        args.item_stack.lock().await.decrement(1);
+                        1
+                    };
                 let state_after = args.world.get_block_state(args.position).id;
                 args.server
                     .plugin_manager

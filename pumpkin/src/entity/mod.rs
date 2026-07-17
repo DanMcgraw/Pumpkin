@@ -139,11 +139,17 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
     }
 
     /// Vanilla owner identifier for tameable entities.
-    fn owner_uuid(&self) -> Option<Uuid> { None }
+    fn owner_uuid(&self) -> Option<Uuid> {
+        None
+    }
 
-    fn is_tamed(&self) -> bool { false }
+    fn is_tamed(&self) -> bool {
+        false
+    }
 
-    fn is_sitting(&self) -> bool { false }
+    fn is_sitting(&self) -> bool {
+        false
+    }
 
     fn set_sitting(&self, _sitting: bool) {}
 
