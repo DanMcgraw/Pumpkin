@@ -29,7 +29,7 @@ pub use chunk_entity_load::ChunkEntityLoadEvent;
 pub use chunk_entity_unload::ChunkEntityUnloadEvent;
 pub use damage_attribution::{AttackKind, DamageAttribution};
 pub use entity_block_form::EntityBlockFormEvent;
-pub use entity_breed::EntityBreedEvent;
+pub use entity_breed::{EntityBreedCompleteEvent, EntityBreedEvent};
 pub use entity_change_block::EntityChangeBlockEvent;
 pub use entity_combust_by_entity::EntityCombustByEntityEvent;
 pub use entity_damage::EntityDamageEvent;

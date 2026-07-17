@@ -131,6 +131,16 @@ impl Context {
         .await
     }
 
+    /// Requests one validated crop growth transition at an exact position.
+    pub async fn request_block_growth(
+        &self,
+        world: Arc<crate::world::World>,
+        position: pumpkin_util::math::position::BlockPos,
+        cause: super::growth::GrowthCause,
+    ) -> Result<super::growth::GrowthOutcome, super::growth::GrowthError> {
+        super::growth::request_block_growth(world, position, cause).await
+    }
+
     /// Reads a value in this plugin's namespace from online or offline player data.
     pub async fn get_player_data(
         &self,

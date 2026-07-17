@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
-use pumpkin_data::entity::EntityType;
+use pumpkin_data::{entity::EntityType, item_stack::ItemStack};
 use pumpkin_macros::{Event, cancellable};
 use pumpkin_util::math::vector3::Vector3;
 
-use crate::entity::{EntityBase, player::Player};
+use crate::{
+    entity::{EntityBase, player::Player},
+    plugin::api::transaction::TransactionContext,
+};
 
 /// Fired when two animals breed and produce a baby.
 #[cancellable]
 #[derive(Event, Clone)]
 pub struct EntityBreedEvent {
+    /// Identity retained through successful baby creation.
+    pub transaction: TransactionContext,
     /// The first parent (mother).
     pub mother: Arc<dyn EntityBase>,
 
@@ -40,7 +45,29 @@ impl EntityBreedEvent {
         position: Vector3<f64>,
         experience: i32,
     ) -> Self {
+        Self::new_with_transaction(
+            TransactionContext::new(0),
+            mother,
+            father,
+            breeder,
+            baby_type,
+            position,
+            experience,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_transaction(
+        transaction: TransactionContext,
+        mother: Arc<dyn EntityBase>,
+        father: Arc<dyn EntityBase>,
+        breeder: Option<Arc<Player>>,
+        baby_type: &'static EntityType,
+        position: Vector3<f64>,
+        experience: i32,
+    ) -> Self {
         Self {
+            transaction,
             mother,
             father,
             breeder,
@@ -50,4 +77,16 @@ impl EntityBreedEvent {
             cancelled: false,
         }
     }
+}
+
+/// Fired after the baby and configured experience were successfully spawned.
+#[derive(Event, Clone)]
+pub struct EntityBreedCompleteEvent {
+    pub transaction: TransactionContext,
+    pub mother: Arc<dyn EntityBase>,
+    pub father: Arc<dyn EntityBase>,
+    pub breeder: Option<Arc<Player>>,
+    pub baby: Arc<dyn EntityBase>,
+    pub consumed_items: Vec<ItemStack>,
+    pub experience: i32,
 }

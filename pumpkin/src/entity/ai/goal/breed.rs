@@ -3,7 +3,13 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::entity::{EntityBase, ai::pathfinder::NavigatorGoal, mob::Mob, r#type::from_type};
-use crate::plugin::api::events::entity::entity_breed::EntityBreedEvent;
+use crate::{
+    entity::experience_orb::ExperienceOrbEntity,
+    plugin::api::{
+        events::entity::entity_breed::{EntityBreedCompleteEvent, EntityBreedEvent},
+        transaction::TransactionContext,
+    },
+};
 
 use super::{Controls, Goal, GoalFuture};
 
@@ -71,6 +77,43 @@ impl BreedGoal {
             .load()
             .and_then(|uuid| world.get_player_by_uuid(uuid));
 
+        let parent_pos = entity.pos.load();
+        let mother = world
+            .get_entity_by_uuid(entity.entity_uuid)
+            .expect("breeding parent should exist");
+        let father = world
+            .get_entity_by_uuid(mate.get_entity().entity_uuid)
+            .expect("breeding mate should exist");
+        let initiated_tick = world.get_world_age().await.clamp(0, i64::from(i32::MAX)) as i32;
+        let transaction = TransactionContext::new(initiated_tick);
+        let mut experience = 0;
+
+        if let Some(server) = world.server.upgrade() {
+            let event = server
+                .plugin_manager
+                .fire(EntityBreedEvent::new_with_transaction(
+                    transaction,
+                    mother.clone(),
+                    father.clone(),
+                    breeder.clone(),
+                    entity.entity_type,
+                    parent_pos,
+                    0,
+                ))
+                .await;
+            if event.cancelled {
+                return;
+            }
+            experience = event.experience.max(0);
+        }
+
+        mob_entity.reset_love_ticks();
+        mob_entity
+            .breeding_cooldown
+            .store(6000, std::sync::atomic::Ordering::Relaxed);
+        mate.reset_love();
+        mate.set_breeding_cooldown(6000);
+
         if let Some(player) = breeder.clone() {
             player
                 .increment_stat(
@@ -81,42 +124,28 @@ impl BreedGoal {
                 .await;
         }
 
-        mob_entity.reset_love_ticks();
-        mob_entity
-            .breeding_cooldown
-            .store(6000, std::sync::atomic::Ordering::Relaxed);
-
-        mate.reset_love();
-        mate.set_breeding_cooldown(6000);
-
-        let parent_pos = entity.pos.load();
-
+        let baby = from_type(entity.entity_type, parent_pos, &world, Uuid::new_v4());
+        baby.get_entity().set_age(-24000);
+        world
+            .spawn_entity_with_reason(baby.clone(), "breeding")
+            .await;
+        if experience > 0 {
+            ExperienceOrbEntity::spawn(&world, parent_pos, experience as u32).await;
+        }
         if let Some(server) = world.server.upgrade() {
-            let mother = world
-                .get_entity_by_uuid(entity.entity_uuid)
-                .expect("breeding parent should exist");
-            let father = world
-                .get_entity_by_uuid(mate.get_entity().entity_uuid)
-                .expect("breeding mate should exist");
-            let event = server
+            server
                 .plugin_manager
-                .fire(EntityBreedEvent::new(
+                .fire(EntityBreedCompleteEvent {
+                    transaction,
                     mother,
                     father,
                     breeder,
-                    entity.entity_type,
-                    parent_pos,
-                    0,
-                ))
+                    baby,
+                    consumed_items: Vec::new(),
+                    experience,
+                })
                 .await;
-            if event.cancelled {
-                return;
-            }
         }
-
-        let baby = from_type(entity.entity_type, parent_pos, &world, Uuid::new_v4());
-        baby.get_entity().set_age(-24000);
-        world.spawn_entity_with_reason(baby, "breeding").await;
     }
 }
 

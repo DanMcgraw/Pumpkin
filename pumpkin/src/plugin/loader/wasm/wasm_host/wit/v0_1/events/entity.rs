@@ -620,6 +620,7 @@ impl ToFromWasmEvent for EntityBreedEvent {
     fn from_wasm_event(event: Event, state: &mut PluginHostState) -> Self {
         match event {
             Event::EntityBreedEvent(data) => Self {
+                transaction: crate::plugin::api::transaction::TransactionContext::new(0),
                 mother: consume_entity(state, &data.mother),
                 father: consume_entity(state, &data.father),
                 breeder: data

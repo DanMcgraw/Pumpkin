@@ -16,12 +16,14 @@ mod tests {
         plugin::{
             Cancellable,
             api::events::entity::{
-                entity_breed::EntityBreedEvent,
+                entity_breed::{EntityBreedCompleteEvent, EntityBreedEvent},
                 entity_combust_by_entity::EntityCombustByEntityEvent,
-                entity_explode::EntityExplodeEvent, entity_pickup_item::EntityPickupItemEvent,
+                entity_explode::EntityExplodeEvent,
+                entity_pickup_item::EntityPickupItemEvent,
                 entity_target::EntityTargetEvent,
                 entity_target_living_entity::EntityTargetLivingEntityEvent,
-                entity_transform::EntityTransformEvent, explosion_prime::ExplosionPrimeEvent,
+                entity_transform::EntityTransformEvent,
+                explosion_prime::ExplosionPrimeEvent,
                 potion_splash::PotionSplashEvent,
             },
         },
@@ -75,6 +77,38 @@ mod tests {
         event.set_cancelled(true);
         assert!(event.cancelled());
         assert_eq!(event.experience, 10);
+    }
+
+    #[tokio::test]
+    async fn entity_breed_completion_preserves_transaction_and_baby() {
+        let world = test_world();
+        let mother = test_entity(world.clone());
+        let father = test_entity(world.clone());
+        let baby = test_entity(world);
+        let prepare = EntityBreedEvent::new(
+            mother.clone(),
+            father.clone(),
+            None,
+            &EntityType::PIG,
+            Vector3::new(0.0, 64.0, 0.0),
+            3,
+        );
+        let complete = EntityBreedCompleteEvent {
+            transaction: prepare.transaction,
+            mother,
+            father,
+            breeder: None,
+            baby: baby.clone(),
+            consumed_items: Vec::new(),
+            experience: prepare.experience,
+        };
+
+        assert_eq!(complete.transaction, prepare.transaction);
+        assert_eq!(
+            complete.baby.get_entity().entity_uuid,
+            baby.get_entity().entity_uuid
+        );
+        assert_eq!(complete.experience, 3);
     }
 
     #[tokio::test]
