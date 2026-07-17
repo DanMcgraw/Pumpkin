@@ -226,6 +226,11 @@ pub struct MiningTarget {
 
 pub const DATA_VERSION: i32 = 4903; // 26.2
 
+/// Pumpkin's RakNet sender does not yet have a congestion window. Sending the
+/// normal Java batch of large, fragmented LevelChunk packets in one tick can
+/// overflow Bedrock's split-packet reassembly and leave collision-only chunks.
+const BEDROCK_CHUNKS_PER_TICK: usize = 1;
+
 struct HeapNode(i32, Vector2<i32>, Weak<ChunkData>);
 
 impl Eq for HeapNode {}
@@ -2703,7 +2708,10 @@ impl Player {
                     .can_send_chunk()
                     .then(|| chunk_manager.next_chunk())
             } else {
-                Some(chunk_manager.next_chunk())
+                // Keep fragmented LevelChunk traffic within a single chunk per
+                // tick until RakNet has a real congestion window. The default
+                // batch of 16 can emit hundreds of UDP frame sets at once.
+                Some(chunk_manager.next_chunks(BEDROCK_CHUNKS_PER_TICK))
             };
             (chunks, chunk_manager.sent_chunks_count())
         };
