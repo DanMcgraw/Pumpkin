@@ -8,7 +8,7 @@ use pumpkin_data::data_component_impl::{
     CustomNameImpl, DamageImpl, DataComponentImpl, EnchantmentsImpl, EquipmentSlot, EquippableImpl,
     FireworkExplosionImpl, FireworkExplosionShape, FireworksImpl, IDSet, IDSetContent, IdOr,
     ItemModelImpl, LoreImpl, MapIdImpl, MaxStackSizeImpl, PotionContentsImpl, SoundEvent,
-    StatusEffectInstance, StoredEnchantmentsImpl, UnbreakableImpl, UseCooldownImpl, get,
+    StatusEffectInstance, StoredEnchantmentsImpl, UnbreakableImpl, UseCooldownImpl, read_data,
 };
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::EntityType;
@@ -934,28 +934,67 @@ pub fn serialize<T: SerializeStruct>(
     seq: &mut T,
 ) -> Result<(), T::Error> {
     match id {
-        DataComponent::MaxStackSize => get::<MaxStackSizeImpl>(value).serialize(seq),
-        DataComponent::CustomData => get::<CustomDataImpl>(value).serialize(seq),
-        DataComponent::Enchantments => get::<EnchantmentsImpl>(value).serialize(seq),
-        DataComponent::Damage => get::<DamageImpl>(value).serialize(seq),
-        DataComponent::Unbreakable => get::<UnbreakableImpl>(value).serialize(seq),
-        DataComponent::PotionContents => get::<PotionContentsImpl>(value).serialize(seq),
-        DataComponent::FireworkExplosion => get::<FireworkExplosionImpl>(value).serialize(seq),
-        DataComponent::Fireworks => get::<FireworksImpl>(value).serialize(seq),
-        DataComponent::ItemModel => get::<ItemModelImpl>(value).serialize(seq),
-        DataComponent::CustomName => get::<CustomNameImpl>(value).serialize(seq),
-        DataComponent::Lore => get::<LoreImpl>(value).serialize(seq),
-        DataComponent::Consumable => get::<ConsumableImpl>(value).serialize(seq),
-        DataComponent::Equippable => get::<EquippableImpl>(value).serialize(seq),
-        DataComponent::StoredEnchantments => get::<StoredEnchantmentsImpl>(value).serialize(seq),
-        DataComponent::UseCooldown => get::<UseCooldownImpl>(value).serialize(seq),
-        DataComponent::MapId => get::<MapIdImpl>(value).serialize(seq),
-        DataComponent::BundleContents => get::<BundleContentsImpl>(value).serialize(seq),
+        DataComponent::MaxStackSize => serialize_component::<MaxStackSizeImpl, _>(id, value, seq),
+        DataComponent::CustomData => serialize_component::<CustomDataImpl, _>(id, value, seq),
+        DataComponent::Enchantments => serialize_component::<EnchantmentsImpl, _>(id, value, seq),
+        DataComponent::Damage => serialize_component::<DamageImpl, _>(id, value, seq),
+        DataComponent::Unbreakable => serialize_component::<UnbreakableImpl, _>(id, value, seq),
+        DataComponent::PotionContents => {
+            serialize_component::<PotionContentsImpl, _>(id, value, seq)
+        }
+        DataComponent::FireworkExplosion => {
+            serialize_component::<FireworkExplosionImpl, _>(id, value, seq)
+        }
+        DataComponent::Fireworks => serialize_component::<FireworksImpl, _>(id, value, seq),
+        DataComponent::ItemModel => serialize_component::<ItemModelImpl, _>(id, value, seq),
+        DataComponent::CustomName => serialize_component::<CustomNameImpl, _>(id, value, seq),
+        DataComponent::Lore => serialize_component::<LoreImpl, _>(id, value, seq),
+        DataComponent::Consumable => serialize_component::<ConsumableImpl, _>(id, value, seq),
+        DataComponent::Equippable => serialize_component::<EquippableImpl, _>(id, value, seq),
+        DataComponent::StoredEnchantments => {
+            serialize_component::<StoredEnchantmentsImpl, _>(id, value, seq)
+        }
+        DataComponent::UseCooldown => serialize_component::<UseCooldownImpl, _>(id, value, seq),
+        DataComponent::MapId => serialize_component::<MapIdImpl, _>(id, value, seq),
+        DataComponent::BundleContents => {
+            serialize_component::<BundleContentsImpl, _>(id, value, seq)
+        }
         _ => Err(serde::ser::Error::custom(format!(
             "{} not yet implemented",
             id.to_name()
         ))),
     }
+}
+
+fn serialize_component<Impl, T>(
+    id: DataComponent,
+    value: &dyn DataComponentImpl,
+    seq: &mut T,
+) -> Result<(), T::Error>
+where
+    Impl: DataComponentImpl + DataComponentCodec<Impl> + 'static,
+    T: SerializeStruct,
+{
+    if let Some(value) = value.as_any().downcast_ref::<Impl>() {
+        return value.serialize(seq);
+    }
+
+    // Native plugins are separate dynamic libraries and may have a distinct
+    // Rust TypeId for the same Pumpkin component type. Reconstruct the value
+    // inside the server binary before using its concrete network codec.
+    let local = read_data(id, &value.write_data()).ok_or_else(|| {
+        serde::ser::Error::custom(format!(
+            "failed to normalize native plugin component {}",
+            id.to_name()
+        ))
+    })?;
+    let local = local.as_any().downcast_ref::<Impl>().ok_or_else(|| {
+        serde::ser::Error::custom(format!(
+            "normalized component {} has an unexpected type",
+            id.to_name()
+        ))
+    })?;
+    local.serialize(seq)
 }
 
 impl DataComponentCodec<Self> for MapIdImpl {
@@ -1128,9 +1167,11 @@ impl DataComponentCodec<Self> for BundleContentsImpl {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{any::Any, io::Cursor};
 
-    use pumpkin_data::data_component_impl::{LoreImpl, text_component_from_nbt};
+    use pumpkin_data::data_component_impl::{
+        DataComponentImpl, LoreImpl, text_component_from_nbt, text_component_to_nbt,
+    };
     use pumpkin_nbt::{deserializer::NbtReadHelperJava, tag::NbtTag};
     use pumpkin_util::text::{TextComponent, color::NamedColor};
 
@@ -1140,6 +1181,91 @@ mod tests {
     };
 
     use super::{DataComponent, serialize};
+
+    #[derive(Clone)]
+    struct ForeignComponent {
+        id: DataComponent,
+        data: NbtTag,
+    }
+
+    impl DataComponentImpl for ForeignComponent {
+        fn write_data(&self) -> NbtTag {
+            self.data.clone()
+        }
+
+        fn equal(&self, other: &dyn DataComponentImpl) -> bool {
+            self.id == other.get_self_enum() && self.data == other.write_data()
+        }
+
+        fn get_enum() -> DataComponent
+        where
+            Self: Sized,
+        {
+            DataComponent::CustomName
+        }
+
+        fn get_self_enum(&self) -> DataComponent {
+            self.id
+        }
+
+        fn to_dyn(self) -> Box<dyn DataComponentImpl> {
+            Box::new(self)
+        }
+
+        fn clone_dyn(&self) -> Box<dyn DataComponentImpl> {
+            Box::new(self.clone())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn native_plugin_components_are_normalized_before_serialization() {
+        let custom_name = ForeignComponent {
+            id: DataComponent::CustomName,
+            data: NbtTag::String("Native name".into()),
+        };
+        let mut encoded = Vec::new();
+        let mut serializer = Serializer::new(&mut encoded);
+        let mut struct_serializer = &mut serializer;
+        serialize(
+            DataComponent::CustomName,
+            &custom_name,
+            &mut struct_serializer,
+        )
+        .expect("foreign custom name should serialize");
+
+        let mut cursor = Cursor::new(encoded);
+        let mut nbt_reader = NbtReadHelperJava::new(&mut cursor);
+        let tag = NbtTag::deserialize(&mut nbt_reader).expect("custom-name text component NBT");
+        assert_eq!(
+            text_component_from_nbt(&tag),
+            Some(TextComponent::text("Native name"))
+        );
+
+        let line = TextComponent::text("Progress: 50%").color_named(NamedColor::Green);
+        let lore = ForeignComponent {
+            id: DataComponent::Lore,
+            data: NbtTag::List(vec![text_component_to_nbt(&line)]),
+        };
+        let mut encoded = Vec::new();
+        let mut serializer = Serializer::new(&mut encoded);
+        let mut struct_serializer = &mut serializer;
+        serialize(DataComponent::Lore, &lore, &mut struct_serializer)
+            .expect("foreign lore should serialize");
+
+        let mut cursor = Cursor::new(encoded);
+        assert_eq!(cursor.get_var_int().expect("line count"), VarInt(1));
+        let mut nbt_reader = NbtReadHelperJava::new(&mut cursor);
+        let tag = NbtTag::deserialize(&mut nbt_reader).expect("lore text component NBT");
+        assert_eq!(text_component_from_nbt(&tag), Some(line));
+    }
 
     #[test]
     fn lore_network_codec_preserves_structured_text() {
