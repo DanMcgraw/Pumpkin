@@ -2775,6 +2775,7 @@ dependencies = [
 name = "pumpkin-inventory"
 version = "0.1.0-dev+26.2"
 dependencies = [
+ "futures",
  "pumpkin-data",
  "pumpkin-protocol",
  "pumpkin-util",

@@ -24,7 +24,6 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::Duration,
 };
 
 use crate::screen_handler::InventoryPlayer;
@@ -33,7 +32,7 @@ use pumpkin_data::data_component_impl::EquipmentSlot;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_world::inventory::Inventory;
-use tokio::{sync::Mutex, time::timeout};
+use tokio::sync::Mutex;
 
 /// Type alias for async slot operations.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -113,11 +112,7 @@ pub trait Slot: Send + Sync {
         // Default implementation logic:
         Box::pin(async move {
             let stack = self.get_stack().await;
-            let lock = timeout(Duration::from_secs(5), stack.lock())
-                .await
-                .expect("Timed out while trying to acquire lock");
-
-            lock.clone()
+            stack.lock().await.clone()
         })
     }
 
@@ -459,5 +454,25 @@ impl Slot for ArmorSlot {
             // TODO: Check enchantments
             true
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use futures::executor::block_on;
+    use pumpkin_world::inventory::SimpleInventory;
+
+    use super::{NormalSlot, Slot};
+
+    #[test]
+    fn cloned_stack_does_not_require_a_tokio_runtime() {
+        let inventory = Arc::new(SimpleInventory::new(1));
+        let slot = NormalSlot::new(inventory, 0);
+
+        let stack = block_on(slot.get_cloned_stack());
+
+        assert!(stack.is_empty());
     }
 }
