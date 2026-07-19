@@ -475,6 +475,47 @@ impl ItemStack {
         }
     }
 
+    #[must_use]
+    pub fn get_lore(&self) -> Option<&[pumpkin_util::text::TextComponent]> {
+        use crate::data_component_impl::LoreImpl;
+        self.get_data_component::<LoreImpl>()
+            .map(|lore| lore.lines.as_slice())
+    }
+
+    pub fn set_lore(&mut self, lines: Vec<pumpkin_util::text::TextComponent>) {
+        use crate::data_component_impl::LoreImpl;
+
+        if lines.is_empty() {
+            self.patch.retain(|(id, _)| *id != DataComponent::Lore);
+            return;
+        }
+
+        let component = Some(LoreImpl { lines }.to_dyn());
+        if let Some(pos) = self
+            .patch
+            .iter()
+            .position(|(id, _)| *id == DataComponent::Lore)
+        {
+            self.patch[pos].1 = component;
+        } else {
+            self.patch.push((DataComponent::Lore, component));
+        }
+    }
+
+    pub fn add_lore(&mut self, line: pumpkin_util::text::TextComponent) {
+        use crate::data_component_impl::LoreImpl;
+
+        if let Some(lore) = self.get_data_component_mut::<LoreImpl>() {
+            lore.lines.push(line);
+        } else {
+            self.set_lore(vec![line]);
+        }
+    }
+
+    pub fn clear_lore(&mut self) {
+        self.patch.retain(|(id, _)| *id != DataComponent::Lore);
+    }
+
     fn custom_data_compound(&self) -> Option<&NbtCompound> {
         self.get_data_component::<CustomDataImpl>()
             .map(|custom_data| &custom_data.data)
@@ -799,8 +840,10 @@ mod tests {
     use super::*;
     use crate::data_component::DataComponent;
     use crate::data_component_impl::{
-        CustomDataImpl, CustomNameImpl, DataComponentImpl, EnchantmentsImpl, UnbreakableImpl,
+        CustomDataImpl, CustomNameImpl, DataComponentImpl, EnchantmentsImpl, LoreImpl,
+        UnbreakableImpl, text_component_from_nbt, text_component_to_nbt,
     };
+    use pumpkin_util::text::color::NamedColor;
 
     /// Helper: creates a fresh Iron Sword (max_damage 250, damage 0).
     fn iron_sword() -> ItemStack {
@@ -984,6 +1027,46 @@ mod tests {
             Some(NbtTag::String("pos1".into()))
         );
         assert!(decoded.get_data_component::<UnbreakableImpl>().is_some());
+    }
+
+    #[test]
+    fn lore_helpers_and_persistent_data_preserve_structured_lines() {
+        let mut stack = ItemStack::new(1, &Item::BOOK);
+        let first = pumpkin_util::text::TextComponent::text("Progress: 50/200 XP")
+            .color_named(NamedColor::Green);
+        let second = pumpkin_util::text::TextComponent::text("Total XP: 150")
+            .color_named(NamedColor::Gray)
+            .bold();
+
+        assert_eq!(
+            text_component_from_nbt(&text_component_to_nbt(&first)),
+            Some(first.clone())
+        );
+        assert_eq!(
+            text_component_from_nbt(&text_component_to_nbt(&second)),
+            Some(second.clone())
+        );
+
+        stack.set_lore(vec![first.clone()]);
+        stack.add_lore(second.clone());
+        assert_eq!(
+            stack.get_lore(),
+            Some([first.clone(), second.clone()].as_slice())
+        );
+
+        let mut encoded = NbtCompound::new();
+        stack.write_item_stack(&mut encoded);
+        let lore_tag = encoded
+            .get_compound("components")
+            .and_then(|components| components.get("minecraft:lore"))
+            .expect("encoded lore component");
+        assert!(crate::data_component_impl::read_data(DataComponent::Lore, lore_tag).is_some());
+        let decoded = ItemStack::read_item_stack(&encoded).expect("stack should decode");
+        assert_eq!(decoded.get_lore(), Some([first, second].as_slice()));
+        assert!(decoded.get_data_component::<LoreImpl>().is_some());
+
+        stack.clear_lore();
+        assert_eq!(stack.get_lore(), None);
     }
 
     // ── damage_item ───────────────────────────────────────────────

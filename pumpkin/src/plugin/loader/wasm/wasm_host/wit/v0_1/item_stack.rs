@@ -299,26 +299,34 @@ impl HostItemStack for PluginHostState {
         &mut self,
         res: Resource<ItemStackHandle>,
     ) -> wasmtime::Result<Vec<Resource<WitTextComponent>>> {
-        let _stack = self.get_item_stack(&res)?;
-        // LoreImpl is currently not fully implemented with data.
-        Ok(Vec::new())
+        let stack = self.get_item_stack(&res)?;
+        let lines = stack.lock().await.get_lore().unwrap_or_default().to_vec();
+        lines
+            .into_iter()
+            .map(|line| self.add_text_component(line))
+            .collect()
     }
 
     async fn set_lore(
         &mut self,
         res: Resource<ItemStackHandle>,
-        _lore: Vec<Resource<WitTextComponent>>,
+        lore: Vec<Resource<WitTextComponent>>,
     ) -> wasmtime::Result<()> {
-        let _stack = self.get_item_stack(&res)?;
+        let lines = lore
+            .iter()
+            .map(|line| text_component_from_resource(self, line))
+            .collect();
+        self.get_item_stack(&res)?.lock().await.set_lore(lines);
         Ok(())
     }
 
     async fn add_lore(
         &mut self,
         res: Resource<ItemStackHandle>,
-        _line: Resource<WitTextComponent>,
+        line: Resource<WitTextComponent>,
     ) -> wasmtime::Result<()> {
-        let _stack = self.get_item_stack(&res)?;
+        let line = text_component_from_resource(self, &line);
+        self.get_item_stack(&res)?.lock().await.add_lore(line);
         Ok(())
     }
 

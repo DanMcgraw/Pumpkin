@@ -6,8 +6,9 @@ use crate::data_component::DataComponent::{
     AttributeModifiers, BlockEntityData, BlockState, BlocksAttacks, BundleContents,
     ChargedProjectiles, Consumable, Container, CustomData, CustomName, Damage, DamageResistant,
     DeathProtection, Enchantable, Enchantments, Equippable, FireworkExplosion, Fireworks, Food,
-    ItemModel, ItemName, JukeboxPlayable, MapId, MaxDamage, MaxStackSize, OminousBottleAmplifier,
-    PotionContents, StoredEnchantments, Tool, Unbreakable, UseCooldown, Weapon,
+    ItemModel, ItemName, JukeboxPlayable, Lore, MapId, MaxDamage, MaxStackSize,
+    OminousBottleAmplifier, PotionContents, StoredEnchantments, Tool, Unbreakable, UseCooldown,
+    Weapon,
 };
 use crate::effect::{self, StatusEffect};
 use crate::entity_type::EntityType;
@@ -64,6 +65,7 @@ pub fn read_data(id: DataComponent, data: &NbtTag) -> Option<Box<dyn DataCompone
         Fireworks => Some(FireworksImpl::read_data(data)?.to_dyn()),
         FireworkExplosion => Some(FireworkExplosionImpl::read_data(data)?.to_dyn()),
         CustomName => Some(CustomNameImpl::read_data(data)?.to_dyn()),
+        Lore => Some(LoreImpl::read_data(data)?.to_dyn()),
         ItemModel => Some(ItemModelImpl::read_data(data)?.to_dyn()),
         Consumable => Some(ConsumableImpl::read_data(data)?.to_dyn()),
         Equippable => Some(EquippableImpl::read_data(data)?.to_dyn()),
@@ -272,8 +274,118 @@ impl DataComponentImpl for ItemModelImpl {
 
     default_impl!(ItemModel);
 }
-#[derive(Clone, Hash, PartialEq, Eq)]
-pub struct LoreImpl;
+
+/// Converts a text component to the structured NBT representation used by
+/// item data components. Plain strings remain accepted when reading older
+/// persisted stacks, but new values retain colors, styles, and child text.
+#[must_use]
+pub fn text_component_to_nbt(component: &TextComponent) -> NbtTag {
+    serde_json::to_value(component)
+        .ok()
+        .and_then(json_to_nbt)
+        .unwrap_or_else(|| NbtTag::String(component.clone().get_text().into()))
+}
+
+/// Reads either structured component NBT or Minecraft's plain-string
+/// shorthand into a Pumpkin text component.
+#[must_use]
+pub fn text_component_from_nbt(tag: &NbtTag) -> Option<TextComponent> {
+    match tag {
+        NbtTag::String(text) => Some(TextComponent::text(text.to_string())),
+        NbtTag::Compound(_) | NbtTag::List(_) => serde_json::from_value(nbt_to_json(tag)?).ok(),
+        _ => None,
+    }
+}
+
+fn json_to_nbt(value: serde_json::Value) -> Option<NbtTag> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(value) => Some(NbtTag::Byte(i8::from(value))),
+        serde_json::Value::Number(value) => value
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok().map(NbtTag::Int))
+            .or_else(|| value.as_f64().map(NbtTag::Double)),
+        serde_json::Value::String(value) => Some(NbtTag::String(value.into())),
+        serde_json::Value::Array(values) => values
+            .into_iter()
+            .map(json_to_nbt)
+            .collect::<Option<Vec<_>>>()
+            .map(NbtTag::List),
+        serde_json::Value::Object(values) => {
+            let child_tags = values
+                .into_iter()
+                .filter_map(|(key, value)| json_to_nbt(value).map(|value| (key.into(), value)))
+                .collect();
+            Some(NbtTag::Compound(NbtCompound { child_tags }))
+        }
+    }
+}
+
+fn nbt_to_json(tag: &NbtTag) -> Option<serde_json::Value> {
+    match tag {
+        NbtTag::End => None,
+        NbtTag::Byte(value) if *value == 0 || *value == 1 => {
+            Some(serde_json::Value::Bool(*value != 0))
+        }
+        NbtTag::Byte(value) => Some(serde_json::Value::from(*value)),
+        NbtTag::Short(value) => Some(serde_json::Value::from(*value)),
+        NbtTag::Int(value) => Some(serde_json::Value::from(*value)),
+        NbtTag::Long(value) => Some(serde_json::Value::from(*value)),
+        NbtTag::Float(value) => {
+            serde_json::Number::from_f64(f64::from(*value)).map(serde_json::Value::Number)
+        }
+        NbtTag::Double(value) => {
+            serde_json::Number::from_f64(*value).map(serde_json::Value::Number)
+        }
+        NbtTag::String(value) => Some(serde_json::Value::String(value.to_string())),
+        NbtTag::List(values) => values
+            .iter()
+            .map(nbt_to_json)
+            .collect::<Option<Vec<_>>>()
+            .map(serde_json::Value::Array),
+        NbtTag::Compound(value) => {
+            let values = value
+                .child_tags
+                .iter()
+                .filter_map(|(key, value)| nbt_to_json(value).map(|value| (key.to_string(), value)))
+                .collect();
+            Some(serde_json::Value::Object(values))
+        }
+        NbtTag::ByteArray(_) | NbtTag::IntArray(_) | NbtTag::LongArray(_) => None,
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, Default)]
+pub struct LoreImpl {
+    pub lines: Vec<TextComponent>,
+}
+impl LoreImpl {
+    fn read_data(data: &NbtTag) -> Option<Self> {
+        let lines = data
+            .extract_list()?
+            .iter()
+            .map(text_component_from_nbt)
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self { lines })
+    }
+}
+impl DataComponentImpl for LoreImpl {
+    fn write_data(&self) -> NbtTag {
+        NbtTag::List(self.lines.iter().map(text_component_to_nbt).collect())
+    }
+
+    fn get_hash(&self) -> i32 {
+        let mut digest = Digest::new(Crc32Iscsi);
+        digest.update(&[2u8]);
+        for line in &self.lines {
+            digest.update(&get_str_hash(&line.clone().get_text()).to_le_bytes());
+        }
+        digest.update(&[3u8]);
+        digest.finalize() as i32
+    }
+
+    default_impl!(Lore);
+}
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub struct RarityImpl;
 #[derive(Clone, Hash, PartialEq, Eq, Default)]

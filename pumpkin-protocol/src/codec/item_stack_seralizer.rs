@@ -2,7 +2,9 @@ use crate::VarInt;
 use crate::codec::data_component::{deserialize, serialize};
 use crate::ser::{NetworkReadExt, ReadingError, WritingError, deserializer, serializer};
 use pumpkin_data::data_component::DataComponent;
-use pumpkin_data::data_component_impl::{CustomNameImpl, DataComponentImpl};
+use pumpkin_data::data_component_impl::{
+    CustomNameImpl, DataComponentImpl, LoreImpl, text_component_from_nbt,
+};
 use pumpkin_data::item::Item;
 use pumpkin_data::item_id_remap::{remap_item_id_for_version, remap_item_id_from_version};
 use pumpkin_data::item_stack::ItemStack;
@@ -104,21 +106,41 @@ fn read_component_id(read: &mut impl Read) -> Result<DataComponent, ReadingError
         .ok_or_else(|| ReadingError::Message(format!("Unknown component ID: {id_val}")))
 }
 
+fn decode_text_component(
+    nbt_reader: &mut pumpkin_nbt::deserializer::NbtReadHelperJava<impl Read + std::io::Seek>,
+) -> Result<TextComponent, ReadingError> {
+    let tag = NbtTag::deserialize(nbt_reader)
+        .map_err(|err| ReadingError::Message(format!("Failed to decode text NBT: {err}")))?;
+    text_component_from_nbt(&tag)
+        .ok_or_else(|| ReadingError::Message("Invalid text component NBT".into()))
+}
+
 fn decode_custom_name(component_data: &[u8]) -> Result<Box<dyn DataComponentImpl>, ReadingError> {
     let mut cursor = Cursor::new(component_data);
     let mut nbt_reader = pumpkin_nbt::deserializer::NbtReadHelperJava::new(&mut cursor);
-    let tag = NbtTag::deserialize(&mut nbt_reader)
-        .map_err(|err| ReadingError::Message(format!("Failed to decode CustomName NBT: {err}")))?;
-    let name = match tag {
-        NbtTag::String(name) => TextComponent::text(name.to_string()),
-        NbtTag::Compound(compound) => compound
-            .get_string("text")
-            .map_or_else(TextComponent::empty, |name| {
-                TextComponent::text(name.to_string())
-            }),
-        _ => TextComponent::empty(),
-    };
-    Ok(CustomNameImpl { name }.to_dyn())
+    Ok(CustomNameImpl {
+        name: decode_text_component(&mut nbt_reader)?,
+    }
+    .to_dyn())
+}
+
+fn decode_lore(component_data: &[u8]) -> Result<Box<dyn DataComponentImpl>, ReadingError> {
+    const MAX_LORE_LINES: i32 = 256;
+
+    let mut cursor = Cursor::new(component_data);
+    let len = cursor.get_var_int()?.0;
+    if !(0..=MAX_LORE_LINES).contains(&len) {
+        return Err(ReadingError::Message(
+            "Lore line count out of bounds".into(),
+        ));
+    }
+
+    let mut nbt_reader = pumpkin_nbt::deserializer::NbtReadHelperJava::new(&mut cursor);
+    let mut lines = Vec::with_capacity(len as usize);
+    for _ in 0..len {
+        lines.push(decode_text_component(&mut nbt_reader)?);
+    }
+    Ok(LoreImpl { lines }.to_dyn())
 }
 
 fn read_length_prefixed_component(
@@ -131,14 +153,16 @@ fn read_length_prefixed_component(
         .map_err(|_| ReadingError::Message("Negative component data length".into()))?;
     let component_data = read.read_boxed_slice(byte_len)?;
 
-    let component_impl = if id == DataComponent::CustomName {
-        decode_custom_name(component_data.as_ref())?
-    } else {
-        let cursor = Cursor::new(component_data);
-        let mut access = ComponentAccess {
-            deserializer: deserializer::Deserializer::new(cursor),
-        };
-        deserialize(id, &mut access)?
+    let component_impl = match id {
+        DataComponent::CustomName => decode_custom_name(component_data.as_ref())?,
+        DataComponent::Lore => decode_lore(component_data.as_ref())?,
+        _ => {
+            let cursor = Cursor::new(component_data);
+            let mut access = ComponentAccess {
+                deserializer: deserializer::Deserializer::new(cursor),
+            };
+            deserialize(id, &mut access)?
+        }
     };
 
     Ok((id, component_impl))

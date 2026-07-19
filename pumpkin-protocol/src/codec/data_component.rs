@@ -7,18 +7,20 @@ use pumpkin_data::data_component_impl::{
     BundleContentsImpl, ConsumableImpl, ConsumeAnimation, ConsumeEffect, CustomDataImpl,
     CustomNameImpl, DamageImpl, DataComponentImpl, EnchantmentsImpl, EquipmentSlot, EquippableImpl,
     FireworkExplosionImpl, FireworkExplosionShape, FireworksImpl, IDSet, IDSetContent, IdOr,
-    ItemModelImpl, MapIdImpl, MaxStackSizeImpl, PotionContentsImpl, SoundEvent,
+    ItemModelImpl, LoreImpl, MapIdImpl, MaxStackSizeImpl, PotionContentsImpl, SoundEvent,
     StatusEffectInstance, StoredEnchantmentsImpl, UnbreakableImpl, UseCooldownImpl, get,
 };
 use pumpkin_data::effect::StatusEffect;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::sound::Sound;
 use pumpkin_nbt::{serializer::NbtWriteHelperJava, tag::NbtTag};
+use pumpkin_util::text::TextComponent;
 use serde::de;
 use serde::de::SeqAccess;
 use serde::ser::{SerializeStruct, Serializer};
 
 const MAX_STATUS_EFFECTS: usize = 128;
+const MAX_LORE_LINES: usize = 256;
 
 #[must_use]
 pub fn data_to_proto_sound(id_or: &IdOr<SoundEvent>) -> crate::IdOr<crate::SoundEvent> {
@@ -360,6 +362,39 @@ impl DataComponentCodec<Self> for CustomNameImpl {
         Ok(Self {
             name: pumpkin_util::text::TextComponent::text(name),
         })
+    }
+}
+
+impl DataComponentCodec<Self> for LoreImpl {
+    fn serialize<T: SerializeStruct>(&self, seq: &mut T) -> Result<(), T::Error> {
+        if self.lines.len() > MAX_LORE_LINES {
+            return Err(serde::ser::Error::custom("Too many lore lines"));
+        }
+        seq.serialize_field::<VarInt>("", &VarInt(self.lines.len() as i32))?;
+        for line in &self.lines {
+            seq.serialize_field::<TextComponent>("", line)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize<'a, A: SeqAccess<'a>>(seq: &mut A) -> Result<Self, A::Error> {
+        let len = seq
+            .next_element::<VarInt>()?
+            .ok_or(de::Error::custom("No LoreImpl len VarInt!"))?
+            .0;
+        let len = usize::try_from(len).map_err(|_| de::Error::custom("Negative lore length"))?;
+        if len > MAX_LORE_LINES {
+            return Err(de::Error::custom("Too many lore lines"));
+        }
+
+        let mut lines = Vec::with_capacity(len);
+        for _ in 0..len {
+            lines.push(
+                seq.next_element::<TextComponent>()?
+                    .ok_or(de::Error::custom("Missing lore text component"))?,
+            );
+        }
+        Ok(Self { lines })
     }
 }
 
@@ -883,6 +918,7 @@ pub fn deserialize<'a, A: SeqAccess<'a>>(
         DataComponent::Fireworks => Ok(FireworksImpl::deserialize(seq)?.to_dyn()),
         DataComponent::ItemModel => Ok(ItemModelImpl::deserialize(seq)?.to_dyn()),
         DataComponent::CustomName => Ok(CustomNameImpl::deserialize(seq)?.to_dyn()),
+        DataComponent::Lore => Ok(LoreImpl::deserialize(seq)?.to_dyn()),
         DataComponent::Consumable => Ok(ConsumableImpl::deserialize(seq)?.to_dyn()),
         DataComponent::Equippable => Ok(EquippableImpl::deserialize(seq)?.to_dyn()),
         DataComponent::StoredEnchantments => Ok(StoredEnchantmentsImpl::deserialize(seq)?.to_dyn()),
@@ -908,6 +944,7 @@ pub fn serialize<T: SerializeStruct>(
         DataComponent::Fireworks => get::<FireworksImpl>(value).serialize(seq),
         DataComponent::ItemModel => get::<ItemModelImpl>(value).serialize(seq),
         DataComponent::CustomName => get::<CustomNameImpl>(value).serialize(seq),
+        DataComponent::Lore => get::<LoreImpl>(value).serialize(seq),
         DataComponent::Consumable => get::<ConsumableImpl>(value).serialize(seq),
         DataComponent::Equippable => get::<EquippableImpl>(value).serialize(seq),
         DataComponent::StoredEnchantments => get::<StoredEnchantmentsImpl>(value).serialize(seq),
@@ -1086,5 +1123,59 @@ impl DataComponentCodec<Self> for BundleContentsImpl {
             items.push(deserialize_item_stack_template(seq)?);
         }
         Ok(Self { items })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use pumpkin_data::data_component_impl::{LoreImpl, text_component_from_nbt};
+    use pumpkin_nbt::{deserializer::NbtReadHelperJava, tag::NbtTag};
+    use pumpkin_util::text::{TextComponent, color::NamedColor};
+
+    use crate::{
+        codec::var_int::VarInt,
+        ser::{NetworkReadExt, serializer::Serializer},
+    };
+
+    use super::{DataComponent, serialize};
+
+    #[test]
+    fn lore_network_codec_preserves_structured_text() {
+        let lines = vec![
+            TextComponent::text("Progress: 50/200 XP").color_named(NamedColor::Green),
+            TextComponent::text("Total XP: 150")
+                .color_named(NamedColor::Gray)
+                .bold(),
+        ];
+        let lore = LoreImpl {
+            lines: lines.clone(),
+        };
+        let mut encoded = Vec::new();
+        let mut serializer = Serializer::new(&mut encoded);
+        let mut struct_serializer = &mut serializer;
+        serialize(DataComponent::Lore, &lore, &mut struct_serializer)
+            .expect("lore should serialize");
+
+        let mut cursor = Cursor::new(encoded);
+        assert_eq!(cursor.get_var_int().expect("line count"), VarInt(2));
+        let mut nbt_reader = NbtReadHelperJava::new(&mut cursor);
+        for expected in lines {
+            let tag = NbtTag::deserialize(&mut nbt_reader).expect("text component NBT");
+            assert_eq!(text_component_from_nbt(&tag), Some(expected));
+        }
+        assert_eq!(cursor.position(), cursor.get_ref().len() as u64);
+    }
+
+    #[test]
+    fn lore_network_codec_rejects_more_than_256_lines() {
+        let lore = LoreImpl {
+            lines: vec![TextComponent::empty(); 257],
+        };
+        let mut encoded = Vec::new();
+        let mut serializer = Serializer::new(&mut encoded);
+        let mut struct_serializer = &mut serializer;
+        assert!(serialize(DataComponent::Lore, &lore, &mut struct_serializer).is_err());
     }
 }
