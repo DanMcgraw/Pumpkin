@@ -71,6 +71,7 @@ impl VirtualContainerLayout {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VirtualContainerPhase {
     AwaitingAcknowledgement,
+    RetryDelay,
     Open,
 }
 
@@ -83,11 +84,14 @@ pub struct VirtualContainerSession {
     pub original_states: Vec<BlockStateId>,
     pub acknowledgement_timestamp: i64,
     pub prepared_tick: i32,
+    pub open_attempts: u8,
     pub phase: VirtualContainerPhase,
 }
 
 impl VirtualContainerSession {
     pub const FALLBACK_OPEN_DELAY_TICKS: i32 = 4;
+    pub const RETRY_DELAY_TICKS: i32 = 3;
+    pub const MAX_OPEN_ATTEMPTS: u8 = 7;
 
     #[must_use]
     pub fn matches_acknowledgement(&self, timestamp: i64) -> bool {
@@ -99,6 +103,34 @@ impl VirtualContainerSession {
     pub fn should_fallback_open(&self, current_tick: i32) -> bool {
         self.phase == VirtualContainerPhase::AwaitingAcknowledgement
             && current_tick.wrapping_sub(self.prepared_tick) >= Self::FALLBACK_OPEN_DELAY_TICKS
+    }
+
+    /// Bedrock reports a rejected container open with container ID `-1`.
+    /// Keep the client-side holder alive and retry after the same 150 ms delay
+    /// used by Geyser instead of treating the rejection as a normal close.
+    pub fn defer_rejected_open(&mut self, current_tick: i32) -> bool {
+        if self.phase != VirtualContainerPhase::Open
+            || self.open_attempts >= Self::MAX_OPEN_ATTEMPTS
+        {
+            return false;
+        }
+
+        self.phase = VirtualContainerPhase::RetryDelay;
+        self.prepared_tick = current_tick;
+        self.open_attempts += 1;
+        true
+    }
+
+    #[must_use]
+    pub fn should_begin_retry(&self, current_tick: i32) -> bool {
+        self.phase == VirtualContainerPhase::RetryDelay
+            && current_tick.wrapping_sub(self.prepared_tick) >= Self::RETRY_DELAY_TICKS
+    }
+
+    pub fn begin_retry(&mut self, timestamp: i64, current_tick: i32) {
+        self.acknowledgement_timestamp = timestamp;
+        self.prepared_tick = current_tick;
+        self.phase = VirtualContainerPhase::AwaitingAcknowledgement;
     }
 }
 
@@ -167,10 +199,54 @@ mod tests {
             original_states: Vec::new(),
             acknowledgement_timestamp: -1,
             prepared_tick: 10,
+            open_attempts: 1,
             phase: VirtualContainerPhase::AwaitingAcknowledgement,
         };
 
         assert!(!session.should_fallback_open(13));
         assert!(session.should_fallback_open(14));
+    }
+
+    #[test]
+    fn rejected_container_retries_after_three_ticks() {
+        let mut session = VirtualContainerSession {
+            sync_id: 1,
+            layout: VirtualContainerLayout::new(27).unwrap(),
+            holder_positions: Vec::new(),
+            original_states: Vec::new(),
+            acknowledgement_timestamp: -1,
+            prepared_tick: 10,
+            open_attempts: 1,
+            phase: VirtualContainerPhase::Open,
+        };
+
+        assert!(session.defer_rejected_open(20));
+        assert_eq!(session.open_attempts, 2);
+        assert!(!session.should_begin_retry(22));
+        assert!(session.should_begin_retry(23));
+
+        session.begin_retry(-2, 23);
+        assert_eq!(session.acknowledgement_timestamp, -2);
+        assert_eq!(
+            session.phase,
+            VirtualContainerPhase::AwaitingAcknowledgement
+        );
+    }
+
+    #[test]
+    fn rejected_container_stops_after_seven_attempts() {
+        let mut session = VirtualContainerSession {
+            sync_id: 1,
+            layout: VirtualContainerLayout::new(27).unwrap(),
+            holder_positions: Vec::new(),
+            original_states: Vec::new(),
+            acknowledgement_timestamp: -1,
+            prepared_tick: 10,
+            open_attempts: VirtualContainerSession::MAX_OPEN_ATTEMPTS,
+            phase: VirtualContainerPhase::Open,
+        };
+
+        assert!(!session.defer_rejected_open(20));
+        assert_eq!(session.phase, VirtualContainerPhase::Open);
     }
 }

@@ -1186,17 +1186,50 @@ impl BedrockClient {
     }
 
     pub async fn handle_container_close(&self, player: &Arc<Player>, packet: SContainerClose) {
-        if packet.container_id == 0 || packet.container_id == 0xff {
-            self.inventory_opened.store(false, Ordering::Relaxed);
-        }
-        player.on_handled_screen_closed().await;
-
+        // Bedrock expects every close packet to be echoed as confirmation,
+        // including the special -1 response used for rejected opens.
         self.enqueue_packet(&SContainerClose {
             container_id: packet.container_id,
             container_type: packet.container_type,
             server_initiated: false,
         })
         .await;
+
+        // Since 1.21.70, Bedrock reports an inventory it refused to open as
+        // container ID -1 (0xff). Geyser keeps the virtual holder in place and
+        // retries; treating this as a close makes the chest flash and vanish.
+        let rejected_virtual_open = if packet.container_id == u8::MAX {
+            player.defer_rejected_bedrock_virtual_container().await
+        } else {
+            None
+        };
+        if rejected_virtual_open == Some(true) {
+            return;
+        }
+
+        let virtual_sync_id = self
+            .virtual_container
+            .lock()
+            .await
+            .as_ref()
+            .map(|session| session.sync_id);
+        if let Some(sync_id) = virtual_sync_id
+            && packet.container_id != sync_id
+            && rejected_virtual_open != Some(false)
+        {
+            debug!(
+                player = %player.gameprofile.name,
+                received_id = packet.container_id,
+                expected_id = sync_id,
+                "Ignored stale Bedrock container close"
+            );
+            return;
+        }
+
+        if packet.container_id == 0 || packet.container_id == 0xff {
+            self.inventory_opened.store(false, Ordering::Relaxed);
+        }
+        player.on_handled_screen_closed().await;
 
         // Sync the inventory content to Bedrock client
         self.enqueue_packet(&CInventoryContent {

@@ -5236,6 +5236,7 @@ impl Player {
             original_states,
             acknowledgement_timestamp,
             prepared_tick: self.tick_counter.load(Ordering::Relaxed),
+            open_attempts: 1,
             phase: VirtualContainerPhase::AwaitingAcknowledgement,
         });
         client
@@ -5252,6 +5253,35 @@ impl Player {
             return;
         };
         let current_tick = self.tick_counter.load(Ordering::Relaxed);
+
+        let retry = {
+            let mut virtual_container = client.virtual_container.lock().await;
+            virtual_container.as_mut().and_then(|session| {
+                if !session.should_begin_retry(current_tick) {
+                    return None;
+                }
+
+                let timestamp = client.next_virtual_container_timestamp();
+                session.begin_retry(timestamp, current_tick);
+                Some((timestamp, session.open_attempts))
+            })
+        };
+        if let Some((timestamp, open_attempts)) = retry {
+            debug!(
+                player = %self.gameprofile.name,
+                current_tick,
+                open_attempts,
+                "Retrying rejected Bedrock virtual container"
+            );
+            client
+                .enqueue_packet(&CNetworkStackLatency {
+                    timestamp,
+                    from_server: true,
+                })
+                .await;
+            return;
+        }
+
         let acknowledgement_timestamp = client
             .virtual_container
             .lock()
@@ -5268,6 +5298,40 @@ impl Player {
             );
             self.acknowledge_bedrock_virtual_container(timestamp).await;
         }
+    }
+
+    /// Handles Bedrock's `-1` container-close response, which means the client
+    /// rejected an attempted open rather than that the player closed it.
+    /// Returns `None` when there is no open virtual container, `Some(true)`
+    /// when a retry was queued, and `Some(false)` when the retry limit was hit.
+    pub async fn defer_rejected_bedrock_virtual_container(&self) -> Option<bool> {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return None;
+        };
+        let current_tick = self.tick_counter.load(Ordering::Relaxed);
+        let mut virtual_container = client.virtual_container.lock().await;
+        let session = virtual_container.as_mut()?;
+        if session.phase != VirtualContainerPhase::Open {
+            return None;
+        }
+
+        let retry_queued = session.defer_rejected_open(current_tick);
+        if retry_queued {
+            debug!(
+                player = %self.gameprofile.name,
+                sync_id = session.sync_id,
+                open_attempts = session.open_attempts,
+                "Bedrock rejected virtual container open; queued retry"
+            );
+        } else {
+            warn!(
+                player = %self.gameprofile.name,
+                sync_id = session.sync_id,
+                open_attempts = session.open_attempts,
+                "Bedrock virtual container exceeded its open retry limit"
+            );
+        }
+        Some(retry_queued)
     }
 
     pub async fn acknowledge_bedrock_virtual_container(&self, timestamp: i64) -> bool {
