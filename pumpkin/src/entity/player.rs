@@ -5557,6 +5557,17 @@ impl Player {
             .await;
     }
 
+    /// Re-synchronizes an opened screen only if it is still the player's
+    /// current handler.
+    async fn sync_screen_handler_if_current(&self, screen_handler: &Arc<Mutex<dyn ScreenHandler>>) {
+        let current = self.current_screen_handler.lock().await.clone();
+        if !Arc::ptr_eq(&current, screen_handler) {
+            return;
+        }
+
+        screen_handler.lock().await.sync_state().await;
+    }
+
     pub async fn on_rename_item(self: &Arc<Self>, packet: SRenameItem) {
         self.update_last_action_time();
         let screen_handler_arc = self.current_screen_handler.lock().await.clone();
@@ -5653,11 +5664,17 @@ impl Player {
             // local client can answer immediately, and the ACK path must see
             // the new sync ID rather than the player inventory handler.
             self.on_screen_handler_opened(screen_handler.clone()).await;
-            *self.current_screen_handler.lock().await = screen_handler;
+            *self.current_screen_handler.lock().await = screen_handler.clone();
             self.open_container_pos.store(block_pos);
 
             match self.client.as_ref() {
-                ClientPlatform::Java(java) => java.enqueue_packet(&java_packet).await,
+                ClientPlatform::Java(java) => {
+                    java.enqueue_packet(&java_packet).await;
+                    // The initial sync is produced while the handler is
+                    // attached, before the client knows this window ID. Send a
+                    // full state after Open Screen so Java cannot discard it.
+                    self.sync_screen_handler_if_current(&screen_handler).await;
+                }
                 ClientPlatform::Bedrock(bedrock) => {
                     if block_pos.is_none()
                         && VirtualContainerLayout::from_window_type(window_type).is_some()
@@ -5756,11 +5773,17 @@ impl Player {
 
         // See open_handled_screen: the latency response may race the caller.
         self.on_screen_handler_opened(screen_handler.clone()).await;
-        *self.current_screen_handler.lock().await = screen_handler;
+        *self.current_screen_handler.lock().await = screen_handler.clone();
         self.open_container_pos.store(None);
 
         match self.client.as_ref() {
-            ClientPlatform::Java(java) => java.enqueue_packet(&java_packet).await,
+            ClientPlatform::Java(java) => {
+                java.enqueue_packet(&java_packet).await;
+                // Plugin inventories are already populated when the handler is
+                // attached. Re-send them after Open Screen so the Java client
+                // observes the content for an existing window.
+                self.sync_screen_handler_if_current(&screen_handler).await;
+            }
             ClientPlatform::Bedrock(bedrock) => {
                 if VirtualContainerLayout::from_window_type(window_type).is_some() {
                     if !self
