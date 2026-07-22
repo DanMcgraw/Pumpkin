@@ -75,13 +75,14 @@ use pumpkin_inventory::screen_handler::{
 };
 use pumpkin_inventory::sync_handler::SyncHandler;
 use pumpkin_macros::send_cancellable;
-use pumpkin_nbt::compound::NbtCompound;
 use pumpkin_nbt::tag::NbtTag;
+use pumpkin_nbt::{Nbt, compound::NbtCompound};
 use pumpkin_protocol::IdOr;
 use pumpkin_protocol::SoundEvent;
 use pumpkin_protocol::bedrock::client::container_open::CContainerOpen;
 use pumpkin_protocol::bedrock::client::inventory_content::CInventoryContent;
 use pumpkin_protocol::bedrock::client::inventory_slot::CInventorySlot;
+use pumpkin_protocol::bedrock::client::{CBlockActorData, CNetworkStackLatency, CUpdateBlock};
 use pumpkin_protocol::bedrock::network_item::{ContainerName, FullContainerName};
 use pumpkin_protocol::codec::var_int::VarInt;
 use pumpkin_protocol::codec::var_long::VarLong;
@@ -121,6 +122,9 @@ use crate::command::node::dispatcher::CommandDispatcher;
 use crate::command::{CommandSender, client_suggestions};
 use crate::data::SaveJSONConfiguration;
 use crate::entity::{EntityBaseFuture, NbtFuture, TeleportFuture};
+use crate::net::bedrock::virtual_container::{
+    VirtualContainerLayout, VirtualContainerPhase, VirtualContainerSession,
+};
 use crate::net::{ClientPlatform, GameProfile};
 use crate::net::{DisconnectReason, PlayerConfig};
 use crate::plugin::api::gui::{
@@ -743,6 +747,28 @@ mod chunk_manager_tests {
 pub struct ItemCooldown {
     pub start_tick: i32,
     pub duration: i32,
+}
+
+fn virtual_chest_actor_data(
+    position: BlockPos,
+    title: &str,
+    pair: Option<(BlockPos, bool)>,
+) -> CBlockActorData {
+    let mut tag = NbtCompound::new();
+    tag.put_string("id", "Chest".to_owned());
+    tag.put_int("x", position.0.x);
+    tag.put_int("y", position.0.y);
+    tag.put_int("z", position.0.z);
+    tag.put_string("CustomName", title.to_owned());
+    if let Some((pair_position, pair_lead)) = pair {
+        tag.put_int("pairx", pair_position.0.x);
+        tag.put_int("pairz", pair_position.0.z);
+        tag.put_bool("pairlead", pair_lead);
+    }
+    CBlockActorData {
+        position,
+        data: Nbt::new(String::new(), tag),
+    }
 }
 
 pub struct Player {
@@ -3342,6 +3368,9 @@ impl Player {
 
             'after: {
                 self.close_plugin_gui(PluginGuiCloseReason::WorldChange).await;
+                self.close_bedrock_virtual_container_for_transition(
+                    PluginGuiCloseReason::WorldChange,
+                ).await;
                 // TODO: this is duplicate code from world
                 let position = event.position;
                 let yaw = event.yaw;
@@ -3469,6 +3498,9 @@ impl Player {
 
             'after: {
                 let position = event.to;
+                self.close_bedrock_virtual_container_for_transition(
+                    PluginGuiCloseReason::WorldChange,
+                ).await;
                 self.living_entity.entity.set_pos(position);
                 self.sync_bedrock_input_position();
                 let entity = &self.living_entity.entity;
@@ -5089,6 +5121,220 @@ impl Player {
             .store(current_id % 100 + 1, Ordering::Relaxed);
     }
 
+    async fn prepare_bedrock_virtual_container(
+        self: &Arc<Self>,
+        sync_id: u8,
+        window_type: WindowType,
+        title: &TextComponent,
+    ) -> bool {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return false;
+        };
+        let Some(layout) = VirtualContainerLayout::from_window_type(window_type) else {
+            return false;
+        };
+
+        let world = self.world();
+        let player_position = self.position().to_block_pos();
+        let candidates = [player_position.add(0, 1, 0), player_position.add(0, -3, 0)];
+        let mut selected = None;
+        for candidate in candidates {
+            let mut positions = vec![candidate];
+            if layout.is_double() {
+                positions.push(candidate.add(1, 0, 0));
+            }
+
+            let original_states = positions
+                .iter()
+                .map(|position| world.get_block_state_id_if_loaded(position))
+                .collect::<Option<Vec<_>>>();
+            let Some(original_states) = original_states else {
+                continue;
+            };
+            if original_states
+                .iter()
+                .any(|state| state.to_state().block_entity_type != u16::MAX)
+            {
+                continue;
+            }
+            selected = Some((positions, original_states));
+            break;
+        }
+
+        let Some((holder_positions, original_states)) = selected else {
+            warn!(
+                player = %self.gameprofile.name,
+                "Could not find safe client-side world space for a Bedrock virtual container"
+            );
+            return false;
+        };
+
+        let title = title.0.to_bedrock_legacy(Locale::EnUs);
+        let chest_runtime_id =
+            u32::from(BlockState::to_be_network_id(Block::CHEST.default_state.id));
+
+        for position in &holder_positions {
+            client
+                .enqueue_packet(&CUpdateBlock::new(*position, chest_runtime_id))
+                .await;
+        }
+
+        if layout.is_double() {
+            let first = holder_positions[0];
+            let second = holder_positions[1];
+            client
+                .enqueue_packet(&virtual_chest_actor_data(
+                    first,
+                    &title,
+                    Some((second, false)),
+                ))
+                .await;
+            client
+                .enqueue_packet(&virtual_chest_actor_data(
+                    second,
+                    &title,
+                    Some((first, true)),
+                ))
+                .await;
+        } else {
+            client
+                .enqueue_packet(&virtual_chest_actor_data(holder_positions[0], &title, None))
+                .await;
+        }
+
+        let acknowledgement_timestamp = client.next_virtual_container_timestamp();
+        *client.virtual_container.lock().await = Some(VirtualContainerSession {
+            sync_id,
+            layout,
+            holder_positions,
+            original_states,
+            acknowledgement_timestamp,
+            phase: VirtualContainerPhase::AwaitingAcknowledgement,
+        });
+        client
+            .enqueue_packet(&CNetworkStackLatency {
+                timestamp: acknowledgement_timestamp,
+                from_server: true,
+            })
+            .await;
+
+        let player = Arc::downgrade(self);
+        client.spawn_task(async move {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            let Some(player) = player.upgrade() else {
+                return;
+            };
+            let ClientPlatform::Bedrock(client) = player.client.as_ref() else {
+                return;
+            };
+            let timed_out = client
+                .virtual_container
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|session| {
+                    session.sync_id == sync_id
+                        && session.matches_acknowledgement(acknowledgement_timestamp)
+                });
+            if timed_out {
+                warn!(
+                    player = %player.gameprofile.name,
+                    sync_id,
+                    "Bedrock client did not acknowledge virtual container preparation"
+                );
+                let current = player.current_screen_handler.lock().await.clone();
+                if current.lock().await.sync_id() == sync_id {
+                    player.on_handled_screen_closed().await;
+                } else {
+                    player.cleanup_bedrock_virtual_container().await;
+                }
+            }
+        });
+        true
+    }
+
+    pub async fn acknowledge_bedrock_virtual_container(&self, timestamp: i64) -> bool {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return false;
+        };
+
+        let session = {
+            let mut virtual_container = client.virtual_container.lock().await;
+            let Some(session) = virtual_container.as_mut() else {
+                return false;
+            };
+            if !session.matches_acknowledgement(timestamp) {
+                return false;
+            }
+            session.phase = VirtualContainerPhase::Open;
+            session.clone()
+        };
+
+        let current_handler = self.current_screen_handler.lock().await.clone();
+        let mut handler = current_handler.lock().await;
+        if handler.sync_id() != session.sync_id
+            || handler
+                .window_type()
+                .and_then(VirtualContainerLayout::from_window_type)
+                != Some(session.layout)
+        {
+            drop(handler);
+            self.cleanup_bedrock_virtual_container().await;
+            return true;
+        }
+
+        client
+            .enqueue_packet(&CContainerOpen {
+                container_id: session.sync_id,
+                container_type: 0,
+                position: session.holder_positions[0],
+                target_entity_id: VarLong(-1),
+            })
+            .await;
+        handler.sync_state().await;
+        true
+    }
+
+    pub async fn cleanup_bedrock_virtual_container(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        let Some(session) = client.virtual_container.lock().await.take() else {
+            return;
+        };
+
+        for (position, original_state) in session
+            .holder_positions
+            .iter()
+            .zip(session.original_states.iter())
+        {
+            client
+                .enqueue_packet(&CUpdateBlock::new(
+                    *position,
+                    u32::from(BlockState::to_be_network_id(*original_state)),
+                ))
+                .await;
+        }
+    }
+
+    async fn close_bedrock_virtual_container_for_transition(
+        self: &Arc<Self>,
+        plugin_reason: PluginGuiCloseReason,
+    ) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        if client.virtual_container.lock().await.is_none() {
+            return;
+        }
+
+        if self.plugin_gui_session().await.is_some() {
+            self.close_plugin_gui(plugin_reason).await;
+        } else {
+            self.close_handled_screen().await;
+        }
+    }
+
     pub async fn close_handled_screen(self: &Arc<Self>) {
         let (sync_id, bedrock_window_type) = {
             let current_handler_guard = self.current_screen_handler.lock().await;
@@ -5207,6 +5453,7 @@ impl Player {
                 .await;
         }
 
+        self.cleanup_bedrock_virtual_container().await;
         *self.current_screen_handler.lock().await = self.player_screen_handler.clone();
         self.open_container_pos.store(None);
     }
@@ -5315,13 +5562,31 @@ impl Player {
                 target_entity_id: VarLong(-1),
             };
 
-            self.client
-                .enqueue_packet_editioned(&java_packet, &bedrock_packet)
-                .await;
-
+            // Install the handler before requesting the Bedrock latency ACK. A
+            // local client can answer immediately, and the ACK path must see
+            // the new sync ID rather than the player inventory handler.
             self.on_screen_handler_opened(screen_handler.clone()).await;
             *self.current_screen_handler.lock().await = screen_handler;
             self.open_container_pos.store(block_pos);
+
+            match self.client.as_ref() {
+                ClientPlatform::Java(java) => java.enqueue_packet(&java_packet).await,
+                ClientPlatform::Bedrock(bedrock) => {
+                    if block_pos.is_none()
+                        && VirtualContainerLayout::from_window_type(window_type).is_some()
+                    {
+                        if !self
+                            .prepare_bedrock_virtual_container(sync_id, window_type, &display_name)
+                            .await
+                        {
+                            self.on_handled_screen_closed().await;
+                            return None;
+                        }
+                    } else {
+                        bedrock.enqueue_packet(&bedrock_packet).await;
+                    }
+                }
+            }
             Some(self.screen_handler_sync_id.load(Ordering::Relaxed))
         } else {
             //TODO: Send message if spectator
@@ -5402,13 +5667,27 @@ impl Player {
             target_entity_id: VarLong(-1),
         };
 
-        self.client
-            .enqueue_packet_editioned(&java_packet, &bedrock_packet)
-            .await;
-
+        // See open_handled_screen: the latency response may race the caller.
         self.on_screen_handler_opened(screen_handler.clone()).await;
         *self.current_screen_handler.lock().await = screen_handler;
         self.open_container_pos.store(None);
+
+        match self.client.as_ref() {
+            ClientPlatform::Java(java) => java.enqueue_packet(&java_packet).await,
+            ClientPlatform::Bedrock(bedrock) => {
+                if VirtualContainerLayout::from_window_type(window_type).is_some() {
+                    if !self
+                        .prepare_bedrock_virtual_container(sync_id, window_type, &title)
+                        .await
+                    {
+                        self.on_handled_screen_closed().await;
+                        return false;
+                    }
+                } else {
+                    bedrock.enqueue_packet(&bedrock_packet).await;
+                }
+            }
+        }
         true
     }
 
@@ -6804,6 +7083,57 @@ impl InventoryPlayer for Player {
                             };
                             bedrock.enqueue_packet(&offhand).await;
                         }
+                    } else {
+                        let session = bedrock.virtual_container.lock().await.clone();
+                        let Some(session) = session.filter(|session| {
+                            u32::from(session.sync_id) == window_id
+                                && session.phase == VirtualContainerPhase::Open
+                        }) else {
+                            // Initial sync is intentionally held while the fake
+                            // chest waits for the client's latency acknowledgement.
+                            return;
+                        };
+
+                        let mut slots = Vec::with_capacity(session.layout.physical_capacity());
+                        slots.extend(
+                            packet
+                                .slot_data
+                                .iter()
+                                .take(session.layout.logical_size())
+                                .map(|stack| NetworkItemStackDescriptor::from(&*stack.0)),
+                        );
+                        slots.resize_with(
+                            session.layout.physical_capacity(),
+                            NetworkItemStackDescriptor::default,
+                        );
+                        bedrock
+                            .enqueue_packet(&CInventoryContent {
+                                container_id: VarUInt(window_id),
+                                slots,
+                                full_container_name: FullContainerName {
+                                    container_name: ContainerName::LevelEntity,
+                                    dynamic_id: None,
+                                },
+                                storage_item: NetworkItemStackDescriptor::default(),
+                            })
+                            .await;
+
+                        let player_slots =
+                            futures::future::join_all(self.inventory.main_inventory.iter().map(
+                                async |slot| NetworkItemStackDescriptor::from(&*slot.lock().await),
+                            ))
+                            .await;
+                        bedrock
+                            .enqueue_packet(&CInventoryContent {
+                                container_id: VarUInt(0),
+                                slots: player_slots,
+                                full_container_name: FullContainerName {
+                                    container_name: ContainerName::Inventory,
+                                    dynamic_id: None,
+                                },
+                                storage_item: NetworkItemStackDescriptor::default(),
+                            })
+                            .await;
                     }
                 }
             }
@@ -6853,6 +7183,14 @@ impl InventoryPlayer for Player {
                         let slot_idx = packet.slot as usize;
                         let item_desc = NetworkItemStackDescriptor::from(&*packet.slot_data.0);
 
+                        let session = bedrock.virtual_container.lock().await.clone();
+                        let Some(session) = session.filter(|session| {
+                            session.sync_id == window_id as u8
+                                && session.phase == VirtualContainerPhase::Open
+                        }) else {
+                            return;
+                        };
+
                         // Container screen
                         let current_handler = self.current_screen_handler.lock().await.clone();
                         let handler = current_handler.lock().await;
@@ -6886,8 +7224,21 @@ impl InventoryPlayer for Player {
                         };
 
                         if let Some((container_name, slot_id)) = bedrock_info {
+                            if container_name == ContainerName::LevelEntity
+                                && !session.layout.contains_logical_slot(slot_id as usize)
+                            {
+                                return;
+                            }
+                            let packet_window_id = if matches!(
+                                container_name,
+                                ContainerName::Inventory | ContainerName::HotBar
+                            ) {
+                                0
+                            } else {
+                                u32::from(session.sync_id)
+                            };
                             let bedrock_packet = CInventorySlot {
-                                window_id: VarUInt(window_id as u32),
+                                window_id: VarUInt(packet_window_id),
                                 inventory_slot: VarUInt(slot_id as u32),
                                 container_name: Some(FullContainerName {
                                     container_name,

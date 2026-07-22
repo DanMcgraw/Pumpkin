@@ -7,7 +7,7 @@ use pumpkin_data::{
     data_component_impl::{ConsumableImpl, EquipmentSlot, EquippableImpl},
     item_stack::ItemStack,
 };
-use pumpkin_inventory::screen_handler::{InventoryPlayer, ScreenHandler};
+use pumpkin_inventory::screen_handler::{ClickType, InventoryPlayer, ScreenHandler};
 use pumpkin_macros::send_cancellable;
 use pumpkin_protocol::bedrock::{
     client::inventory_content::CInventoryContent,
@@ -54,6 +54,7 @@ use crate::{
         player::{MiningTarget, Player},
     },
     net::{DisconnectReason, bedrock::BedrockClient},
+    plugin::api::gui::{PluginGuiClickContext, PluginGuiInputResult, PluginScreenHandler},
     plugin::player::{
         item_held::PlayerItemHeldEvent, player_chat::PlayerChatEvent,
         player_command_send::PlayerCommandSendEvent,
@@ -91,6 +92,150 @@ const fn should_process_bedrock_fall(
     alive: bool,
 ) -> bool {
     (position_changed || was_on_ground != on_ground) && !flying && alive
+}
+
+fn level_entity_slot(
+    slot: &pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestSlotInfo,
+) -> Option<u8> {
+    (slot.container_name.container_name == ContainerName::LevelEntity).then_some(slot.slot_id)
+}
+
+fn first_virtual_container_click(
+    actions: &[pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction],
+) -> Option<(u8, ClickType)> {
+    use pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction;
+
+    for action in actions {
+        let click = match action {
+            ItemStackRequestAction::Take {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::Place {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::PlaceInContainer {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::TakeOutContainer {
+                source,
+                destination,
+                ..
+            } => level_entity_slot(source)
+                .or_else(|| level_entity_slot(destination))
+                .map(|slot| (slot, ClickType::Left)),
+            ItemStackRequestAction::Swap { slot1, slot2 } => level_entity_slot(slot1)
+                .or_else(|| level_entity_slot(slot2))
+                .map(|slot| (slot, ClickType::NumberKey(0))),
+            ItemStackRequestAction::Drop { source, .. }
+            | ItemStackRequestAction::Destroy { source, .. }
+            | ItemStackRequestAction::Consume { source, .. } => {
+                level_entity_slot(source).map(|slot| (slot, ClickType::Drop))
+            }
+            _ => None,
+        };
+        if click.is_some() {
+            return click;
+        }
+    }
+    None
+}
+
+fn virtual_container_request_is_valid(
+    screen_handler: &dyn ScreenHandler,
+    actions: &[pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction],
+) -> bool {
+    use pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction;
+
+    let logical_size = screen_handler.get_behaviour().container_slots;
+    let valid =
+        |slot: &pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestSlotInfo| {
+            level_entity_slot(slot).is_none_or(|slot| usize::from(slot) < logical_size)
+        };
+    actions.iter().all(|action| match action {
+        ItemStackRequestAction::Take {
+            source,
+            destination,
+            ..
+        }
+        | ItemStackRequestAction::Place {
+            source,
+            destination,
+            ..
+        }
+        | ItemStackRequestAction::PlaceInContainer {
+            source,
+            destination,
+            ..
+        }
+        | ItemStackRequestAction::TakeOutContainer {
+            source,
+            destination,
+            ..
+        } => valid(source) && valid(destination),
+        ItemStackRequestAction::Swap { slot1, slot2 } => valid(slot1) && valid(slot2),
+        ItemStackRequestAction::Drop { source, .. }
+        | ItemStackRequestAction::Destroy { source, .. }
+        | ItemStackRequestAction::Consume { source, .. } => valid(source),
+        _ => true,
+    })
+}
+
+fn virtual_container_request_obeys_policy(
+    screen_handler: &dyn ScreenHandler,
+    actions: &[pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction],
+) -> bool {
+    use pumpkin_protocol::bedrock::server::item_stack_request::ItemStackRequestAction;
+
+    let mut grabs = false;
+    let mut puts = false;
+    for action in actions {
+        match action {
+            ItemStackRequestAction::Take {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::Place {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::PlaceInContainer {
+                source,
+                destination,
+                ..
+            }
+            | ItemStackRequestAction::TakeOutContainer {
+                source,
+                destination,
+                ..
+            } => {
+                grabs |= level_entity_slot(source).is_some();
+                puts |= level_entity_slot(destination).is_some();
+            }
+            ItemStackRequestAction::Swap { slot1, slot2 } => {
+                if level_entity_slot(slot1).is_some() || level_entity_slot(slot2).is_some() {
+                    grabs = true;
+                    puts = true;
+                }
+            }
+            ItemStackRequestAction::Drop { source, .. }
+            | ItemStackRequestAction::Destroy { source, .. }
+            | ItemStackRequestAction::Consume { source, .. } => {
+                grabs |= level_entity_slot(source).is_some();
+            }
+            _ => {}
+        }
+    }
+
+    let behaviour = screen_handler.get_behaviour();
+    (!grabs || behaviour.allow_grab_items) && (!puts || behaviour.allow_put_items)
 }
 
 fn descriptor_to_stack(desc: &NetworkItemDescriptor) -> ItemStack {
@@ -1443,10 +1588,114 @@ impl BedrockClient {
 
         let current_screen_handler = player.current_screen_handler.lock().await.clone();
         let mut screen_handler = current_screen_handler.lock().await;
+        let virtual_container_open =
+            self.virtual_container
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|session| {
+                    session.phase
+                        == crate::net::bedrock::virtual_container::VirtualContainerPhase::Open
+                        && session.sync_id == screen_handler.sync_id()
+                });
 
         let mut responses = Vec::with_capacity(packet.requests.len());
 
         for request in packet.requests {
+            // Padding exists only to satisfy Bedrock's fixed chest sizes and
+            // must never reach a plugin callback or the inventory mutator.
+            if virtual_container_open
+                && !virtual_container_request_is_valid(&*screen_handler, &request.actions)
+            {
+                screen_handler.cancel().await;
+                responses.push(ItemStackResponse {
+                    result: 1,
+                    request_id: request.request_id,
+                    container_infos: Vec::new(),
+                });
+                continue;
+            }
+
+            let plugin_click = virtual_container_open
+                .then(|| first_virtual_container_click(&request.actions))
+                .flatten()
+                .and_then(|(slot, click_type)| {
+                    screen_handler
+                        .as_any()
+                        .downcast_ref::<PluginScreenHandler>()
+                        .map(|plugin| {
+                            (
+                                slot,
+                                click_type,
+                                plugin.event_context.clone(),
+                                Arc::clone(&plugin.handler),
+                            )
+                        })
+                });
+
+            if let Some((slot, click_type, context, handler)) = plugin_click {
+                let clicked_stack = screen_handler
+                    .get_behaviour()
+                    .slots
+                    .get(usize::from(slot))
+                    .map(Arc::clone);
+                let clicked_stack = if let Some(slot) = clicked_stack {
+                    Some(slot.get_cloned_stack().await)
+                } else {
+                    None
+                };
+                let behaviour = screen_handler.get_behaviour();
+                let callback_context = PluginGuiClickContext {
+                    session_id: context.session_id,
+                    player: Arc::clone(player),
+                    slot: i16::from(slot),
+                    raw_slot: i16::from(slot),
+                    is_container_slot: true,
+                    click_type,
+                    hotbar_button: -1,
+                    cursor: behaviour.cursor_stack.lock().await.clone(),
+                    clicked_stack,
+                    revision: behaviour.revision.load(Ordering::Relaxed) as i32,
+                    sync_id: behaviour.sync_id,
+                };
+
+                drop(screen_handler);
+                let callback_result = handler.on_click(callback_context).await;
+                let current = player.current_screen_handler.lock().await.clone();
+                if !Arc::ptr_eq(&current, &current_screen_handler) {
+                    return;
+                }
+                screen_handler = current_screen_handler.lock().await;
+                let session_is_current = screen_handler
+                    .as_any()
+                    .downcast_ref::<PluginScreenHandler>()
+                    .is_some_and(|open| open.event_context.session_id == context.session_id);
+                if !session_is_current {
+                    return;
+                }
+                if callback_result == PluginGuiInputResult::Cancel {
+                    screen_handler.cancel().await;
+                    responses.push(ItemStackResponse {
+                        result: 1,
+                        request_id: request.request_id,
+                        container_infos: Vec::new(),
+                    });
+                    continue;
+                }
+            }
+
+            if virtual_container_open
+                && !virtual_container_request_obeys_policy(&*screen_handler, &request.actions)
+            {
+                screen_handler.cancel().await;
+                responses.push(ItemStackResponse {
+                    result: 1,
+                    request_id: request.request_id,
+                    container_infos: Vec::new(),
+                });
+                continue;
+            }
+
             let mut created_item: Option<ItemStack> = None;
             let mut pending_craft: Option<(ItemStack, u8)> = None;
             let mut crafting_prediction_active = false;

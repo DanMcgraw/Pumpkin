@@ -138,6 +138,7 @@ impl GenericContainerScreenHandler {
             columns,
             behaviour: ScreenHandlerBehaviour::new(sync_id, Some(screen_type)),
         };
+        handler.behaviour.container_slots = usize::from(rows) * usize::from(columns);
 
         // TODO: Add player entity as a parameter
         inventory.on_open().await;

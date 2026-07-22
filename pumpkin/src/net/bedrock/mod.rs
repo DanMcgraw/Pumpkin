@@ -1,5 +1,6 @@
 pub mod play;
 pub mod state;
+pub mod virtual_container;
 use crossbeam::atomic::AtomicCell;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -7,7 +8,7 @@ use std::{
     net::{Ipv4Addr, SocketAddrV4},
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     time::UNIX_EPOCH,
 };
@@ -49,6 +50,7 @@ use pumpkin_protocol::{
             loading_screen::SLoadingScreen,
             login::SLogin,
             mob_equipment::SMobEquipment,
+            network_stack_latency::SNetworkStackLatency,
             player_action::SPlayerAction,
             player_auth_input::SPlayerAuthInput,
             raknet::{
@@ -93,6 +95,8 @@ use crate::{
     plugin::api::events::world::chunk_send::ChunkSend,
     server::Server,
 };
+
+use self::virtual_container::VirtualContainerSession;
 use arc_swap::ArcSwap;
 use pumpkin_protocol::bedrock::server::login::ClientData;
 use pumpkin_util::version::BedrockMinecraftVersion;
@@ -164,6 +168,10 @@ pub struct BedrockClient {
     /// The next form ID to use for custom forms.
     pub next_form_id: AtomicU32,
     pub inventory_opened: AtomicBool,
+    /// Client-only chest holder currently pending or displayed for a virtual
+    /// inventory screen.
+    pub virtual_container: Mutex<Option<VirtualContainerSession>>,
+    next_virtual_container_timestamp: AtomicI64,
     session_state: AtomicU8,
     client_cache_supported: AtomicBool,
     recovery_epoch: AtomicU64,
@@ -192,6 +200,11 @@ pub struct BedrockClient {
 }
 
 impl BedrockClient {
+    pub fn next_virtual_container_timestamp(&self) -> i64 {
+        self.next_virtual_container_timestamp
+            .fetch_sub(1, Ordering::Relaxed)
+    }
+
     #[must_use]
     pub fn new(
         socket: Arc<UdpSocket>,
@@ -225,6 +238,8 @@ impl BedrockClient {
             output_ordered_index: AtomicU32::new(0),
             next_form_id: AtomicU32::new(0),
             inventory_opened: AtomicBool::new(false),
+            virtual_container: Mutex::new(None),
+            next_virtual_container_timestamp: AtomicI64::new(-9_876_543_210),
             session_state: AtomicU8::new(state::BedrockSessionState::Initializing as u8),
             client_cache_supported: AtomicBool::new(false),
             recovery_epoch: AtomicU64::new(0),
@@ -1379,6 +1394,22 @@ impl BedrockClient {
             SContainerClose::PACKET_ID => {
                 self.handle_container_close(player, SContainerClose::read(reader)?)
                     .await;
+            }
+            SNetworkStackLatency::PACKET_ID => {
+                let latency = SNetworkStackLatency::read(reader)?;
+                if !player
+                    .acknowledge_bedrock_virtual_container(latency.timestamp)
+                    .await
+                    && !latency.from_server
+                {
+                    self.enqueue_packet(
+                        &pumpkin_protocol::bedrock::client::CNetworkStackLatency {
+                            timestamp: latency.timestamp,
+                            from_server: true,
+                        },
+                    )
+                    .await;
+                }
             }
             SText::PACKET_ID => {
                 self.handle_chat_message(server, player, SText::read(reader)?)
