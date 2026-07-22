@@ -3,7 +3,7 @@ use crate::data_component::DataComponent::Enchantments;
 use crate::data_component_impl::{
     BlocksAttacksImpl, ConsumableImpl, CustomDataImpl, DamageImpl, DataComponentImpl,
     EnchantmentsImpl, IDSet, MaxDamageImpl, MaxStackSizeImpl, ToolImpl, UnbreakableImpl,
-    UseCooldownImpl, get, get_mut, read_data,
+    UseCooldownImpl, read_data,
 };
 use crate::item::Item;
 use crate::recipes::RecipeResultStruct;
@@ -138,21 +138,28 @@ impl ItemStack {
     }
 
     #[must_use]
-    pub fn get_data_component<T: DataComponentImpl + 'static>(&self) -> Option<&T> {
-        let to_get_id = &T::get_enum();
+    fn get_data_component_dyn(
+        &self,
+        component_id: DataComponent,
+    ) -> Option<&dyn DataComponentImpl> {
         for (id, component) in &self.patch {
-            if id == to_get_id {
-                return component
-                    .as_ref()
-                    .map(|component| get::<T>(component.as_ref()));
+            if *id == component_id {
+                return component.as_deref();
             }
         }
         for (id, component) in self.item.components {
-            if id == to_get_id {
-                return Some(get::<T>(*component));
+            if *id == component_id {
+                return Some(*component);
             }
         }
         None
+    }
+
+    #[must_use]
+    pub fn get_data_component<T: DataComponentImpl + 'static>(&self) -> Option<&T> {
+        self.get_data_component_dyn(T::get_enum())?
+            .as_any()
+            .downcast_ref::<T>()
     }
     #[must_use]
     pub fn get_data_component_mut<T: DataComponentImpl + 'static>(&mut self) -> Option<&mut T> {
@@ -161,7 +168,7 @@ impl ItemStack {
             return self.patch[index]
                 .1
                 .as_mut()
-                .map(|component| get_mut::<T>(component.as_mut()));
+                .and_then(|component| component.as_mut_any().downcast_mut::<T>());
         }
 
         // If not in patch, clone from item to patch and return mut
@@ -180,7 +187,7 @@ impl ItemStack {
                 .unwrap()
                 .1
                 .as_mut()
-                .map(|c| get_mut::<T>(c.as_mut()));
+                .and_then(|component| component.as_mut_any().downcast_mut::<T>());
         }
         None
     }
@@ -284,8 +291,23 @@ impl ItemStack {
 
     #[must_use]
     pub fn get_max_stack_size(&self) -> u8 {
-        self.get_data_component::<MaxStackSizeImpl>()
-            .map_or(1, |value| value.size)
+        let Some(component) = self.get_data_component_dyn(DataComponent::MaxStackSize) else {
+            return 1;
+        };
+        if let Some(value) = component.as_any().downcast_ref::<MaxStackSizeImpl>() {
+            return value.size;
+        }
+
+        // Native plugins are separate Rust dynamic libraries and may carry a
+        // concrete component type with a different TypeId even when its
+        // component ID and serialized representation match Pumpkin's. Decode
+        // the scalar representation instead of treating that valid component
+        // as missing or panicking on an Any downcast.
+        component
+            .write_data()
+            .extract_int()
+            .and_then(|size| u8::try_from(size).ok())
+            .unwrap_or(1)
     }
 
     #[must_use]
@@ -841,13 +863,73 @@ mod tests {
     use crate::data_component::DataComponent;
     use crate::data_component_impl::{
         CustomDataImpl, CustomNameImpl, DataComponentImpl, EnchantmentsImpl, LoreImpl,
-        UnbreakableImpl, text_component_from_nbt, text_component_to_nbt,
+        MaxStackSizeImpl, UnbreakableImpl, text_component_from_nbt, text_component_to_nbt,
     };
     use pumpkin_util::text::color::NamedColor;
+
+    #[derive(Clone)]
+    struct ForeignMaxStackSize {
+        size: u8,
+    }
+
+    impl DataComponentImpl for ForeignMaxStackSize {
+        fn write_data(&self) -> NbtTag {
+            NbtTag::Int(i32::from(self.size))
+        }
+
+        fn equal(&self, other: &dyn DataComponentImpl) -> bool {
+            self.write_data() == other.write_data()
+        }
+
+        fn get_enum() -> DataComponent
+        where
+            Self: Sized,
+        {
+            DataComponent::MaxStackSize
+        }
+
+        fn get_self_enum(&self) -> DataComponent {
+            DataComponent::MaxStackSize
+        }
+
+        fn to_dyn(self) -> Box<dyn DataComponentImpl> {
+            Box::new(self)
+        }
+
+        fn clone_dyn(&self) -> Box<dyn DataComponentImpl> {
+            Box::new(self.clone())
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn std::any::Any {
+            self
+        }
+    }
 
     /// Helper: creates a fresh Iron Sword (max_damage 250, damage 0).
     fn iron_sword() -> ItemStack {
         ItemStack::new(1, &Item::IRON_SWORD)
+    }
+
+    #[test]
+    fn foreign_component_type_ids_do_not_panic_typed_access() {
+        let foreign = ForeignMaxStackSize { size: 32 };
+        let local = MaxStackSizeImpl { size: 32 };
+
+        assert!(!local.equal(&foreign));
+
+        let mut stack = ItemStack::new_with_component(
+            1,
+            &Item::STONE,
+            vec![(DataComponent::MaxStackSize, Some(foreign.to_dyn()))],
+        );
+        assert!(stack.get_data_component::<MaxStackSizeImpl>().is_none());
+        assert!(stack.get_data_component_mut::<MaxStackSizeImpl>().is_none());
+        assert_eq!(stack.get_max_stack_size(), 32);
+        assert!(stack.is_stackable());
     }
 
     #[test]

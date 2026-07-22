@@ -96,7 +96,10 @@ pub fn read_data(id: DataComponent, data: &NbtTag) -> Option<Box<dyn DataCompone
 macro_rules! default_impl {
     ($t: ident) => {
         fn equal(&self, other: &dyn DataComponentImpl) -> bool {
-            self == get::<Self>(other)
+            other
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|other| self == other)
         }
         #[inline]
         fn get_enum() -> DataComponent
