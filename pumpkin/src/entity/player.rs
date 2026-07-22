@@ -5242,39 +5242,6 @@ impl Player {
                 from_server: true,
             })
             .await;
-
-        let player = Arc::downgrade(self);
-        client.spawn_task(async move {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            let Some(player) = player.upgrade() else {
-                return;
-            };
-            let ClientPlatform::Bedrock(client) = player.client.as_ref() else {
-                return;
-            };
-            let timed_out = client
-                .virtual_container
-                .lock()
-                .await
-                .as_ref()
-                .is_some_and(|session| {
-                    session.sync_id == sync_id
-                        && session.matches_acknowledgement(acknowledgement_timestamp)
-                });
-            if timed_out {
-                warn!(
-                    player = %player.gameprofile.name,
-                    sync_id,
-                    "Bedrock client did not acknowledge virtual container preparation"
-                );
-                let current = player.current_screen_handler.lock().await.clone();
-                if current.lock().await.sync_id() == sync_id {
-                    player.on_handled_screen_closed().await;
-                } else {
-                    player.cleanup_bedrock_virtual_container().await;
-                }
-            }
-        });
         true
     }
 
