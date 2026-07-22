@@ -374,9 +374,9 @@ impl EntityBase for ArrowEntity {
                 ProjectileHit::Entity { entity: target, .. } => (Some(target.clone()), None, None),
                 ProjectileHit::Block { pos, .. } => (None, Some(world.get_block(pos)), Some(*pos)),
             };
-            let caller = world
-                .get_entity_by_id(entity.entity_id)
-                .expect("arrow not found in world");
+            let Some(caller) = world.get_live_entity_by_id(entity.entity_id) else {
+                return;
+            };
             let server = world.server.upgrade().expect("server is gone");
             let hit_event =
                 ProjectileHitEvent::new(caller.clone(), hit_entity, hit_block, hit_block_pos);

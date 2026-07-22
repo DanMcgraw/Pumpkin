@@ -88,10 +88,11 @@ impl EntityBase for FireballEntity {
                 let owner = self
                     .thrown
                     .owner_id
-                    .and_then(|id| world.get_entity_by_id(id));
-                let projectile = world
-                    .get_entity_by_id(self.get_entity().entity_id)
-                    .expect("fireball should exist");
+                    .and_then(|id| world.get_live_entity_by_id(id));
+                let Some(projectile) = world.get_live_entity_by_id(self.get_entity().entity_id)
+                else {
+                    return;
+                };
                 let combuster = owner.clone().unwrap_or_else(|| projectile.clone());
 
                 tokio::spawn(async move {

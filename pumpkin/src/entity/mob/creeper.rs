@@ -111,9 +111,9 @@ impl CreeperEntity {
             .store(true, Ordering::Relaxed);
         let world = entity.world.load();
         let pos = entity.pos.load();
-        let creeper = world
-            .get_entity_by_id(entity.entity_id)
-            .expect("creeper should exist");
+        let Some(creeper) = world.get_live_entity_by_id(entity.entity_id) else {
+            return;
+        };
         if let Some(server) = world.server.upgrade() {
             let prime_event =
                 ExplosionPrimeEvent::new(Some(creeper.clone()), pos, radius * multiplier, false);

@@ -193,9 +193,10 @@ impl EntityBase for SplashPotionEntity {
 
             // Only extinguish fire for plain water potions
             let stack = self.item_stack.read().await.clone();
-            let potion_entity = world
-                .get_entity_by_id(self.get_entity().entity_id)
-                .expect("splash potion should exist");
+            let Some(potion_entity) = world.get_live_entity_by_id(self.get_entity().entity_id)
+            else {
+                return;
+            };
             extinguish_fire_if_water_potion(&world, potion_entity, hit_pos, &stack).await;
 
             let effects = crate::item::potion::PotionContents::read_potion_effects(&stack);
@@ -299,9 +300,10 @@ impl EntityBase for SplashPotionEntity {
             };
 
             if let Some(server) = world.server.upgrade() {
-                let potion_entity = world
-                    .get_entity_by_id(self.get_entity().entity_id)
-                    .expect("splash potion should exist");
+                let Some(potion_entity) = world.get_live_entity_by_id(self.get_entity().entity_id)
+                else {
+                    return;
+                };
                 let splash_event = PotionSplashEvent::new(
                     potion_entity,
                     hit_pos,

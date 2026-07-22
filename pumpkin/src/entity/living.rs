@@ -1402,9 +1402,9 @@ impl LivingEntity {
         attribution: DamageAttribution,
     ) {
         let world = self.entity.world.load();
-        let dyn_self = world
-            .get_entity_by_id(self.entity.entity_id)
-            .expect("Entity not found in world");
+        let Some(dyn_self) = world.get_live_entity_by_id(self.entity.entity_id) else {
+            return;
+        };
         if self
             .dead
             .compare_exchange(false, true, Relaxed, Relaxed)
@@ -1470,10 +1470,7 @@ impl LivingEntity {
             let keep_level;
 
             let (final_drops, final_exp) = if self.entity.entity_type == &EntityType::PLAYER {
-                if world.get_player_by_id(self.entity.entity_id).is_some() {
-                    let player_arc = world
-                        .get_player_by_id(self.entity.entity_id)
-                        .expect("player not found in world");
+                if let Some(player_arc) = world.get_live_player_by_id(self.entity.entity_id) {
                     let player_death_event = PlayerDeathEvent::new(
                         player_arc.clone(),
                         damage_type,

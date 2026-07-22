@@ -69,9 +69,9 @@ impl EntityBase for TNTEntity {
                 // TNT explodes now
                 let world = self.entity.world.load();
                 let pos = self.entity.pos.load();
-                let entity = world
-                    .get_entity_by_id(self.entity.entity_id)
-                    .expect("tnt should exist");
+                let Some(entity) = world.get_live_entity_by_id(self.entity.entity_id) else {
+                    return;
+                };
                 if let Some(server) = world.server.upgrade() {
                     let prime_event =
                         ExplosionPrimeEvent::new(Some(entity.clone()), pos, self.power, false);

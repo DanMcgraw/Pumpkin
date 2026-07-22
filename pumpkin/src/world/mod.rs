@@ -4057,6 +4057,16 @@ impl World {
         None
     }
 
+    /// Gets an active `Player` by an entity id.
+    ///
+    /// Registry entries remain visible while removal events are running, so
+    /// asynchronous workflows should use this when they cannot act on a player
+    /// whose removal has already started.
+    pub fn get_live_player_by_id(&self, id: i32) -> Option<Arc<Player>> {
+        self.get_player_by_id(id)
+            .filter(|player| player.get_entity().is_alive())
+    }
+
     /// Gets an entity by an entity id
     pub fn get_entity_by_id(&self, id: i32) -> Option<Arc<dyn EntityBase>> {
         for entity in self.entities.load().iter() {
@@ -4070,6 +4080,15 @@ impl World {
             }
         }
         None
+    }
+
+    /// Gets an active entity by an entity id.
+    ///
+    /// This intentionally excludes entries whose removal has been claimed but
+    /// which have not yet been detached from the registry.
+    pub fn get_live_entity_by_id(&self, id: i32) -> Option<Arc<dyn EntityBase>> {
+        self.get_entity_by_id(id)
+            .filter(|entity| entity.get_entity().is_alive())
     }
 
     /// Gets a `Player` by a username
@@ -6718,6 +6737,22 @@ mod entity_chunk_index_tests {
         assert!(base.try_begin_removal());
         base.finish_removal(RemovalReason::Discarded);
         assert!(base.is_removal_complete());
+    }
+
+    #[tokio::test]
+    async fn live_entity_lookup_excludes_removal_in_progress() {
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
+        let entity_id = entity.get_entity().entity_id;
+        world.spawn_entity_non_save(&entity);
+
+        assert!(world.get_live_entity_by_id(entity_id).is_some());
+        assert!(entity.get_entity().try_begin_removal());
+        assert!(world.get_entity_by_id(entity_id).is_some());
+        assert!(world.get_live_entity_by_id(entity_id).is_none());
+
+        entity.get_entity().cancel_removal();
+        assert!(world.get_live_entity_by_id(entity_id).is_some());
     }
 
     #[tokio::test]

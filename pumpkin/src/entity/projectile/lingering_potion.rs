@@ -139,9 +139,10 @@ impl EntityBase for LingeringPotionEntity {
 
             // Only extinguish fire for plain water potions
             let stack = self.item_stack.read().await.clone();
-            let potion_entity = world
-                .get_entity_by_id(self.get_entity().entity_id)
-                .expect("lingering potion should exist");
+            let Some(potion_entity) = world.get_live_entity_by_id(self.get_entity().entity_id)
+            else {
+                return;
+            };
             extinguish_fire_if_water_potion(&world, potion_entity, hit_pos, &stack).await;
 
             // Play impact particles

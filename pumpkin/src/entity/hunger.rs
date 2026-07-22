@@ -127,10 +127,9 @@ impl HungerManager {
 
         let proposed_level = (current_level + food).min(MAX_FOOD);
 
-        let player_arc = player
-            .world()
-            .get_player_by_id(player.entity_id())
-            .expect("player not found in world");
+        let Some(player_arc) = player.world().get_live_player_by_id(player.entity_id()) else {
+            return;
+        };
         let event = FoodLevelChangeEvent::new(player_arc, proposed_level);
         let server = player.world().server.upgrade().expect("server is gone");
         let event = server.plugin_manager.fire(event).await;

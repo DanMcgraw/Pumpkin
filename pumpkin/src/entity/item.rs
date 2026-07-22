@@ -717,21 +717,23 @@ impl EntityBase for ItemEntity {
 
             let world = self.entity.world.load();
             if let Some(server) = world.server.upgrade() {
-                let player_arc = world
-                    .get_player_by_id(player.entity_id())
-                    .expect("player should exist");
+                let Some(player_arc) = world.get_live_player_by_id(player.entity_id()) else {
+                    return;
+                };
                 // Another item tick can merge and remove this entity after the
                 // world tick's removal check but before collision processing.
-                let Some(item_entity_arc) = world.get_entity_by_id(self.entity.entity_id) else {
+                let Some(item_entity_arc) = world.get_live_entity_by_id(self.entity.entity_id)
+                else {
+                    return;
+                };
+                let Some(item_entity_arc) = item_entity_arc.get_item_entity() else {
                     return;
                 };
                 let event = server
                     .plugin_manager
                     .fire(EntityPickupItemEvent::new(
                         player_arc,
-                        item_entity_arc
-                            .get_item_entity()
-                            .expect("entity should be an item"),
+                        item_entity_arc,
                         item_stack,
                         event_amount,
                     ))
