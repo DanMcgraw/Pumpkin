@@ -172,6 +172,10 @@ fn item_player_collision_box(bounding_box: BoundingBox) -> BoundingBox {
     bounding_box.expand(0.5, 0.25, 0.5)
 }
 
+fn should_process_entity_collisions(entity: &Entity) -> bool {
+    !entity.removed.load(Relaxed)
+}
+
 const fn should_drop_block_items(event_allows_drops: bool, gamerule_allows_drops: bool) -> bool {
     event_allows_drops && gamerule_allows_drops
 }
@@ -1132,6 +1136,10 @@ impl World {
                     e_clone.tick(&e_clone, &s_clone).await;
 
                     let entity_inner = e_clone.get_entity();
+                    if !should_process_entity_collisions(entity_inner) {
+                        return;
+                    }
+
                     let entity_pos = entity_inner.pos.load();
                     let entity_bb = if e_clone.clone().get_item_entity().is_some() {
                         // Item pickup is intentionally more forgiving than a
@@ -4755,6 +4763,11 @@ impl World {
             }
         }
 
+        // Entity tick tasks retain Arc references after an entity leaves the
+        // live registry. Mark approved removals before mutating the registry so
+        // those tasks do not continue into collision handling.
+        base_entity.removed.store(true, Relaxed);
+
         self.spawn_state.load().remove_entity(self, entity);
         self.remove_entity_from_chunk_index(entity);
         self.entities.rcu(|current_entities| {
@@ -6619,6 +6632,16 @@ mod entity_chunk_index_tests {
             candidates[0].get_entity().entity_uuid,
             entity.get_entity().entity_uuid
         );
+    }
+
+    #[tokio::test]
+    async fn removed_entities_skip_collision_processing() {
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
+
+        assert!(should_process_entity_collisions(entity.get_entity()));
+        entity.get_entity().removed.store(true, Relaxed);
+        assert!(!should_process_entity_collisions(entity.get_entity()));
     }
 
     #[tokio::test]
