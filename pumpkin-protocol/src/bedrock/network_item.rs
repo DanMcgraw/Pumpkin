@@ -3,10 +3,11 @@ use std::num::NonZeroI32;
 
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::{
-    data_component_impl::{CustomNameImpl, LoreImpl},
+    data_component::DataComponent,
     item::{BedrockItem, JavaToBedrockItemMapping},
 };
 use pumpkin_nbt::{Nbt, compound::NbtCompound, tag::NbtTag};
+use pumpkin_util::text::TextComponent;
 use pumpkin_util::translation::Locale;
 
 use crate::{
@@ -17,16 +18,39 @@ use crate::{
 /// Translates the Java item components Bedrock reads from the legacy item NBT
 /// payload. Without this `display` compound, Bedrock renders only the vanilla
 /// item name even though Java clients receive the custom name and lore.
+fn component_data(stack: &ItemStack, id: DataComponent) -> Option<NbtTag> {
+    if let Some((_, component)) = stack.patch.iter().find(|(patch_id, _)| *patch_id == id) {
+        return component.as_ref().map(|component| component.write_data());
+    }
+
+    stack
+        .item
+        .components
+        .iter()
+        .find(|(component_id, _)| *component_id == id)
+        .map(|(_, component)| component.write_data())
+}
+
+fn component_text(tag: &NbtTag) -> Option<TextComponent> {
+    pumpkin_data::data_component_impl::text_component_from_nbt(tag)
+}
+
 fn bedrock_item_nbt(stack: &ItemStack) -> Nbt {
-    let custom_name = stack
-        .get_data_component::<CustomNameImpl>()
-        .map(|component| component.name.0.to_bedrock_legacy(Locale::EnUs));
-    let lore = stack.get_data_component::<LoreImpl>().map(|component| {
-        component
-            .lines
-            .iter()
-            .map(|line| line.0.to_bedrock_legacy(Locale::EnUs))
-            .collect::<Vec<_>>()
+    // Native plugins are separate dynamic libraries, so their concrete component
+    // types have different Rust TypeIds from Pumpkin's copies. Read the stable NBT
+    // representation instead of downcasting the plugin-owned trait object.
+    let custom_name = component_data(stack, DataComponent::CustomName)
+        .as_ref()
+        .and_then(component_text)
+        .map(|component| component.0.to_bedrock_legacy(Locale::EnUs));
+    let lore = component_data(stack, DataComponent::Lore).and_then(|tag| {
+        tag.extract_list().map(|lines| {
+            lines
+                .iter()
+                .filter_map(component_text)
+                .map(|line| line.0.to_bedrock_legacy(Locale::EnUs))
+                .collect::<Vec<_>>()
+        })
     });
 
     if custom_name.is_none() && lore.as_ref().is_none_or(Vec::is_empty) {
@@ -459,12 +483,16 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::io::{Cursor, Read};
 
     use pumpkin_data::{
+        data_component::DataComponent,
+        data_component_impl::{DataComponentImpl, text_component_to_nbt},
         item::{BedrockItem, Item, JavaToBedrockItemMapping},
         item_stack::ItemStack,
     };
+    use pumpkin_nbt::tag::NbtTag;
     use pumpkin_util::text::{TextComponent, color::NamedColor};
 
     use crate::serial::PacketWrite;
@@ -473,6 +501,49 @@ mod tests {
         ContainerName, ItemStackWrapper, NetworkItemDescriptor, NetworkItemStackDescriptor,
         bedrock_item_nbt,
     };
+
+    #[derive(Clone)]
+    struct ForeignComponent {
+        id: DataComponent,
+        data: NbtTag,
+    }
+
+    impl DataComponentImpl for ForeignComponent {
+        fn write_data(&self) -> NbtTag {
+            self.data.clone()
+        }
+
+        fn equal(&self, other: &dyn DataComponentImpl) -> bool {
+            self.id == other.get_self_enum() && self.data == other.write_data()
+        }
+
+        fn get_enum() -> DataComponent
+        where
+            Self: Sized,
+        {
+            DataComponent::CustomName
+        }
+
+        fn get_self_enum(&self) -> DataComponent {
+            self.id
+        }
+
+        fn to_dyn(self) -> Box<dyn DataComponentImpl> {
+            Box::new(self)
+        }
+
+        fn clone_dyn(&self) -> Box<dyn DataComponentImpl> {
+            Box::new(self.clone())
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn as_mut_any(&mut self) -> &mut dyn Any {
+            self
+        }
+    }
 
     #[test]
     fn cereal_empty_item_consumes_the_complete_descriptor() {
@@ -520,6 +591,38 @@ mod tests {
         let item = NetworkItemStackDescriptor::from(&stack);
         assert_eq!(&item.extra_data[..6], &[0xff, 0xff, 1, 0x0a, 0x00, 0x00]);
         assert!(item.extra_data.len() > 10);
+    }
+
+    #[test]
+    fn item_v4_normalizes_native_plugin_name_and_lore_without_downcasting() {
+        let mut stack = ItemStack::new(1, &Item::FEATHER);
+        let name = TextComponent::text("Acrobatics - Level 4");
+        let lore = TextComponent::text("Progress: 20/100 XP (20%)").color_named(NamedColor::Yellow);
+        stack.patch = vec![
+            (
+                DataComponent::CustomName,
+                Some(Box::new(ForeignComponent {
+                    id: DataComponent::CustomName,
+                    data: text_component_to_nbt(&name),
+                })),
+            ),
+            (
+                DataComponent::Lore,
+                Some(Box::new(ForeignComponent {
+                    id: DataComponent::Lore,
+                    data: NbtTag::List(vec![text_component_to_nbt(&lore)]),
+                })),
+            ),
+        ];
+
+        let nbt = bedrock_item_nbt(&stack);
+        let display = nbt.get_compound("display").unwrap();
+        assert_eq!(display.get_string("Name"), Some("Acrobatics - Level 4"));
+        let lore = display.get_list("Lore").unwrap();
+        assert_eq!(
+            lore[0].extract_string(),
+            Some("§eProgress: 20/100 XP (20%)")
+        );
     }
 
     #[test]
