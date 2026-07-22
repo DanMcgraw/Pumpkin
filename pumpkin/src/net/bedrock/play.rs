@@ -268,6 +268,14 @@ const fn client_stack_matches_authoritative(client: &ItemStack, authoritative: &
             && client.item_count == authoritative.item_count)
 }
 
+const fn bedrock_hotbar_slot(slot: i32) -> Option<u8> {
+    if slot >= 0 && slot < 9 {
+        Some(slot as u8)
+    } else {
+        None
+    }
+}
+
 const fn map_bedrock_slot_to_screen_handler(window_id: i32, slot: u32) -> Option<usize> {
     match window_id {
         0 => {
@@ -929,11 +937,27 @@ impl BedrockClient {
                     return;
                 }
 
+                let Some(hotbar_slot) = bedrock_hotbar_slot(data.hot_bar_slot.0) else {
+                    warn!(
+                        hotbar_slot = data.hot_bar_slot.0,
+                        "Rejected Bedrock use-item transaction with an invalid hotbar slot"
+                    );
+                    player.sync_bedrock_main_inventory().await;
+                    return;
+                };
+
+                // The transaction identifies the slot used for this action. A
+                // MobEquipment selection packet can race an ItemStackRequest
+                // that just populated the selected slot, so the cached server
+                // selection is not always current yet. Validate and operate on
+                // the transaction's authoritative inventory slot.
                 let client_stack = descriptor_to_stack(&data.item_in_hand);
-                let held_item = player.inventory.held_item();
+                let held_item = player.inventory.main_inventory[usize::from(hotbar_slot)].clone();
                 let server_stack = held_item.lock().await;
                 if !client_stack_matches_authoritative(&client_stack, &server_stack) {
                     warn!(
+                        hotbar_slot,
+                        selected_slot = player.inventory.get_selected_slot(),
                         client_item = client_stack.item.id,
                         client_count = client_stack.item_count,
                         server_item = server_stack.item.id,
@@ -945,6 +969,12 @@ impl BedrockClient {
                     return;
                 }
                 drop(server_stack);
+
+                if player.inventory.get_selected_slot() != hotbar_slot {
+                    player.inventory.set_selected_slot(hotbar_slot);
+                    let equipment = &[(EquipmentSlot::MAIN_HAND, held_item.lock().await.clone())];
+                    player.send_equipment_changes(equipment).await;
+                }
 
                 if data.action_type.0 == 1 {
                     player
@@ -2649,9 +2679,9 @@ mod inventory_stack_response_tests {
     };
 
     use super::{
-        bedrock_crafting_input_slot_id, client_stack_matches_authoritative, descriptor_to_stack,
-        record_update, should_begin_bedrock_respawn, should_complete_bedrock_respawn,
-        should_process_bedrock_fall,
+        bedrock_crafting_input_slot_id, bedrock_hotbar_slot, client_stack_matches_authoritative,
+        descriptor_to_stack, record_update, should_begin_bedrock_respawn,
+        should_complete_bedrock_respawn, should_process_bedrock_fall,
     };
 
     use pumpkin_protocol::{
@@ -2692,6 +2722,14 @@ mod inventory_stack_response_tests {
             &ItemStack::new(4, &Item::STONE),
             &authoritative
         ));
+    }
+
+    #[test]
+    fn use_item_hotbar_slot_must_address_the_player_hotbar() {
+        assert_eq!(bedrock_hotbar_slot(0), Some(0));
+        assert_eq!(bedrock_hotbar_slot(8), Some(8));
+        assert_eq!(bedrock_hotbar_slot(-1), None);
+        assert_eq!(bedrock_hotbar_slot(9), None);
     }
 
     #[test]
