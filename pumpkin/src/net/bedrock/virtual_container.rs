@@ -82,14 +82,23 @@ pub struct VirtualContainerSession {
     pub holder_positions: Vec<BlockPos>,
     pub original_states: Vec<BlockStateId>,
     pub acknowledgement_timestamp: i64,
+    pub prepared_tick: i32,
     pub phase: VirtualContainerPhase,
 }
 
 impl VirtualContainerSession {
+    pub const FALLBACK_OPEN_DELAY_TICKS: i32 = 4;
+
     #[must_use]
     pub fn matches_acknowledgement(&self, timestamp: i64) -> bool {
         self.phase == VirtualContainerPhase::AwaitingAcknowledgement
             && self.acknowledgement_timestamp == timestamp
+    }
+
+    #[must_use]
+    pub fn should_fallback_open(&self, current_tick: i32) -> bool {
+        self.phase == VirtualContainerPhase::AwaitingAcknowledgement
+            && current_tick.wrapping_sub(self.prepared_tick) >= Self::FALLBACK_OPEN_DELAY_TICKS
     }
 }
 
@@ -97,7 +106,7 @@ impl VirtualContainerSession {
 mod tests {
     use pumpkin_data::screen::WindowType;
 
-    use super::VirtualContainerLayout;
+    use super::{VirtualContainerLayout, VirtualContainerPhase, VirtualContainerSession};
 
     #[test]
     fn chest_rows_select_the_smallest_bedrock_capacity() {
@@ -147,5 +156,21 @@ mod tests {
         assert!(layout.contains_logical_slot(17));
         assert!(!layout.contains_logical_slot(18));
         assert!(!layout.contains_logical_slot(26));
+    }
+
+    #[test]
+    fn pending_container_falls_back_after_four_ticks() {
+        let session = VirtualContainerSession {
+            sync_id: 1,
+            layout: VirtualContainerLayout::new(27).unwrap(),
+            holder_positions: Vec::new(),
+            original_states: Vec::new(),
+            acknowledgement_timestamp: -1,
+            prepared_tick: 10,
+            phase: VirtualContainerPhase::AwaitingAcknowledgement,
+        };
+
+        assert!(!session.should_fallback_open(13));
+        assert!(session.should_fallback_open(14));
     }
 }

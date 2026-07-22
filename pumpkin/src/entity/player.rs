@@ -2770,6 +2770,7 @@ impl Player {
             }
         }
         self.tick_counter.fetch_add(1, Ordering::Relaxed);
+        self.open_pending_bedrock_virtual_container().await;
         self.living_entity
             .entity
             .age
@@ -5234,6 +5235,7 @@ impl Player {
             holder_positions,
             original_states,
             acknowledgement_timestamp,
+            prepared_tick: self.tick_counter.load(Ordering::Relaxed),
             phase: VirtualContainerPhase::AwaitingAcknowledgement,
         });
         client
@@ -5243,6 +5245,29 @@ impl Player {
             })
             .await;
         true
+    }
+
+    async fn open_pending_bedrock_virtual_container(&self) {
+        let ClientPlatform::Bedrock(client) = self.client.as_ref() else {
+            return;
+        };
+        let current_tick = self.tick_counter.load(Ordering::Relaxed);
+        let acknowledgement_timestamp = client
+            .virtual_container
+            .lock()
+            .await
+            .as_ref()
+            .filter(|session| session.should_fallback_open(current_tick))
+            .map(|session| session.acknowledgement_timestamp);
+
+        if let Some(timestamp) = acknowledgement_timestamp {
+            debug!(
+                player = %self.gameprofile.name,
+                current_tick,
+                "Opening Bedrock virtual container through tick fallback"
+            );
+            self.acknowledge_bedrock_virtual_container(timestamp).await;
+        }
     }
 
     pub async fn acknowledge_bedrock_virtual_container(&self, timestamp: i64) -> bool {
