@@ -1703,8 +1703,13 @@ impl BedrockClient {
         if self.close_token.is_cancelled() {
             None
         } else {
-            let _guard = self.rt_handle.enter();
-            Some(self.tasks.spawn(task))
+            // Bedrock plugin callbacks may run on Wasmtime/plugin worker
+            // threads that are not themselves Tokio runtime workers. Spawn
+            // explicitly on the server runtime rather than temporarily
+            // entering it and relying on the current-runtime spawn path. This
+            // also guarantees timer and I/O resources inside the future are
+            // created while that runtime is polling it.
+            Some(self.tasks.spawn_on(task, &self.rt_handle))
         }
     }
 }
