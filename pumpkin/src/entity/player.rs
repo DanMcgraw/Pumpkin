@@ -755,12 +755,12 @@ fn virtual_chest_actor_data(
     pair: Option<(BlockPos, bool)>,
 ) -> CBlockActorData {
     let mut tag = NbtCompound::new();
-    tag.put_string("id", "Chest".to_owned());
     tag.put_int("x", position.0.x);
     tag.put_int("y", position.0.y);
     tag.put_int("z", position.0.z);
     tag.put_string("CustomName", title.to_owned());
     if let Some((pair_position, pair_lead)) = pair {
+        tag.put_string("id", "Chest".to_owned());
         tag.put_int("pairx", pair_position.0.x);
         tag.put_int("pairz", pair_position.0.z);
         tag.put_bool("pairlead", pair_lead);
@@ -5135,8 +5135,19 @@ impl Player {
         };
 
         let world = self.world();
-        let player_position = self.position().to_block_pos();
-        let candidates = [player_position.add(0, 1, 0), player_position.add(0, -3, 0)];
+        // Geyser searches relative to the Bedrock-adjusted entity position,
+        // not Java's feet position. Pumpkin's Bedrock movement packets apply
+        // the current eye-height offset, so use the same basis here. For a
+        // standing player this normally places the holder above their head;
+        // for swimming or sleeping it follows the lower Bedrock offset.
+        let bedrock_player_position = self
+            .position()
+            .add_raw(0.0, self.living_entity.entity.get_eye_height(), 0.0)
+            .to_block_pos();
+        let candidates = [
+            bedrock_player_position.add(0, 1, 0),
+            bedrock_player_position.add(0, -3, 0),
+        ];
         let mut selected = None;
         for candidate in candidates {
             let mut positions = vec![candidate];
@@ -5173,21 +5184,21 @@ impl Player {
         let chest_runtime_id =
             u32::from(BlockState::to_be_network_id(Block::CHEST.default_state.id));
 
-        for position in &holder_positions {
-            client
-                .enqueue_packet(&CUpdateBlock::new(*position, chest_runtime_id))
-                .await;
-        }
-
         if layout.is_double() {
             let first = holder_positions[0];
             let second = holder_positions[1];
+            client
+                .enqueue_packet(&CUpdateBlock::new_priority(first, chest_runtime_id))
+                .await;
             client
                 .enqueue_packet(&virtual_chest_actor_data(
                     first,
                     &title,
                     Some((second, false)),
                 ))
+                .await;
+            client
+                .enqueue_packet(&CUpdateBlock::new_priority(second, chest_runtime_id))
                 .await;
             client
                 .enqueue_packet(&virtual_chest_actor_data(
@@ -5198,11 +5209,25 @@ impl Player {
                 .await;
         } else {
             client
+                .enqueue_packet(&CUpdateBlock::new_priority(
+                    holder_positions[0],
+                    chest_runtime_id,
+                ))
+                .await;
+            client
                 .enqueue_packet(&virtual_chest_actor_data(holder_positions[0], &title, None))
                 .await;
         }
 
         let acknowledgement_timestamp = client.next_virtual_container_timestamp();
+        debug!(
+            player = %self.gameprofile.name,
+            sync_id,
+            logical_size = layout.logical_size(),
+            ?holder_positions,
+            acknowledgement_timestamp,
+            "Prepared Bedrock virtual container; awaiting latency acknowledgement"
+        );
         *client.virtual_container.lock().await = Some(VirtualContainerSession {
             sync_id,
             layout,
@@ -5291,6 +5316,12 @@ impl Player {
                 target_entity_id: VarLong(-1),
             })
             .await;
+        debug!(
+            player = %self.gameprofile.name,
+            sync_id = session.sync_id,
+            position = ?session.holder_positions[0],
+            "Opened acknowledged Bedrock virtual container"
+        );
         handler.sync_state().await;
         true
     }
@@ -7106,18 +7137,6 @@ impl InventoryPlayer for Player {
                             session.layout.physical_capacity(),
                             NetworkItemStackDescriptor::default,
                         );
-                        bedrock
-                            .enqueue_packet(&CInventoryContent {
-                                container_id: VarUInt(window_id),
-                                slots,
-                                full_container_name: FullContainerName {
-                                    container_name: ContainerName::LevelEntity,
-                                    dynamic_id: None,
-                                },
-                                storage_item: NetworkItemStackDescriptor::default(),
-                            })
-                            .await;
-
                         let player_slots =
                             futures::future::join_all(self.inventory.main_inventory.iter().map(
                                 async |slot| NetworkItemStackDescriptor::from(&*slot.lock().await),
@@ -7129,6 +7148,17 @@ impl InventoryPlayer for Player {
                                 slots: player_slots,
                                 full_container_name: FullContainerName {
                                     container_name: ContainerName::Inventory,
+                                    dynamic_id: None,
+                                },
+                                storage_item: NetworkItemStackDescriptor::default(),
+                            })
+                            .await;
+                        bedrock
+                            .enqueue_packet(&CInventoryContent {
+                                container_id: VarUInt(window_id),
+                                slots,
+                                full_container_name: FullContainerName {
+                                    container_name: ContainerName::LevelEntity,
                                     dynamic_id: None,
                                 },
                                 storage_item: NetworkItemStackDescriptor::default(),
