@@ -22,7 +22,7 @@ use std::sync::atomic::Ordering::{AcqRel, Relaxed};
 use std::sync::{
     Arc,
     atomic::{
-        AtomicBool, AtomicU8, AtomicU32,
+        AtomicBool, AtomicU8, AtomicU32, AtomicU64,
         Ordering::{self},
     },
 };
@@ -37,6 +37,8 @@ pub struct ItemEntity {
     // These cannot be atomic values because we mutate their state based on what they are; we run
     // into the ABA problem
     item_stack: Mutex<ItemStack>,
+    mutation_lock: Mutex<()>,
+    mutation_epoch: AtomicU64,
     pickup_delay: AtomicU8,
     health: AtomicF32,
     never_despawn: AtomicBool,
@@ -70,6 +72,8 @@ impl ItemEntity {
         Self {
             entity,
             item_stack: Mutex::new(item_stack),
+            mutation_lock: Mutex::new(()),
+            mutation_epoch: AtomicU64::new(0),
             item_age: AtomicU32::new(0),
             pickup_delay: AtomicU8::new(10), // Vanilla pickup delay is 10 ticks
             health: AtomicF32::new(5.0),
@@ -97,6 +101,8 @@ impl ItemEntity {
         Self {
             entity,
             item_stack: Mutex::new(item_stack),
+            mutation_lock: Mutex::new(()),
+            mutation_epoch: AtomicU64::new(0),
             item_age: AtomicU32::new(0),
             pickup_delay: AtomicU8::new(pickup_delay), // Vanilla pickup delay is 10 ticks
             health: AtomicF32::new(5.0),
@@ -111,6 +117,8 @@ impl ItemEntity {
         Self {
             entity,
             item_stack: Mutex::new(ItemStack::new(1, &pumpkin_data::item::Item::AIR)),
+            mutation_lock: Mutex::new(()),
+            mutation_epoch: AtomicU64::new(0),
             item_age: AtomicU32::new(0),
             pickup_delay: AtomicU8::new(10),
             health: AtomicF32::new(5.0),
@@ -120,14 +128,37 @@ impl ItemEntity {
     }
 
     async fn can_merge(&self) -> bool {
-        if self.never_pickup.load(Ordering::Relaxed) || self.entity.removed.load(Ordering::Relaxed)
-        {
+        if !self.merge_state_allows_mutation() {
             return false;
         }
 
         let item_stack = self.item_stack.lock().await;
 
-        item_stack.item_count < item_stack.get_max_stack_size()
+        !item_stack.is_empty() && item_stack.item_count < item_stack.get_max_stack_size()
+    }
+
+    fn merge_state_allows_mutation(&self) -> bool {
+        self.entity.is_alive()
+            && !self.never_pickup.load(Ordering::Relaxed)
+            && !self.never_despawn.load(Ordering::Relaxed)
+            && self.item_age.load(Ordering::Relaxed) < 6000
+            && self.health.load(Relaxed) > 0.0
+    }
+
+    fn stacks_can_merge(first: &ItemStack, second: &ItemStack) -> bool {
+        !first.is_empty()
+            && !second.is_empty()
+            && first.are_items_and_components_equal(second)
+            && first.item_count + second.item_count <= first.get_max_stack_size()
+    }
+
+    const fn picked_up_amount(count_before: u8, count_after: u8) -> u8 {
+        count_before.saturating_sub(count_after)
+    }
+
+    pub(crate) async fn try_begin_removal(&self) -> bool {
+        let _mutation = self.mutation_lock.lock().await;
+        self.entity.try_begin_removal()
     }
 
     async fn try_merge(&self) {
@@ -155,13 +186,19 @@ impl ItemEntity {
     }
 
     async fn try_merge_with(&self, other: &Self) {
-        // Always lock in entity_id order to prevent deadlock when two
-        // items try to merge with each other concurrently.
+        // Always lock both mutation gates and stacks in entity-ID order.
         let (low, high) = if self.entity.entity_id < other.entity.entity_id {
             (self, other)
         } else {
             (other, self)
         };
+
+        let low_mutation = low.mutation_lock.lock().await;
+        let high_mutation = high.mutation_lock.lock().await;
+
+        if !self.merge_state_allows_mutation() || !other.merge_state_allows_mutation() {
+            return;
+        }
 
         let low_stack = low.item_stack.lock().await;
         let high_stack = high.item_stack.lock().await;
@@ -172,9 +209,7 @@ impl ItemEntity {
             (high_stack, low_stack)
         };
 
-        if !self_stack.are_equal(&other_stack)
-            || self_stack.item_count + other_stack.item_count > self_stack.get_max_stack_size()
-        {
+        if !Self::stacks_can_merge(&self_stack, &other_stack) {
             return;
         }
 
@@ -194,6 +229,9 @@ impl ItemEntity {
         stack1.increment(j);
 
         stack2.decrement(j);
+
+        self.mutation_epoch.fetch_add(1, AcqRel);
+        other.mutation_epoch.fetch_add(1, AcqRel);
 
         let empty1 = stack1.item_count == 0;
 
@@ -226,6 +264,9 @@ impl ItemEntity {
                 .pickup_delay
                 .fetch_max(source_delay, Ordering::Relaxed);
         }
+
+        drop(high_mutation);
+        drop(low_mutation);
 
         if empty1 {
             target.entity.remove().await;
@@ -367,7 +408,7 @@ impl ItemEntity {
             self.try_merge().await;
         }
 
-        true
+        self.entity.is_alive()
     }
 
     async fn sync_motion_if_dirty<'a>(
@@ -462,6 +503,7 @@ impl ItemEntity {
 )]
 mod tests {
     use super::ItemEntity;
+    use pumpkin_data::{item::Item, item_stack::ItemStack};
 
     #[test]
     fn item_motion_syncs_on_velocity_changes_and_landing_only() {
@@ -469,6 +511,24 @@ mod tests {
         assert!(ItemEntity::should_sync_motion(false, false, true));
         assert!(!ItemEntity::should_sync_motion(false, false, false));
         assert!(!ItemEntity::should_sync_motion(false, true, true));
+    }
+
+    #[test]
+    fn merge_eligibility_uses_item_components_not_equal_counts() {
+        let small = ItemStack::new(3, &Item::STONE);
+        let large = ItemStack::new(7, &Item::STONE);
+        let different = ItemStack::new(7, &Item::DIRT);
+        let empty = ItemStack::EMPTY.clone();
+
+        assert!(ItemEntity::stacks_can_merge(&small, &large));
+        assert!(!ItemEntity::stacks_can_merge(&small, &different));
+        assert!(!ItemEntity::stacks_can_merge(&small, &empty));
+    }
+
+    #[test]
+    fn pickup_accounting_never_underflows_after_stack_growth() {
+        assert_eq!(ItemEntity::picked_up_amount(10, 4), 6);
+        assert_eq!(ItemEntity::picked_up_amount(10, 20), 0);
     }
 }
 
@@ -527,6 +587,19 @@ impl EntityBase for ItemEntity {
     ) -> EntityBaseFuture<'a, ()> {
         Box::pin(async move {
             let entity = &self.entity;
+
+            let stack_is_empty = {
+                let _mutation = self.mutation_lock.lock().await;
+                if !entity.is_alive() {
+                    return;
+                }
+                self.item_stack.lock().await.is_empty()
+            };
+            if stack_is_empty {
+                entity.remove().await;
+                return;
+            }
+
             self.decrement_pickup_delay();
 
             let was_on_ground = entity.on_ground.load(Ordering::SeqCst);
@@ -598,20 +671,22 @@ impl EntityBase for ItemEntity {
                 return false;
             }
 
-            loop {
+            let should_remove = {
+                let _mutation = self.mutation_lock.lock().await;
+                if !self.entity.is_alive() {
+                    return false;
+                }
+
                 let current = self.health.load(Relaxed);
                 let new = current - amount;
-                if self
-                    .health
-                    .compare_exchange(current, new, AcqRel, Relaxed)
-                    .is_ok()
-                {
-                    if new <= 0.0 {
-                        self.entity.remove().await;
-                    }
-                    return true;
-                }
+                self.health.store(new, Relaxed);
+                new <= 0.0
+            };
+
+            if should_remove {
+                self.entity.remove().await;
             }
+            true
         })
     }
 
@@ -624,9 +699,20 @@ impl EntityBase for ItemEntity {
                 return;
             }
 
-            let (item_id, count_before, item_stack) = {
+            let (snapshot_epoch, item_stack, event_amount) = {
+                let _mutation = self.mutation_lock.lock().await;
+                if !self.entity.is_alive() {
+                    return;
+                }
                 let stack = self.item_stack.lock().await;
-                (stack.item.id, stack.item_count, stack.clone())
+                if stack.is_empty() {
+                    return;
+                }
+                (
+                    self.mutation_epoch.load(Ordering::Acquire),
+                    stack.clone(),
+                    stack.item_count,
+                )
             };
 
             let world = self.entity.world.load();
@@ -647,7 +733,7 @@ impl EntityBase for ItemEntity {
                             .get_item_entity()
                             .expect("entity should be an item"),
                         item_stack,
-                        count_before,
+                        event_amount,
                     ))
                     .await;
                 if event.cancelled {
@@ -655,58 +741,70 @@ impl EntityBase for ItemEntity {
                 }
             }
 
-            let inserted = {
+            let Some((item_id, amount_picked_up, is_empty)) = (async {
+                let _mutation = self.mutation_lock.lock().await;
+                if !self.entity.is_alive()
+                    || self.mutation_epoch.load(Ordering::Acquire) != snapshot_epoch
+                {
+                    return None;
+                }
+
                 let mut stack = self.item_stack.lock().await;
-                player.inventory.insert_stack_anywhere(&mut stack).await
+                if stack.is_empty() {
+                    return None;
+                }
+
+                let item_id = stack.item.id;
+                let count_before = stack.item_count;
+                if !player.inventory.insert_stack_anywhere(&mut stack).await {
+                    return None;
+                }
+                let count_after = stack.item_count;
+                let is_empty = stack.is_empty();
+                let amount_picked_up = Self::picked_up_amount(count_before, count_after);
+                if amount_picked_up == 0 {
+                    return None;
+                }
+                self.mutation_epoch.fetch_add(1, AcqRel);
+                Some((item_id, amount_picked_up, is_empty))
+            })
+            .await
+            else {
+                return;
             };
 
-            if inserted || player.is_creative() {
-                let (count_after, is_empty) = {
-                    let stack = self.item_stack.lock().await;
-                    (stack.item_count, stack.is_empty())
-                };
+            player
+                .increment_stat(
+                    StatisticCategory::PickedUp,
+                    item_id as i32,
+                    amount_picked_up as i32,
+                )
+                .await;
 
-                let amount_picked_up = if player.is_creative() {
-                    count_before
-                } else {
-                    count_before - count_after
-                };
+            player
+                .living_entity
+                .pickup(&self.entity, amount_picked_up.into(), is_empty)
+                .await;
 
-                if amount_picked_up > 0 {
-                    player
-                        .increment_stat(
-                            StatisticCategory::PickedUp,
-                            item_id as i32,
-                            amount_picked_up as i32,
-                        )
-                        .await;
-                }
+            // A pickup is an authoritative server-side mutation. Send the
+            // Java inventory through the priority stream before ordinary
+            // slot listeners can sit behind initial chunk/entity traffic.
+            player.sync_java_inventory_after_pickup().await;
 
-                player
-                    .living_entity
-                    .pickup(&self.entity, amount_picked_up.into(), is_empty)
-                    .await;
+            player
+                .current_screen_handler
+                .lock()
+                .await
+                .lock()
+                .await
+                .send_content_updates()
+                .await;
+            player.sync_bedrock_main_inventory().await;
 
-                // A pickup is an authoritative server-side mutation. Send the
-                // Java inventory through the priority stream before ordinary
-                // slot listeners can sit behind initial chunk/entity traffic.
-                player.sync_java_inventory_after_pickup().await;
-
-                player
-                    .current_screen_handler
-                    .lock()
-                    .await
-                    .lock()
-                    .await
-                    .send_content_updates()
-                    .await;
-                player.sync_bedrock_main_inventory().await;
-
-                if is_empty {
-                    self.entity.remove().await;
-                } else {
-                    self.init_data_tracker().await;
-                }
+            if is_empty {
+                self.entity.remove().await;
+            } else {
+                self.init_data_tracker().await;
             }
         })
     }

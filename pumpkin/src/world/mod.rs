@@ -4770,14 +4770,6 @@ impl World {
         if base_entity.is_removal_complete() {
             return EntityRemovalOutcome::AlreadyRemoved;
         }
-        if !base_entity.try_begin_removal() {
-            return if base_entity.is_removal_complete() {
-                EntityRemovalOutcome::AlreadyRemoved
-            } else {
-                EntityRemovalOutcome::InProgress
-            };
-        }
-
         let server = self.server.upgrade().expect("server is gone");
         let entity_arc = self
             .entities
@@ -4785,6 +4777,19 @@ impl World {
             .iter()
             .find(|e| e.get_entity().entity_uuid == base_entity.entity_uuid)
             .cloned();
+
+        let removal_claimed = if let Some(entity_arc) = &entity_arc {
+            self.try_begin_entity_removal(entity_arc).await
+        } else {
+            base_entity.try_begin_removal()
+        };
+        if !removal_claimed {
+            return if base_entity.is_removal_complete() {
+                EntityRemovalOutcome::AlreadyRemoved
+            } else {
+                EntityRemovalOutcome::InProgress
+            };
+        }
 
         let Some(entity_arc) = entity_arc else {
             base_entity.finish_removal(reason);
@@ -4819,6 +4824,14 @@ impl World {
         EntityRemovalOutcome::Removed
     }
 
+    async fn try_begin_entity_removal(&self, entity: &Arc<dyn EntityBase>) -> bool {
+        if let Some(item) = entity.clone().get_item_entity() {
+            item.try_begin_removal().await
+        } else {
+            entity.get_entity().try_begin_removal()
+        }
+    }
+
     pub async fn remove_entities_in_chunks(self: &Arc<Self>, chunks: &[Vector2<i32>]) {
         let _entity_tick_guard = self.entity_tick_gate.lock().await;
         let chunks_set: FxHashSet<_> = chunks.iter().copied().collect();
@@ -4836,7 +4849,7 @@ impl World {
         let server = self.server.upgrade().expect("server is gone");
         for entity in entities_to_remove {
             let base_entity = entity.get_entity();
-            if !base_entity.try_begin_removal() {
+            if !self.try_begin_entity_removal(&entity).await {
                 continue;
             }
 
