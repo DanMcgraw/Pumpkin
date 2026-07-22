@@ -35,7 +35,9 @@ use crate::{
         {OnNeighborUpdateArgs, OnScheduledTickArgs},
     },
     command::client_suggestions,
-    entity::{Entity, EntityBase, player::Player, r#type::from_type},
+    entity::{
+        Entity, EntityBase, EntityRemovalOutcome, RemovalReason, player::Player, r#type::from_type,
+    },
     error::PumpkinError,
     net::{ClientPlatform, java::JavaClient},
     plugin::{
@@ -173,7 +175,7 @@ fn item_player_collision_box(bounding_box: BoundingBox) -> BoundingBox {
 }
 
 fn should_process_entity_collisions(entity: &Entity) -> bool {
-    !entity.removed.load(Relaxed)
+    entity.is_alive()
 }
 
 const fn should_drop_block_items(event_allows_drops: bool, gamerule_allows_drops: bool) -> bool {
@@ -4746,7 +4748,28 @@ impl World {
 
     #[allow(clippy::unused_async)]
     pub async fn remove_entity(self: &Arc<Self>, entity: &dyn EntityBase) {
+        let _ = self
+            .remove_entity_with_reason(entity, RemovalReason::Discarded)
+            .await;
+    }
+
+    pub async fn remove_entity_with_reason(
+        self: &Arc<Self>,
+        entity: &dyn EntityBase,
+        reason: RemovalReason,
+    ) -> EntityRemovalOutcome {
         let base_entity = entity.get_entity();
+        if base_entity.is_removal_complete() {
+            return EntityRemovalOutcome::AlreadyRemoved;
+        }
+        if !base_entity.try_begin_removal() {
+            return if base_entity.is_removal_complete() {
+                EntityRemovalOutcome::AlreadyRemoved
+            } else {
+                EntityRemovalOutcome::InProgress
+            };
+        }
+
         let server = self.server.upgrade().expect("server is gone");
         let entity_arc = self
             .entities
@@ -4755,18 +4778,19 @@ impl World {
             .find(|e| e.get_entity().entity_uuid == base_entity.entity_uuid)
             .cloned();
 
-        if let Some(entity_arc) = entity_arc {
-            let event = EntityRemoveEvent::new(self.clone(), entity_arc);
-            let event = server.plugin_manager.fire(event).await;
-            if event.cancelled {
-                return;
-            }
+        let Some(entity_arc) = entity_arc else {
+            base_entity.finish_removal(reason);
+            return EntityRemovalOutcome::NotPresent;
+        };
+
+        let event = EntityRemoveEvent::new(self.clone(), entity_arc);
+        let event = server.plugin_manager.fire(event).await;
+        if event.cancelled {
+            base_entity.cancel_removal();
+            return EntityRemovalOutcome::Cancelled;
         }
 
-        // Entity tick tasks retain Arc references after an entity leaves the
-        // live registry. Mark approved removals before mutating the registry so
-        // those tasks do not continue into collision handling.
-        base_entity.removed.store(true, Relaxed);
+        base_entity.finish_removal(reason);
 
         self.spawn_state.load().remove_entity(self, entity);
         self.remove_entity_from_chunk_index(entity);
@@ -4783,6 +4807,8 @@ impl World {
             &CRemoveActor::new(VarLong(base_entity.entity_id as i64)),
         )
         .await;
+
+        EntityRemovalOutcome::Removed
     }
 
     pub async fn remove_entities_in_chunks(self: &Arc<Self>, chunks: &[Vector2<i32>]) {
@@ -6640,8 +6666,42 @@ mod entity_chunk_index_tests {
         let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
 
         assert!(should_process_entity_collisions(entity.get_entity()));
-        entity.get_entity().removed.store(true, Relaxed);
+        entity.get_entity().finish_removal(RemovalReason::Discarded);
         assert!(!should_process_entity_collisions(entity.get_entity()));
+    }
+
+    #[tokio::test]
+    async fn entity_removal_lifecycle_is_claimed_cancelled_and_finished() {
+        let world = create_test_world();
+        let entity = create_entity(&world, Vector3::new(1.0, 64.0, 1.0));
+        let base = entity.get_entity();
+
+        assert!(base.is_alive());
+        assert!(base.try_begin_removal());
+        assert!(base.is_removing());
+        assert!(!base.is_alive());
+        assert!(!base.try_begin_removal());
+
+        base.cancel_removal();
+        assert!(base.is_alive());
+        assert!(base.try_begin_removal());
+        base.finish_removal(RemovalReason::Killed);
+
+        assert!(base.is_removed());
+        assert!(!base.is_removing());
+        assert_eq!(base.removal_reason.load(), Some(RemovalReason::Killed));
+
+        base.reset_removal_state();
+        assert!(base.is_alive());
+        assert_eq!(base.removal_reason.load(), None);
+
+        // Existing native plugins may set the public legacy fields before
+        // asking Pumpkin to perform the actual registry removal.
+        base.removed.store(true, Relaxed);
+        base.removal_reason.store(Some(RemovalReason::Discarded));
+        assert!(base.try_begin_removal());
+        base.finish_removal(RemovalReason::Discarded);
+        assert!(base.is_removal_complete());
     }
 
     #[tokio::test]

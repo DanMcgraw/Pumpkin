@@ -713,13 +713,22 @@ pub trait EntityBase: Send + Sync + NBTStorage + std::any::Any {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RemovalReason {
     Killed,
     Discarded,
     UnloadedToChunk,
     UnloadedWithPlayer,
     ChangedDimension,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EntityRemovalOutcome {
+    Removed,
+    Cancelled,
+    AlreadyRemoved,
+    InProgress,
+    NotPresent,
 }
 
 impl RemovalReason {
@@ -861,6 +870,10 @@ pub struct Entity {
     pub velocity_dirty: AtomicBool,
     /// Set when an Entity is to be removed but could still be referenced
     pub removed: AtomicBool,
+    /// Serializes the cancellable portion of entity removal.
+    removal_in_progress: AtomicBool,
+    /// Internal completion state, independent of legacy plugin-managed fields.
+    removal_completed: AtomicBool,
     /// The last sent yaw value (encoded as u8) for change detection
     pub last_sent_yaw: AtomicU8,
     /// The last sent pitch value (encoded as u8) for change detection
@@ -983,6 +996,8 @@ impl Entity {
             movement_multiplier: AtomicCell::new(Vector3::default()),
             velocity_dirty: AtomicBool::new(true),
             removed: AtomicBool::new(false),
+            removal_in_progress: AtomicBool::new(false),
+            removal_completed: AtomicBool::new(false),
             last_sent_yaw: AtomicU8::new(0),
             last_sent_pitch: AtomicU8::new(0),
             last_sent_head_yaw: AtomicU8::new(0),
@@ -2503,7 +2518,14 @@ impl Entity {
 
     /// Removes the `Entity` from their current `World`
     pub async fn remove(&self) {
-        self.world.load().remove_entity(self).await;
+        let _ = self.remove_with_reason(RemovalReason::Discarded).await;
+    }
+
+    pub async fn remove_with_reason(&self, reason: RemovalReason) -> EntityRemovalOutcome {
+        self.world
+            .load()
+            .remove_entity_with_reason(self, reason)
+            .await
     }
 
     pub fn create_spawn_packet(&self) -> CSpawnEntity {
@@ -3015,11 +3037,57 @@ impl Entity {
     }
 
     pub fn is_removed(&self) -> bool {
-        self.removal_reason.load().is_some()
+        self.removal_completed.load(Ordering::Acquire)
+            || self.removed.load(Ordering::Acquire)
+            || self.removal_reason.load().is_some()
+    }
+
+    pub fn is_removing(&self) -> bool {
+        self.removal_in_progress.load(Ordering::Acquire)
     }
 
     pub fn is_alive(&self) -> bool {
-        !self.is_removed()
+        !self.is_removed() && !self.is_removing()
+    }
+
+    pub(crate) fn try_begin_removal(&self) -> bool {
+        if self.removal_completed.load(Ordering::Acquire)
+            || self
+                .removal_in_progress
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return false;
+        }
+
+        if self.removal_completed.load(Ordering::Acquire) {
+            self.removal_in_progress.store(false, Ordering::Release);
+            return false;
+        }
+
+        true
+    }
+
+    pub(crate) fn cancel_removal(&self) {
+        self.removal_in_progress.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn finish_removal(&self, reason: RemovalReason) {
+        self.removal_reason.store(Some(reason));
+        self.removed.store(true, Ordering::Release);
+        self.removal_completed.store(true, Ordering::Release);
+        self.removal_in_progress.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn reset_removal_state(&self) {
+        self.removal_reason.store(None);
+        self.removed.store(false, Ordering::Release);
+        self.removal_completed.store(false, Ordering::Release);
+        self.removal_in_progress.store(false, Ordering::Release);
+    }
+
+    pub(crate) fn is_removal_complete(&self) -> bool {
+        self.removal_completed.load(Ordering::Acquire)
     }
 
     pub async fn has_passengers(&self) -> bool {

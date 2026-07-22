@@ -4315,7 +4315,7 @@ impl Player {
         living.fall_distance.store(0.0);
         living.death_time.store(0, Ordering::Relaxed);
         living.dead.store(false, Ordering::Relaxed);
-        living.entity.removed.store(false, Ordering::Relaxed);
+        living.entity.reset_removal_state();
         living.entity.velocity.store(Vector3::default());
         living.entity.extinguish();
         living.movement_input.store(Vector3::default());

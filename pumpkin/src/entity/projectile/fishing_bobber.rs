@@ -158,7 +158,7 @@ impl FishingBobberEntity {
         let hooked_id = self.hooked_entity_id.load(Ordering::Relaxed);
         if hooked_id != 0 {
             if let Some(hooked) = world.get_entity_by_id(hooked_id) {
-                if hooked.get_entity().removed.load(Ordering::Relaxed) {
+                if hooked.get_entity().is_removed() {
                     self.hooked_entity_id.store(0, Ordering::Relaxed);
                 } else {
                     let mut hooked_pos = hooked.get_entity().pos.load();

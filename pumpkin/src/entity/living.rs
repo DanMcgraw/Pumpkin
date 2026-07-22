@@ -3002,13 +3002,16 @@ impl EntityBase for LivingEntity {
                 // tick 20 and are removed once. Session players must remain in
                 // the world while their client is on the death screen.
                 if should_remove_after_death(self.entity.entity_type, time)
-                    && !self.entity.removed.swap(true, Ordering::Relaxed)
+                    && self.entity.is_alive()
                 {
                     self.entity
                         .world
                         .load()
                         .send_entity_status(&self.entity, EntityStatus::Death);
-                    self.entity.remove().await;
+                    let _ = self
+                        .entity
+                        .remove_with_reason(crate::entity::RemovalReason::Killed)
+                        .await;
                 }
             }
         })

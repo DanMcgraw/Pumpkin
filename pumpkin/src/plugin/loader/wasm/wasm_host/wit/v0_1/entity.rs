@@ -441,7 +441,7 @@ impl HostEntity for PluginHostState {
     async fn is_dead(&mut self, entity: Resource<Entity>) -> wasmtime::Result<bool> {
         let entity = entity_from_resource(self, &entity)?;
         Ok(entity.get_living_entity().map_or_else(
-            || entity.get_entity().removal_reason.load().is_some(),
+            || entity.get_entity().is_removed(),
             |living| living.dead.load(std::sync::atomic::Ordering::Relaxed),
         ))
     }
