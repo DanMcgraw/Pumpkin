@@ -127,6 +127,7 @@ pub trait PluginGuiHandler: Send + Sync {
     }
 }
 
+#[cfg_attr(not(feature = "wasm-plugins"), allow(dead_code))]
 pub(crate) struct PassthroughPluginGuiHandler;
 
 impl PluginGuiHandler for PassthroughPluginGuiHandler {

@@ -25,7 +25,9 @@ pub mod loader;
 /// host features.
 pub mod permissions;
 
-use crate::{LOGGER_IMPL, plugin::loader::wasm::WasmPluginLoader, server::Server};
+#[cfg(feature = "wasm-plugins")]
+use crate::plugin::loader::wasm::WasmPluginLoader;
+use crate::{LOGGER_IMPL, server::Server};
 pub use api::*;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -225,12 +227,23 @@ pub enum ManagerError {
 
 impl Default for PluginManager {
     fn default() -> Self {
+        let wasm_loader: Option<Arc<dyn PluginLoader>> = {
+            #[cfg(feature = "wasm-plugins")]
+            {
+                Some(Arc::new(WasmPluginLoader))
+            }
+            #[cfg(not(feature = "wasm-plugins"))]
+            {
+                None
+            }
+        };
+        let loaders = std::iter::once(Arc::new(NativePluginLoader) as Arc<dyn PluginLoader>)
+            .chain(wasm_loader)
+            .collect();
+
         Self {
             plugins: RwLock::new(Vec::new()),
-            loaders: RwLock::new(vec![
-                Arc::new(NativePluginLoader),
-                Arc::new(WasmPluginLoader),
-            ]),
+            loaders: RwLock::new(loaders),
             server: RwLock::new(None),
             handlers: Arc::new(RwLock::new(HashMap::new())),
             unloaded_files: RwLock::new(HashSet::new()),

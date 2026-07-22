@@ -98,10 +98,10 @@ rustc_version_runtime.workspace = true
 flate2.workspace = true
 console-subscriber = { workspace = true, optional = true }
 
-wasmtime = { workspace = true }
-wasmtime-wasi = { workspace = true }
-wasmtime-wasi-http = { workspace = true }
-hyper = { workspace = true }
+wasmtime = { workspace = true, optional = true }
+wasmtime-wasi = { workspace = true, optional = true }
+wasmtime-wasi-http = { workspace = true, optional = true }
+hyper = { workspace = true, optional = true }
 
 ordered-float.workspace = true
 
@@ -117,7 +117,16 @@ indexmap.workspace = true
 tempfile.workspace = true
 
 [features]
+# The server keeps WASM support by default. Native-only plugin builds can
+# disable default features to avoid compiling the WASM/WASI host stack.
+default = ["wasm-plugins"]
 console-subscriber = ["dep:console-subscriber"]
+wasm-plugins = [
+    "dep:hyper",
+    "dep:wasmtime",
+    "dep:wasmtime-wasi",
+    "dep:wasmtime-wasi-http",
+]
 
 [lints]
 workspace = true

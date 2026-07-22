@@ -1,8 +1,10 @@
+#[cfg(feature = "wasm-plugins")]
 use crate::plugin::loader::wasm::wasm_host::WasmPlugin;
 use crate::server::Server;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashSet};
 use std::sync::Arc;
+#[cfg(feature = "wasm-plugins")]
 use std::sync::atomic::Ordering as AtomicOrdering;
 use tokio::sync::Mutex;
 
@@ -10,6 +12,7 @@ pub type TaskId = u32;
 
 pub struct ScheduledTask {
     pub id: TaskId,
+    #[cfg(feature = "wasm-plugins")]
     pub plugin: Arc<WasmPlugin>,
     pub handler_id: u32,
     pub next_tick: u64,
@@ -37,6 +40,7 @@ impl Ord for ScheduledTask {
     }
 }
 
+#[cfg_attr(not(feature = "wasm-plugins"), allow(dead_code))]
 pub struct TaskScheduler {
     tasks: Mutex<BinaryHeap<ScheduledTask>>,
     cancelled_tasks: Mutex<HashSet<TaskId>>,
@@ -59,6 +63,7 @@ impl TaskScheduler {
         }
     }
 
+    #[cfg(feature = "wasm-plugins")]
     pub async fn schedule_delayed_task(
         &self,
         plugin: Arc<WasmPlugin>,
@@ -78,6 +83,7 @@ impl TaskScheduler {
         id
     }
 
+    #[cfg(feature = "wasm-plugins")]
     pub async fn schedule_repeating_task(
         &self,
         plugin: Arc<WasmPlugin>,
@@ -102,6 +108,7 @@ impl TaskScheduler {
         self.cancelled_tasks.lock().await.insert(id);
     }
 
+    #[cfg(feature = "wasm-plugins")]
     pub async fn cancel_all_tasks(&self, plugin: &Arc<WasmPlugin>) {
         let tasks = self.tasks.lock().await;
         let mut cancelled = self.cancelled_tasks.lock().await;
@@ -112,6 +119,7 @@ impl TaskScheduler {
         }
     }
 
+    #[cfg(feature = "wasm-plugins")]
     pub async fn tick(&self, server: &Arc<Server>) {
         let current_tick = server.tick_count.load(AtomicOrdering::Relaxed) as u64;
         let mut tasks_to_run = Vec::new();
@@ -160,4 +168,7 @@ impl TaskScheduler {
             }
         }
     }
+
+    #[cfg(not(feature = "wasm-plugins"))]
+    pub async fn tick(&self, _server: &Arc<Server>) {}
 }

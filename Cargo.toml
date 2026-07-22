@@ -112,7 +112,7 @@ debug = 0
 
 [workspace.dependencies]
 serde_json5 = "0.2.1"
-tokio = { version = "1.52", default-features = false }
+tokio = { version = "1.53.1", default-features = false }
 syn = { version = "2.0", default-features = false, features = ["printing"] }
 
 thiserror = { version = "2.0", default-features = false }
@@ -120,14 +120,14 @@ thiserror = { version = "2.0", default-features = false }
 bytes = { version = "1.12", default-features = false, features = ["std"] }
 
 # Concurrency/Parallelism and Synchronization
-futures = { version = "0.3", default-features = false, features = ["executor"] }
+futures = { version = "0.3.33", default-features = false, features = ["executor"] }
 rayon = { version = "1.12", default-features = false }
 crossbeam = { version = "0.8", default-features = false, features = ["std"] }
 
-uuid = { version = "1.23", default-features = false, features = ["serde", "v3", "v4", "std"] }
-serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+uuid = { version = "1.24.0", default-features = false, features = ["serde", "v3", "v4", "std"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive", "std"] }
 serde_repr = { version = "0.1", default-features = false }
-serde_json = { version = "1.0", default-features = false, features = ["std"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
 
 tempfile = { version = "3.27.0", default-features = false }
 proc-macro-error2 = { version = "2", default-features = false }
@@ -201,14 +201,14 @@ toml = { version = "1.1", default-features = false, features = ["parse", "displa
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
 
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 rustc_version_runtime = { version = "0.3", default-features = false }
 ordered-float = { version = "5.3", default-features = false, features = ["std"] }
 xxhash-rust = { version = "0.8", default-features = false, features = ["xxh64"] }
 
-wasmtime = { version = "46.0", default-features = false, features = ["runtime", "component-model", "async", "cache", "cranelift", "gc", "gc-drc", "threads", "std"] }
-wasmtime-wasi = { version = "46.0", default-features = false, features = ["p2"] }
-wasmtime-wasi-http = { version = "46.0", default-features = false, features = ["p2", "default-send-request"] }
+wasmtime = { version = "46.0.1", default-features = false, features = ["runtime", "component-model", "async", "cache", "cranelift", "gc", "gc-drc", "threads", "std"] }
+wasmtime-wasi = { version = "46.0.1", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = { version = "46.0.1", default-features = false, features = ["p2", "default-send-request"] }
 # needed for interacting with wasmtime-wasi-http - keep in sync
 hyper = { version = "^1.10", default-features = false }
 wit-bindgen = { version = "0.58", default-features = false, features = ["macros"] }

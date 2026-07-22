@@ -1,8 +1,11 @@
-use crate::plugin::{PluginMetadata, api::Plugin, loader::wasm::wasm_host::PluginInitError};
+#[cfg(feature = "wasm-plugins")]
+use crate::plugin::loader::wasm::wasm_host::PluginInitError;
+use crate::plugin::{PluginMetadata, api::Plugin};
 use std::{any::Any, path::Path, pin::Pin};
 use thiserror::Error;
 
 pub mod native;
+#[cfg(feature = "wasm-plugins")]
 pub mod wasm;
 
 pub type PluginLoadFuture<'a> = Pin<
@@ -67,6 +70,7 @@ pub enum LoaderError {
         server_version: u32,
     },
 
+    #[cfg(feature = "wasm-plugins")]
     #[error("Wasm plugin initialization error: {0}")]
     WasmInitializationError(#[from] PluginInitError),
 }
