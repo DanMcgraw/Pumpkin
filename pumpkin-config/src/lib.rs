@@ -239,8 +239,9 @@ impl BasicConfiguration {
 }
 
 impl AdvancedConfiguration {
-    pub const fn validate(&self) {
+    pub fn validate(&self) {
         //self.resource_pack.validate();
+        self.world.validate();
     }
 }
 

@@ -162,9 +162,18 @@ impl ItemEntity {
     }
 
     async fn try_merge(&self) {
-        let bounding_box = self.entity.bounding_box.load().expand(0.5, 0.0, 0.5);
-
         let world = self.entity.world.load();
+        let merge_distance = world
+            .server
+            .upgrade()
+            .map(|server| server.advanced_config.world.item_merge_distance)
+            .unwrap_or(0.5);
+        let bounding_box =
+            self.entity
+                .bounding_box
+                .load()
+                .expand(merge_distance, 0.0, merge_distance);
+
         let entities = world.entities.load();
         let items = entities.iter().filter_map(|entity: &Arc<dyn EntityBase>| {
             entity.clone().get_item_entity().filter(|item| {
