@@ -246,6 +246,8 @@ pub struct World {
     /// A chunk-level spatial index of live entities. Each key is a chunk position
     /// and the value is the list of entities currently in that chunk.
     pub entities_by_chunk: DashMap<Vector2<i32>, Vec<Arc<dyn EntityBase>>>,
+    /// Prevents chunk unload/save from overlapping the entity tick phase.
+    entity_tick_gate: Mutex<()>,
     game_event_dispatcher: game_event::GameEventDispatcher,
     /// Handle to the async runtime for firing sync-to-async plugin events.
     runtime: Option<tokio::runtime::Handle>,
@@ -424,6 +426,7 @@ impl World {
                 server,
                 block_entities: DashMap::new(),
                 entities_by_chunk: DashMap::new(),
+                entity_tick_gate: Mutex::new(()),
                 game_event_dispatcher: game_event::GameEventDispatcher::new(),
                 runtime,
             };
@@ -1122,11 +1125,16 @@ impl World {
             t.elapsed()
         };
 
+        // Candidate collection and ticking share the unload gate. Acquiring it
+        // before collecting prevents an unload from detaching entities between
+        // the snapshot and the start of their tasks.
+        let entity_tick_guard = self.entity_tick_gate.lock().await;
         let entities_to_tick = self.collect_entity_tick_candidates();
         let _entity_count = entities_to_tick.len();
         let server_for_entities = server.clone();
 
         let entity_future = async move {
+            let _entity_tick_guard = entity_tick_guard;
             let t = tokio::time::Instant::now();
             let mut tasks = tokio::task::JoinSet::new();
             for e_clone in entities_to_tick {
@@ -4812,49 +4820,44 @@ impl World {
     }
 
     pub async fn remove_entities_in_chunks(self: &Arc<Self>, chunks: &[Vector2<i32>]) {
+        let _entity_tick_guard = self.entity_tick_gate.lock().await;
         let chunks_set: FxHashSet<_> = chunks.iter().copied().collect();
-        let mut entities_to_remove = Vec::new();
 
         self.save_block_entities_in_chunks(chunks).await;
 
-        self.entities.rcu(|current_entities| {
-            let mut new_entities = (**current_entities).clone();
-            new_entities.retain(|entity| {
-                let base_entity = entity.get_entity();
-                let pos = base_entity.chunk_pos.load();
-                if chunks_set.contains(&pos) {
-                    entities_to_remove.push(entity.clone());
-                    false
-                } else {
-                    true
-                }
-            });
-            new_entities
-        });
+        let entities_to_remove = self
+            .entities
+            .load()
+            .iter()
+            .filter(|entity| chunks_set.contains(&entity.get_entity().chunk_pos.load()))
+            .cloned()
+            .collect::<Vec<_>>();
 
         let server = self.server.upgrade().expect("server is gone");
         for entity in entities_to_remove {
-            let chunk_pos = entity.get_entity().chunk_pos.load();
-            let event = ChunkEntityUnloadEvent::new(self.clone(), entity.clone(), chunk_pos);
-            let event = server.plugin_manager.fire(event).await;
-            if event.cancelled {
-                // If the unload is cancelled, put the entity back into the flat list.
-                self.entities.rcu(|current_entities| {
-                    let mut new_entities = (**current_entities).clone();
-                    if !new_entities
-                        .iter()
-                        .any(|e| e.get_entity().entity_uuid == entity.get_entity().entity_uuid)
-                    {
-                        new_entities.push(entity.clone());
-                    }
-                    new_entities
-                });
+            let base_entity = entity.get_entity();
+            if !base_entity.try_begin_removal() {
                 continue;
             }
 
+            let chunk_pos = base_entity.chunk_pos.load();
+            let event = ChunkEntityUnloadEvent::new(self.clone(), entity.clone(), chunk_pos);
+            let event = server.plugin_manager.fire(event).await;
+            if event.cancelled {
+                base_entity.cancel_removal();
+                continue;
+            }
+
+            base_entity.finish_removal(RemovalReason::UnloadedToChunk);
             self.save_entity(&entity).await;
             self.spawn_state.load().remove_entity(self, entity.as_ref());
             self.remove_entity_from_chunk_index(entity.as_ref());
+            self.entities.rcu(|current_entities| {
+                let mut new_entities = (**current_entities).clone();
+                new_entities
+                    .retain(|current| current.get_entity().entity_uuid != base_entity.entity_uuid);
+                new_entities
+            });
         }
 
         for chunk_pos in &chunks_set {
@@ -6702,6 +6705,29 @@ mod entity_chunk_index_tests {
         assert!(base.try_begin_removal());
         base.finish_removal(RemovalReason::Discarded);
         assert!(base.is_removal_complete());
+    }
+
+    #[tokio::test]
+    async fn entity_tick_gate_serializes_unload_work() {
+        use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+        let world = create_test_world();
+        let tick_guard = world.entity_tick_gate.lock().await;
+        let entered = Arc::new(AtomicBool::new(false));
+        let task_world = world.clone();
+        let task_entered = entered.clone();
+
+        let waiter = tokio::spawn(async move {
+            let _unload_guard = task_world.entity_tick_gate.lock().await;
+            task_entered.store(true, AtomicOrdering::Release);
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!entered.load(AtomicOrdering::Acquire));
+
+        drop(tick_guard);
+        waiter.await.expect("gate waiter should complete");
+        assert!(entered.load(AtomicOrdering::Acquire));
     }
 
     #[tokio::test]
