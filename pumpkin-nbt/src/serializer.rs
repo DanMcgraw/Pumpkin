@@ -185,6 +185,48 @@ impl<W: Write> NbtWriteHelper for NbtWriteHelperBedrock<W> {
     }
 }
 
+/// Writes the fixed-width little-endian NBT representation used inside
+/// Bedrock item user-data buffers. This is distinct from Bedrock network NBT,
+/// whose integer and string lengths use variable-width encoding.
+pub struct NbtWriteHelperLittleEndian<W: Write> {
+    writer: W,
+}
+
+impl<W: Write> NbtWriteHelperLittleEndian<W> {
+    pub const fn new(writer: W) -> Self {
+        Self { writer }
+    }
+
+    define_write_number_le!(write_string_len, u16);
+}
+
+impl<W: Write> NbtWriteHelper for NbtWriteHelperLittleEndian<W> {
+    type Writer = W;
+
+    fn writer(&mut self) -> &mut Self::Writer {
+        &mut self.writer
+    }
+
+    define_write_number_le!(write_u8, u8);
+    define_write_number_le!(write_i8, i8);
+    define_write_number_le!(write_i16, i16);
+    define_write_number_le!(write_i32, i32);
+    define_write_number_le!(write_i64, i64);
+    define_write_number_le!(write_f32, f32);
+    define_write_number_le!(write_f64, f64);
+
+    fn write_string(&mut self, value: &str) -> Result<()> {
+        let bytes = value.as_bytes();
+        if bytes.len() > u16::MAX as usize {
+            return Err(Error::LargeLength(bytes.len()));
+        }
+
+        self.write_string_len(bytes.len() as u16)?;
+        self.writer.write_all(bytes).map_err(Error::Incomplete)?;
+        Ok(())
+    }
+}
+
 pub struct Serializer<W: NbtWriteHelper> {
     output: W,
     state: State,
@@ -303,6 +345,22 @@ pub fn to_bytes<T: Serialize>(value: &T, w: impl Write) -> Result<()> {
 
 pub fn to_bytes_bedrock<T: Serialize>(value: &T, w: impl Write) -> Result<()> {
     to_bytes_named_bedrock(value, String::new(), w)
+}
+
+/// Serializes a value as named, fixed-width little-endian NBT.
+pub fn to_bytes_named_little_endian<T: Serialize>(
+    value: &T,
+    name: String,
+    w: impl Write,
+) -> Result<()> {
+    let mut serializer = Serializer::new(NbtWriteHelperLittleEndian::new(w), Some(name));
+    value.serialize(&mut serializer)?;
+    Ok(())
+}
+
+/// Serializes a value as fixed-width little-endian NBT with an empty root name.
+pub fn to_bytes_little_endian<T: Serialize>(value: &T, w: impl Write) -> Result<()> {
+    to_bytes_named_little_endian(value, String::new(), w)
 }
 
 impl<W: NbtWriteHelper> ser::Serializer for &mut Serializer<W> {

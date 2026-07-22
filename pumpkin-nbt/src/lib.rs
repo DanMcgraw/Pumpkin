@@ -7,7 +7,9 @@ use std::{
 use bytes::Bytes;
 use deserializer::NbtReadHelper;
 use serde::{de, ser};
-use serializer::{NbtWriteHelper, NbtWriteHelperBedrock, NbtWriteHelperJava};
+use serializer::{
+    NbtWriteHelper, NbtWriteHelperBedrock, NbtWriteHelperJava, NbtWriteHelperLittleEndian,
+};
 use tag::NbtTag;
 use thiserror::Error;
 
@@ -156,6 +158,25 @@ impl Nbt {
         Ok(())
     }
 
+    /// Writes fixed-width little-endian NBT, as used by Bedrock item user data.
+    #[must_use]
+    pub fn write_little_endian(self) -> Bytes {
+        let mut bytes = Vec::new();
+        let mut writer = NbtWriteHelperLittleEndian::new(&mut bytes);
+        writer.write_u8(COMPOUND_ID).unwrap();
+        NbtTag::String(self.name.into())
+            .serialize_data(&mut writer)
+            .unwrap();
+        self.root_tag.serialize_content(&mut writer).unwrap();
+
+        bytes.into()
+    }
+
+    pub fn write_to_writer_little_endian<W: Write>(self, mut writer: W) -> Result<(), io::Error> {
+        writer.write_all(&self.write_little_endian())?;
+        Ok(())
+    }
+
     /// Writes an NBT tag without a root `Compound` name.
     #[must_use]
     pub fn write_unnamed(self) -> Bytes {
@@ -272,6 +293,23 @@ mod test {
         let recreated_struct: Test = from_bytes_unnamed(Cursor::new(bytes)).unwrap();
 
         assert_eq!(test, recreated_struct);
+    }
+
+    #[test]
+    fn fixed_little_endian_nbt_uses_u16_names_and_fixed_width_integers() {
+        let mut root = NbtCompound::new();
+        root.put_int("value", 0x0102_0304);
+
+        let bytes = crate::Nbt::new(String::new(), root).write_little_endian();
+        assert_eq!(
+            bytes.as_ref(),
+            [
+                0x0a, 0x00, 0x00, // root compound and empty u16-LE name
+                0x03, 0x05, 0x00, b'v', b'a', b'l', b'u', b'e', 0x04, 0x03, 0x02,
+                0x01, // fixed-width little-endian i32
+                0x00, // end compound
+            ]
+        );
     }
 
     #[test]

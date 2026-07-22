@@ -1,14 +1,73 @@
 use std::io::{Error, Read, Write};
 use std::num::NonZeroI32;
 
-use pumpkin_data::item::{BedrockItem, JavaToBedrockItemMapping};
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_nbt::Nbt;
+use pumpkin_data::{
+    data_component_impl::{CustomNameImpl, LoreImpl},
+    item::{BedrockItem, JavaToBedrockItemMapping},
+};
+use pumpkin_nbt::{Nbt, compound::NbtCompound, tag::NbtTag};
+use pumpkin_util::translation::Locale;
 
 use crate::{
     codec::{var_int::VarInt, var_uint::VarUInt},
     serial::{PacketRead, PacketWrite},
 };
+
+/// Translates the Java item components Bedrock reads from the legacy item NBT
+/// payload. Without this `display` compound, Bedrock renders only the vanilla
+/// item name even though Java clients receive the custom name and lore.
+fn bedrock_item_nbt(stack: &ItemStack) -> Nbt {
+    let custom_name = stack
+        .get_data_component::<CustomNameImpl>()
+        .map(|component| component.name.0.to_bedrock_legacy(Locale::EnUs));
+    let lore = stack.get_data_component::<LoreImpl>().map(|component| {
+        component
+            .lines
+            .iter()
+            .map(|line| line.0.to_bedrock_legacy(Locale::EnUs))
+            .collect::<Vec<_>>()
+    });
+
+    if custom_name.is_none() && lore.as_ref().is_none_or(Vec::is_empty) {
+        return Nbt::default();
+    }
+
+    let mut display = NbtCompound::new();
+    if let Some(custom_name) = custom_name {
+        display.put_string("Name", custom_name);
+    }
+    if let Some(lore) = lore.filter(|lines| !lines.is_empty()) {
+        display.put_list(
+            "Lore",
+            lore.into_iter()
+                .map(|line| NbtTag::String(line.into()))
+                .collect(),
+        );
+    }
+
+    let mut root = NbtCompound::new();
+    root.put_compound("display", display);
+    Nbt::new(String::new(), root)
+}
+
+fn item_v4_extra_data(stack: &ItemStack, is_shield: bool) -> Vec<u8> {
+    let nbt = bedrock_item_nbt(stack);
+    let mut extra_data = Vec::new();
+    if nbt.is_empty() {
+        extra_data.extend_from_slice(&0i16.to_le_bytes());
+    } else {
+        extra_data.extend_from_slice(&(-1i16).to_le_bytes());
+        extra_data.push(1);
+        extra_data.extend_from_slice(&nbt.write_little_endian());
+    }
+    extra_data.extend_from_slice(&0u32.to_le_bytes()); // can place on
+    extra_data.extend_from_slice(&0u32.to_le_bytes()); // can destroy
+    if is_shield {
+        extra_data.extend_from_slice(&0i64.to_le_bytes());
+    }
+    extra_data
+}
 
 #[derive(Default, Clone, Debug)]
 pub struct NetworkItemDescriptor {
@@ -120,7 +179,9 @@ impl NetworkItemDescriptor {
                 (-1i16).write(&mut buf)?;
                 (1i8).write(&mut buf)?;
 
-                self.nbt_data.clone().write_to_writer_bedrock(&mut buf)?;
+                self.nbt_data
+                    .clone()
+                    .write_to_writer_little_endian(&mut buf)?;
             }
 
             (self.place_on_blocks.len() as u32).write(&mut buf)?;
@@ -152,7 +213,7 @@ impl From<&ItemStack> for NetworkItemDescriptor {
                     stack_size: stack.item_count as u16,
                     aux_value: VarUInt(mapping.bedrock_data),
                     block_runtime_id: VarInt::from(mapping.bedrock_block_state),
-                    nbt_data: Nbt::default(),
+                    nbt_data: bedrock_item_nbt(stack),
                     place_on_blocks: Vec::default(),
                     destroy_blocks: Vec::default(),
                     shield_blocking_tick: 0,
@@ -200,7 +261,9 @@ impl PacketWrite for ItemStackWrapper {
                 (-1i16).write(&mut buf)?;
                 (1i8).write(&mut buf)?;
 
-                self.nbt_data.clone().write_to_writer_bedrock(&mut buf)?;
+                self.nbt_data
+                    .clone()
+                    .write_to_writer_little_endian(&mut buf)?;
             }
 
             (self.place_on_blocks.len() as u32).write(&mut buf)?;
@@ -284,7 +347,7 @@ impl From<&ItemStack> for ItemStackWrapper {
                     stack_size: stack.item_count as u16,
                     aux_value: VarUInt(mapping.bedrock_data),
                     block_runtime_id: VarInt::from(mapping.bedrock_block_state),
-                    nbt_data: Nbt::default(),
+                    nbt_data: bedrock_item_nbt(stack),
                     place_on_blocks: Vec::default(),
                     destroy_blocks: Vec::default(),
                     shield_blocking_tick: 0,
@@ -374,10 +437,10 @@ impl From<&ItemStack> for NetworkItemStackDescriptor {
                     // ItemV4's opaque network-user-data buffer still contains
                     // the legacy payload: NBT marker followed by fixed-width
                     // can-place and can-destroy list lengths.
-                    let mut extra_data = vec![0u8; 10];
-                    if mapping.bedrock_item.id == BedrockItem::SHIELD.id {
-                        extra_data.extend_from_slice(&0i64.to_le_bytes());
-                    }
+                    let extra_data = item_v4_extra_data(
+                        stack,
+                        mapping.bedrock_item.id == BedrockItem::SHIELD.id,
+                    );
 
                     Self {
                         id: mapping.bedrock_item.id,
@@ -402,11 +465,13 @@ mod tests {
         item::{BedrockItem, Item, JavaToBedrockItemMapping},
         item_stack::ItemStack,
     };
+    use pumpkin_util::text::{TextComponent, color::NamedColor};
 
     use crate::serial::PacketWrite;
 
     use super::{
         ContainerName, ItemStackWrapper, NetworkItemDescriptor, NetworkItemStackDescriptor,
+        bedrock_item_nbt,
     };
 
     #[test]
@@ -430,6 +495,31 @@ mod tests {
         let item = NetworkItemStackDescriptor::from(&stack);
 
         assert_eq!(item.extra_data, vec![0; 10]);
+    }
+
+    #[test]
+    fn item_v4_translates_custom_name_and_lore_to_bedrock_display_nbt() {
+        let mut stack = ItemStack::new(1, &Item::FEATHER);
+        stack.set_custom_name("Acrobatics - Level 4".to_owned());
+        stack.set_lore(vec![
+            TextComponent::text("Progress: 20/100 XP (20%)").color_named(NamedColor::Yellow),
+            TextComponent::text("Total XP: 320").color_named(NamedColor::Gray),
+        ]);
+
+        let nbt = bedrock_item_nbt(&stack);
+        let display = nbt.get_compound("display").unwrap();
+        assert_eq!(display.get_string("Name"), Some("Acrobatics - Level 4"));
+        let lore = display.get_list("Lore").unwrap();
+        assert_eq!(lore.len(), 2);
+        assert_eq!(
+            lore[0].extract_string(),
+            Some("§eProgress: 20/100 XP (20%)")
+        );
+        assert_eq!(lore[1].extract_string(), Some("§7Total XP: 320"));
+
+        let item = NetworkItemStackDescriptor::from(&stack);
+        assert_eq!(&item.extra_data[..6], &[0xff, 0xff, 1, 0x0a, 0x00, 0x00]);
+        assert!(item.extra_data.len() > 10);
     }
 
     #[test]
