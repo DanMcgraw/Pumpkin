@@ -3981,7 +3981,7 @@ impl Player {
         let state_id = behaviour.next_revision();
 
         client
-            .send_packet_now(&CSetContainerContent::new(
+            .enqueue_packet(&CSetContainerContent::new(
                 VarInt(behaviour.sync_id.into()),
                 VarInt(state_id as i32),
                 &slots,
