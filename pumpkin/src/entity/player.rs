@@ -2009,6 +2009,10 @@ impl Player {
         };
 
         if let Some((result, updated_stack)) = updated {
+            let is_held_mainhand = slot_index == self.inventory.get_selected_slot() as usize;
+            let should_send_slot_packet =
+                result == pumpkin_data::item_stack::DamageResult::Broken || !is_held_mainhand;
+
             // Send the break status before clearing the slot so the client can
             // use the item texture for break particles.
             if result == pumpkin_data::item_stack::DamageResult::Broken {
@@ -2024,16 +2028,18 @@ impl Player {
                 );
             }
 
-            tracing::info!(
-                "[PlayerItem Debug] Enqueuing CSetPlayerInventory for slot {} (new damage={})",
-                slot_index,
-                updated_stack.get_damage()
-            );
-            self.enqueue_slot_set_packet(&CSetPlayerInventory::new(
-                (slot_index as i32).into(),
-                &ItemStackSerializer::from(updated_stack.clone()),
-            ))
-            .await;
+            if should_send_slot_packet {
+                tracing::info!(
+                    "[PlayerItem Debug] Enqueuing CSetPlayerInventory for slot {} (new damage={})",
+                    slot_index,
+                    updated_stack.get_damage()
+                );
+                self.enqueue_slot_set_packet(&CSetPlayerInventory::new(
+                    (slot_index as i32).into(),
+                    &ItemStackSerializer::from(updated_stack.clone()),
+                ))
+                .await;
+            }
 
             self.send_equipment_changes(&[(slot.clone(), updated_stack)])
                 .await;
