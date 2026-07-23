@@ -107,6 +107,12 @@ pub struct Server {
     pub dimensions: Vec<Dimension>,
     /// Assigns unique IDs to containers.
     container_id: AtomicU32,
+    /// Assigns process-wide entity IDs through shared runtime state.
+    ///
+    /// This must live on the server object rather than in a module static:
+    /// native plugins link their own copy of Pumpkin and would otherwise get an
+    /// independent counter that can reuse IDs already visible to clients.
+    pub(crate) entity_id_allocator: Arc<AtomicI32>,
     pub recipe_manager: Arc<recipe::RecipeManager>,
     /// Assigns unique IDs to maps.
     map_id: AtomicI32,
@@ -257,6 +263,7 @@ impl Server {
             ))),
             permission_registry,
             container_id: 0.into(),
+            entity_id_allocator: Arc::new(AtomicI32::new(1)),
             recipe_manager: Arc::new(recipe::RecipeManager::new()),
             map_id: level_info.load().map_id.into(),
             worlds: ArcSwap::from_pointee(vec![]),

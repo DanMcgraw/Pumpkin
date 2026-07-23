@@ -9,7 +9,7 @@ use pumpkin_protocol::bedrock::client::level_event::{CLevelEvent, LevelEvent};
 use pumpkin_protocol::bedrock::network_item::NetworkItemDescriptor;
 use pumpkin_protocol::codec::data_component::data_to_proto_sound;
 use pumpkin_world::generation::proto_chunk::GenerationCache;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicI32, Ordering::Relaxed};
 use std::sync::{Arc, Weak};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -231,6 +231,8 @@ pub struct World {
     /// Block Behaviour
     pub block_registry: Arc<BlockRegistry>,
     pub server: Weak<Server>,
+    /// Shared server-owned allocator used by host code and native plugins.
+    entity_id_allocator: Arc<AtomicI32>,
     synced_block_event_queue: Mutex<Vec<BlockEvent>>,
     /// A map of unsent block changes, keyed by block position.
     unsent_block_changes: Mutex<HashMap<BlockPos, BlockStateId>>,
@@ -401,6 +403,10 @@ impl World {
 
         let runtime = tokio::runtime::Handle::try_current().ok();
         let runtime_for_callback = runtime.clone();
+        let entity_id_allocator = server.upgrade().map_or_else(
+            || Arc::new(AtomicI32::new(1)),
+            |server| server.entity_id_allocator.clone(),
+        );
 
         Arc::new_cyclic(|weak: &Weak<Self>| {
             let world = Self {
@@ -417,6 +423,7 @@ impl World {
                 block_registry,
                 sea_level: generation_settings.sea_level,
                 min_y: i32::from(generation_settings.shape.min_y),
+                entity_id_allocator,
                 synced_block_event_queue: Mutex::new(Vec::new()),
                 unsent_block_changes: Mutex::new(HashMap::new()),
                 portal_poi: Mutex::new(portal_poi),
@@ -470,6 +477,17 @@ impl World {
 
             world
         })
+    }
+
+    /// Reserves a contiguous range of entity IDs from server-owned runtime
+    /// state and returns the first ID in that range.
+    ///
+    /// Keeping the counter behind the shared [`World`] object is important for
+    /// native plugins: their linked copy of Pumpkin executes this method, but
+    /// it still mutates the same allocator as the host server.
+    pub(crate) fn reserve_entity_ids(&self, count: i32) -> i32 {
+        assert!(count > 0, "entity ID reservations must be positive");
+        self.entity_id_allocator.fetch_add(count, Relaxed)
     }
 
     pub fn update_active_chunks(self: &Arc<Self>) {
@@ -6516,6 +6534,16 @@ mod entity_chunk_index_tests {
 
     fn create_entity(world: &Arc<World>, pos: Vector3<f64>) -> Arc<dyn EntityBase> {
         from_type(&EntityType::ITEM, pos, world, uuid::Uuid::new_v4())
+    }
+
+    #[tokio::test]
+    async fn entity_construction_uses_the_world_runtime_allocator() {
+        let world = create_test_world();
+        let reserved = world.reserve_entity_ids(3);
+
+        let entity = Entity::new(world, Vector3::new(0.5, 64.0, 0.5), &EntityType::ITEM);
+
+        assert_eq!(entity.entity_id, reserved + 3);
     }
 
     #[tokio::test]

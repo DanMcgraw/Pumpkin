@@ -751,9 +751,6 @@ impl RemovalReason {
     }
 }
 
-// IMPORTANT: have that 1 and not 0 because fetch_add returns previous value and 0 would be invalid
-static CURRENT_ID: AtomicI32 = AtomicI32::new(1);
-
 /// Represents a non-living Entity (e.g. Item, Egg, Snowball...)
 pub struct Entity {
     /// A unique identifier for the entity
@@ -893,23 +890,14 @@ impl Entity {
         Self::from_uuid(Uuid::new_v4(), world, position, entity_type)
     }
 
-    pub fn reserve_ids(count: i32) -> i32 {
-        CURRENT_ID.fetch_add(count, Relaxed)
-    }
-
     pub fn from_uuid(
         entity_uuid: uuid::Uuid,
         world: Arc<World>,
         position: Vector3<f64>,
         entity_type: &'static EntityType,
     ) -> Self {
-        Self::from_uuid_with_id(
-            CURRENT_ID.fetch_add(1, Relaxed),
-            entity_uuid,
-            world,
-            position,
-            entity_type,
-        )
+        let entity_id = world.reserve_entity_ids(1);
+        Self::from_uuid_with_id(entity_id, entity_uuid, world, position, entity_type)
     }
 
     pub fn from_uuid_with_id(

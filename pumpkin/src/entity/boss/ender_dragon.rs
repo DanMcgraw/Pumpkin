@@ -243,7 +243,7 @@ impl EnderDragonEntity {
         let dragon_uuid = entity.entity_uuid;
         let world = entity.world.load();
 
-        let _ = Entity::reserve_ids(8);
+        let _ = world.reserve_entity_ids(8);
 
         let mut parts = Vec::new();
         for i in 1..=8 {
