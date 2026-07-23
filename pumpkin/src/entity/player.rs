@@ -2024,6 +2024,11 @@ impl Player {
                 );
             }
 
+            tracing::info!(
+                "[PlayerItem Debug] Enqueuing CSetPlayerInventory for slot {} (new damage={})",
+                slot_index,
+                updated_stack.get_damage()
+            );
             self.enqueue_slot_set_packet(&CSetPlayerInventory::new(
                 (slot_index as i32).into(),
                 &ItemStackSerializer::from(updated_stack.clone()),

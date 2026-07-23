@@ -2041,6 +2041,7 @@ impl JavaClient {
                         )
                         .await;
                     if new_state.is_some() {
+                        tracing::info!("[FinishedDigging Debug] Origin block {location:?} broken successfully. Applying tool damage.");
                         server
                             .block_registry
                             .broken(&world, block, player, &location, server, state)
@@ -2058,6 +2059,7 @@ impl JavaClient {
 
                     self.sync_block_state_to_client(&world, location).await;
 
+                    tracing::info!("[FinishedDigging Debug] Completed FinishedDigging at {location:?}, updating sequence={}", player_action.sequence.0);
                     self.update_sequence(player, player_action.sequence.0);
                 }
                 Status::DropItem => {
