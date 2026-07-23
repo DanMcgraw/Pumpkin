@@ -5,6 +5,7 @@ set "ROOT_DIR=%~dp0"
 set "PLUGIN_DIR=%ROOT_DIR%..\Cabbage"
 set "RUNNER_DIR=%ROOT_DIR%..\PumpkinRunner"
 set "RUNNER_PLUGIN_DIR=%RUNNER_DIR%\plugins"
+set "CARGO_TARGET_DIR=%RUNNER_DIR%\target"
 
 if not exist "%PLUGIN_DIR%\Cargo.toml" (
     echo Cabbage Cargo.toml not found:
@@ -25,7 +26,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "PLUGIN_SOURCE=%CD%\target\debug\cabbage.dll"
+set "PLUGIN_SOURCE=%CARGO_TARGET_DIR%\debug\cabbage.dll"
+if not exist "%PLUGIN_SOURCE%" (
+    set "PLUGIN_SOURCE=%CARGO_TARGET_DIR%\debug\Cabbage.dll"
+)
 set "PLUGIN_DEST=%RUNNER_PLUGIN_DIR%\cabbage.dll"
 
 if not exist "%PLUGIN_SOURCE%" (
