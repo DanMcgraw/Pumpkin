@@ -128,6 +128,8 @@ pub fn init_logger(advanced_config: &AdvancedConfiguration) {
             .with_thread_names(advanced_config.logging.threads)
             .with_thread_ids(advanced_config.logging.threads);
 
+        let _ = tracing_log::LogTracer::init();
+
         if advanced_config.logging.timestamp {
             let local_offset =
                 time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
